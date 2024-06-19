@@ -44,3 +44,6 @@ class Inputs(object):
         return self.kwargs.items()
     def values(self):
         return self.kwargs.values()
+
+    def get(self, *args):
+        return self.kwargs.get(*args)

@@ -45,7 +45,7 @@ class BendedModule(object):
             raise TraceError('cannot set graph to value of type %s'%type(graph))
     def _getgraph_(self) -> Union[torch.fx.Graph, None]:
         if self._graph is None:
-            raise TraceError('BendedModule has not been graphed ; please use graph function to build internal graph')
+            raise TraceError('BendedModule has not been traced ; please use trace function to build internal graph')
         return self._graph
     def _delgraph_(self) -> NoReturn:
         raise RuntimeError('cannot delete graph of BendedGraph')

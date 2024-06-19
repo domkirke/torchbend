@@ -1,4 +1,6 @@
 import re, copy
+import inspect
+import sys
 import torch
 from typing import Union, Union,  Callable, Optional, Any, Dict
 from torch._C import ScriptObject  # type: ignore[attr-defined]
@@ -10,6 +12,8 @@ from .proxy import ShapedProxy, ShapeAttribute
 from .input import Inputs
 from ..utils import checklist
 from .utils import dist_to_tensor
+
+DEBUG = True
 
 
 class ActivationProperties():
@@ -24,6 +28,23 @@ class BendingTracer(torch.fx.Tracer):
     def __init__(self, *args, func="forward", **kwargs):
         super(BendingTracer, self).__init__(*args, **kwargs)
         self.traced_func_name = func 
+    
+
+    def _check_input_values(self, root, inputs):
+        signature = inspect.Signature.from_callable(getattr(root, self.traced_func_name))
+        for name, arg in dict(signature.parameters).items():
+            if name not in inputs:
+                if arg.default != inspect._empty:
+                    inputs.update_(**{name: arg.default})
+                else:
+                    print('[Warning] input %s not provided and has not default ; may trigger discrepencies among tracing.'%name)
+                # inputs.update(name)
+        for i in inputs.keys():
+            if i not in signature.parameters:
+                print('[Warning] found value for input %s, but not in signature for function %s'%(i, self.traced_func_name))
+        return inputs
+
+
 
     def trace(
         self,
@@ -35,20 +56,221 @@ class BendingTracer(torch.fx.Tracer):
         # how could we prevent model recursion when shape cannot be fetched? making a special object that
         # could be put in _input_args? 
         # kwargs = {}
+        inputs.update_(**concrete_args)
+        inputs = self._check_input_values(root, inputs)
         self._input_args = inputs.update_(**concrete_args)
         self._values = {k.replace('.', '_'): v.data for k, v in root.named_parameters()}
         self._concrete_flow_steps = []
-        # self._model = _get_model_copy(root, copy_parameters=True)
-        #TODO noooooooOOOOO (how to copy the model before tracing to remove all decorators?)
-        # _get_inputs(input_shape, inspect.getfullargspec(getattr(module, func)))
-        self._model = copy.deepcopy(root)
-        # self._model = root
+        self._model = root
         self._activations = {}
         graph = super(BendingTracer, self).trace(root, concrete_args)
         del self._values, self._input_args
-        # graph._activations = self._activations
-        # graph.get_activations = activation_callback(graph)
         return graph
+
+    ## ____________________________________________________________________________________________________________________
+    ## CREATE ARGUMENTS
+
+    def create_arg(self, a: Any) -> "Argument":
+        if DEBUG: print('creating arg for', a)
+        if isinstance(a, torch.nn.Parameter):
+            for n, p in self.root.named_parameters():
+                if a is p:
+                    return self.create_node("get_attr", n, (), {})
+            raise NameError("parameter is not a member of this module")
+        elif isinstance(a, torch.Tensor):
+            for n_, p_ in self.root.named_buffers():
+                if a is p_:
+                    return self.create_node("get_attr", n_, (), {})
+        elif isinstance(a, torch.nn.Module):
+            for n_, p_ in self.root.named_modules():
+                if a is p_:
+                    return self.create_node("get_attr", n_, (), {})
+        elif isinstance(a, (dist.Distribution, torch.distributions.Distribution)):
+            a = self._create_proxy_for_dist(a)
+
+        elif isinstance(a, tuple) and hasattr(a, "_fields"):
+            args = tuple(self.create_arg(elem) for elem in a)
+            return self.create_node("call_function", a.__class__, args, {})
+
+        elif isinstance(a, (torch.Tensor, ScriptObject)):
+            qualname: Optional[str] = self.tensor_attrs.get(a)
+            if not qualname:
+                i = 0
+                while True:
+                    qualname = f"_tensor_constant{i}"
+                    if not hasattr(self.root, qualname):
+                        break
+                    i += 1
+                self.tensor_attrs[a] = qualname
+                setattr(self.root, qualname, a)
+            # we pass the concrete_value to populate the tensor's shape during tracing
+            return self.create_node("get_attr", qualname, (), {}, concrete_value=a)
+
+        # elif isinstance(a, ShapeAttribute):
+        #     if a.has_static:
+        #         return a
+        #     else:
+        #         raise TraceError('tried to convert shape attribute as arg')
+
+        elif type(a) in _proxyable_classes:
+            # This is an instance of a proxyable class for which we did not
+            # witness its construction. Intern this as a constant attribute
+
+            i = 0
+            while True:
+                qualname = f"_{a.__class__.__name__}_constant_{i}"
+                if not hasattr(self.root, qualname):
+                    break
+                i += 1
+            setattr(self.root, qualname, a)
+
+            return self.create_node("get_attr", qualname, (), {})
+        else:
+            return super().create_arg(a)
+    
+    def _replace_args(self, args):
+        new_args = list(args)
+        for i, n in enumerate(args):
+            if isinstance(n, (tuple, list)):
+                new_args[i] = self._replace_args(n)
+            elif isinstance(n, (Proxy, Node)):
+                if n.name in self._values:
+                    new_args[i] = self._values[n.name]
+        return type(args)(new_args)
+
+
+    def get_attr(self, n: Node) -> Any:
+        args = tuple(n.args)
+        args = self._replace_args(n.args)
+        if n.name in self._values:
+            if len(args) > 0:
+                return getattr(self._values[n.target], args[0])
+            else:
+                return self._values[n.name]
+        else:
+            return 
+
+    ## ____________________________________________________________________________________________________________________
+    ## CALLBACKS
+
+    def placeholder(self, n: Node) -> Any:
+        if n.name in self._input_args:
+            return self._input_args[n.name]
+        else:
+            # for concrete args
+            names = list(filter(lambda x: re.match(f"{x}_\d+", n.name), self._input_args.keys()))
+            if len(names) > 0:
+                return self._input_args[names[0]]
+            else:
+                return None
+
+    def getattr(self, attr: str, attr_val: Any, parameter_proxy_cache: Dict[str, Any]):
+        if isinstance(attr_val, torch.nn.Parameter):
+            # by default, torch.fx creates a proxy for model parameters. 
+            # this, however, make shape propagation impossible during tracing.
+            return attr_val
+        else:
+            return super(BendingTracer, self).getattr(attr, attr_val, parameter_proxy_cache)
+
+    def call_function(self, n: Node) -> Any:
+        args = self._replace_args(n.args)
+        kwargs = self._replace_kwargs(n.kwargs)
+        try: 
+            return n.target(*args, **kwargs)
+        except Exception as e:
+            if (n.target == getattr) and (args[0] is None) and (args[1] == "shape"):
+                print('Try to access shape attribute of None; try providing input for the placeholder %s'%(n.args[0]))
+                raise TraceError('Try to access shape attribute of None ; check input values?')#; try providing input for the placeholder %s'%(n.args[0]))
+            else:
+                raise e
+
+    def call_method(self, n: Node) -> Any:
+        target = n.target
+        args = self._replace_args(n.args)
+        kwargs = self._replace_kwargs(n.kwargs)
+        self_obj, *args_tail = args
+        return getattr(self_obj, target)(*args_tail, **kwargs)
+
+    def call_module_run(self, n: Node) -> Any:
+        target = n.target
+        args = self._replace_args(n.args)
+        kwargs = self._replace_kwargs(n.kwargs)
+        module = self._get_unwrapped_submodule(self._model, target)
+        if DEBUG: print('calling module', n, n.target, n.args)
+        return type(module).forward(module, *args, **kwargs)
+    
+    def run_node(self, n):
+        if n.op == "call_module":
+            return self.call_module_run(n)
+        else:
+            return getattr(self, n.op)(n)
+
+    def output(self, n: Node) -> Any:
+        return self._replace_args(n.args)[0]
+
+    ## ____________________________________________________________________________________________________________________
+    ## NODES
+
+    def create_node(self, kind : str, target, args, kwargs, name = None, type_expr = None, dist_args = {}, concrete_value = None) -> Node:
+        if DEBUG: print('creating node', kind, target, args, kwargs, name)
+        # create node
+        if kind == "output":
+            new_args, new_type_expr = self._check_output_args(args, type_expr=type_expr, dist_args=dist_args)
+            node = super(BendingTracer, self).create_node(kind, target, tuple(new_args), kwargs, name=name)#, type_expr = new_type_expr)
+        else:
+            node = super(BendingTracer, self).create_node(kind, target, args, kwargs, name=name, type_expr = type_expr)
+        node.concrete_value = concrete_value
+        return node
+
+    ## ____________________________________________________________________________________________________________________
+    ## PROXIES
+
+    def create_proxy(self, kind, target, args, kwargs, name=None, type_expr=None, proxy_factory_fn=None):
+        if DEBUG: print("creating proxy : ", kind, target, args, kwargs, name)
+        return super().create_proxy(kind, target, args, kwargs, name=name, type_expr=type_expr, proxy_factory_fn=proxy_factory_fn)
+
+    def proxy(self, node: Node) -> 'Proxy':
+        if DEBUG: print("creating proxy for node : ", node)
+        # proxys are "empty values" that are populated among tracing.
+        if node.op == "placeholder":
+            out = self._input_args.get(node.name)
+        else:
+            if node.concrete_value is not None:
+                out = node.concrete_value
+            else: 
+                out = self.run_node(node)
+        self._values[node.name] = out
+        shape = self._get_shape(out)
+        self._activations[node.name] = ActivationProperties(op=node.op, shape=shape)
+        proxy = ShapedProxy(node, self, value=out)
+        return proxy
+    
+    def _create_proxy_for_dist(self, a):
+        if isinstance(a, dist.Bernoulli):
+            a = a.as_tuple()
+            a = self.create_proxy("call_function", dist.Bernoulli, args=a, kwargs={}, name=f"_dist_Bernoulli_{self._get_dist_count('Bernoulli')}")
+        elif isinstance(a, dist.Normal):
+            a = a.as_tuple()
+            a = self.create_proxy("call_function", dist.Normal, args=a, kwargs={}, name=f"_dist_Normal_{self._get_dist_count('Normal')}")
+        elif isinstance(a, dist.Categorical):
+            a = a.as_tuple()
+            a = self.create_proxy("call_function", dist.Categorical, args=a, kwargs={}, name=f"_dist_Categorical_{self._get_dist_count('Categorical')}")
+        else:
+            a = dist.convert_from_torch(a)
+            return self._create_proxy_for_dist(a)
+        return a
+
+    def to_bool(self, obj: 'ShapedProxy') -> bool:
+        if obj._value is not None:
+            # trace steps where control flow was made concrete
+            self._concrete_flow_steps.append(obj)
+            return bool(obj._value)
+        else:
+            raise TraceError('symbolically traced variables cannot be used as inputs to control flow')
+
+
+    ## ____________________________________________________________________________________________________________________
+    ## UTILS
 
     def _get_dist_count(self, dist_name: str):
         if not dist_name in self._dist_count_hash:
@@ -72,83 +294,6 @@ class BendingTracer(torch.fx.Tracer):
             type_expr = None
         return a, type_expr
 
-    def _create_proxy_for_dist(self, a):
-        if isinstance(a, dist.Bernoulli):
-            a = a.as_tuple()
-            a = self.create_proxy("call_function", dist.Bernoulli, args=a, kwargs={}, name=f"_dist_Bernoulli_{self._get_dist_count('Bernoulli')}")
-        elif isinstance(a, dist.Normal):
-            a = a.as_tuple()
-            a = self.create_proxy("call_function", dist.Normal, args=a, kwargs={}, name=f"_dist_Normal_{self._get_dist_count('Normal')}")
-        elif isinstance(a, dist.Categorical):
-            a = a.as_tuple()
-            a = self.create_proxy("call_function", dist.Categorical, args=a, kwargs={}, name=f"_dist_Categorical_{self._get_dist_count('Categorical')}")
-        else:
-            a = dist.convert_from_torch(a)
-            return self._create_proxy_for_dist(a)
-        return a
-
-    def create_arg(self, a: Any) -> "Argument":
-
-        if isinstance(a, torch.nn.Parameter):
-            for n, p in self.root.named_parameters():
-                if a is p:
-                    return self.create_node("get_attr", n, (), {})
-            raise NameError("parameter is not a member of this module")
-        elif isinstance(a, torch.Tensor):
-            for n_, p_ in self.root.named_buffers():
-                if a is p_:
-                    return self.create_node("get_attr", n_, (), {})
-        elif isinstance(a, torch.nn.Module):
-            for n_, p_ in self.root.named_modules():
-                if a is p_:
-                    return self.create_node("get_attr", n_, (), {})
-        elif isinstance(a, (dist.Distribution, torch.distributions.Distribution)):
-            a = self._create_proxy_for_dist(a)
-
-        if isinstance(a, tuple) and hasattr(a, "_fields"):
-            args = tuple(self.create_arg(elem) for elem in a)
-            return self.create_node("call_function", a.__class__, args, {})
-
-        if isinstance(a, (torch.Tensor, ScriptObject)):
-            qualname: Optional[str] = self.tensor_attrs.get(a)
-            if not qualname:
-                i = 0
-                while True:
-                    qualname = f"_tensor_constant{i}"
-                    if not hasattr(self.root, qualname):
-                        break
-                    i += 1
-                self.tensor_attrs[a] = qualname
-                setattr(self.root, qualname, a)
-            # we pass the concrete_value to populate the tensor's shape during tracing
-            return self.create_node("get_attr", qualname, (), {}, concrete_value=a)
-
-        if type(a) in _proxyable_classes:
-            # This is an instance of a proxyable class for which we did not
-            # witness its construction. Intern this as a constant attribute
-
-            i = 0
-            while True:
-                qualname = f"_{a.__class__.__name__}_constant_{i}"
-                if not hasattr(self.root, qualname):
-                    break
-                i += 1
-            setattr(self.root, qualname, a)
-
-            return self.create_node("get_attr", qualname, (), {})
-
-        return super().create_arg(a)
-    
-    def _replace_args(self, args):
-        new_args = list(args)
-        for i, n in enumerate(args):
-            if isinstance(n, (tuple, list)):
-                new_args[i] = self._replace_args(n)
-            elif isinstance(n, (Proxy, Node)):
-                if n.name in self._values:
-                    new_args[i] = self._values[n.name]
-        return type(args)(new_args)
-
     def _replace_kwargs(self, kwargs):
         kwargs = dict(kwargs)
         for k, n in kwargs.items():
@@ -164,40 +309,6 @@ class BendingTracer(torch.fx.Tracer):
             return type(x)([self._get_shape(x_i) for x_i in x])
         elif hasattr(x, "__len__"):
             return len(x)
-
-    def placeholder(self, n: Node) -> Any:
-        if n.name in self._input_args:
-            return self._input_args[n.name]
-        else:
-            # for concrete args
-            names = list(filter(lambda x: re.match(f"{x}_\d+", n.name), self._input_args.keys()))
-            if len(names) > 0:
-                return self._input_args[names[0]]
-            else:
-                return None
-
-    def get_attr(self, n: Node) -> Any:
-        args = tuple(n.args)
-        args = self._replace_args(n.args)
-        if n.name in self._values:
-            if len(args) > 0:
-                return getattr(self._values[n.target], args[0])
-            else:
-                return self._values[n.name]
-        else:
-            return 
-
-    def call_function(self, n: Node) -> Any:
-        args = self._replace_args(n.args)
-        kwargs = self._replace_kwargs(n.kwargs)
-        return n.target(*args, **kwargs)
-
-    def call_method(self, n: Node) -> Any:
-        target = n.target
-        args = self._replace_args(n.args)
-        kwargs = self._replace_kwargs(n.kwargs)
-        self_obj, *args_tail = args
-        return getattr(self_obj, target)(*args_tail, **kwargs)
 
     def _get_unwrapped_submodule(self, module, address):
         paths = address.split('.')
@@ -218,59 +329,6 @@ class BendingTracer(torch.fx.Tracer):
             if re.match(target.replace('.', '_'), k):
                 matching_keys[re.sub(target+'_', '', k).replace('_', '.')] = v
         return matching_keys
-
-    def call_module_run(self, n: Node) -> Any:
-        target = n.target
-        args = self._replace_args(n.args)
-        kwargs = self._replace_kwargs(n.kwargs)
-        module = self._get_unwrapped_submodule(self._model, target)
-        #TODO this shouldn't be here, how to bypass proxysation of parameters
-        # module.load_state_dict(self._retrieve_proxyless_parameters(target))
-        return type(module).forward(module, *args, **kwargs)
-
-    def output(self, n: Node) -> Any:
-        return self._replace_args(n.args)[0]
-
-    def run_node(self, n):
-        if n.op == "call_module":
-            return self.call_module_run(n)
-        return getattr(self, n.op)(n)
-
-    def create_node(self, kind : str, target, args, kwargs, name = None, type_expr = None, dist_args = {}, concrete_value = None) -> Node:
-        # create node
-        if kind == "output":
-            new_args, new_type_expr = self._check_output_args(args, type_expr=type_expr, dist_args=dist_args)
-            node = super(BendingTracer, self).create_node(kind, target, tuple(new_args), kwargs, name=name)#, type_expr = new_type_expr)
-        else:
-            node = super(BendingTracer, self).create_node(kind, target, args, kwargs, name=name, type_expr = type_expr)
-        node.concrete_value = concrete_value
-        return node
-
-    def proxy(self, node: Node) -> 'Proxy':
-        # populate shape
-        if node.concrete_value is not None:
-            out = node.concrete_value
-        else: 
-           out = self.run_node(node)
-        self._values[node.name] = out
-        shape = self._get_shape(out)
-        self._activations[node.name] = ActivationProperties(op=node.op, shape=shape)
-        proxy = ShapedProxy(node, self, value=out)
-        return proxy
-
-    def create_proxy(self, kind, target, args, kwargs, name=None, type_expr=None, proxy_factory_fn=None):
-        return super().create_proxy(kind, target, args, kwargs, name=name, type_expr=type_expr, proxy_factory_fn=proxy_factory_fn)
-
-    def to_bool(self, obj: 'ShapedProxy') -> bool:
-        if obj._value is not None:
-            # trace steps where control flow was made concrete
-            self._concrete_flow_steps.append(obj)
-            return bool(obj._value)
-        else:
-            raise TraceError('symbolically traced variables cannot be used as inputs to control flow')
-
-
-
 
 
 
