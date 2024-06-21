@@ -17,15 +17,15 @@
 
 | Model                | Weights | Activation | Script |
 | :------------------- | :-----: | :--------: | :----: |
-<td colspan=4> Audio </td>                                
+| **Audio** | | | |
 | vschaos              | ◇       | ◇          | ◇      |
 | RAVE                 | ◇       | ◇          | ◇      |
 | MusicGen             | ✔︎    | ✕︎       | ✕︎   |
 | AudioGen             | ✔︎    | ✕︎       | ✕︎   |
-<td colspan=4> Image </td>                            
+| **Image** | | | |
 | StyleGAN3            | ◇       | ✕︎       | ✕︎   |
 | StableDiffusion      | ◇       | ✕︎       | ✕︎   |
-| Text                 |         |            |        |
+| **Text**                 |         |            |        |
 | GPT-2                | ◇       | ✕︎       | ✕︎   |
 | Llama                | ◇       | ✕︎       | ✕︎   |
 
