@@ -14,15 +14,6 @@
 - [✕︎] script generative models with JIT additional bending inputs (for use in [nn~] for example)
 
 `torchbend` provides end-to-end examples for the following libraries:
-- **Audio**
-    - vschaos2
-    - RAVE
-    - audiocraft
-- **Image**
-    - StyleGAN3
-    - StableDiffusion
-- **Text**
-    - Llama
 
 | Model           | Weights | Activation | Script |
 | --------------- | ------- | ---------- | ------ |
@@ -37,6 +28,8 @@
 | Text                                            |
 | GPT-2           | ◇       | ✕︎       | ✕︎   |
 | Llama           | ◇       | ✕︎       | ✕︎   |
+
+<small>✔︎: tested ; ✕︎ : not working ; ◇ : to try out</small>
 
 
 ## Parse and analyse model's graphs
