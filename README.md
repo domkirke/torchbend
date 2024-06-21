@@ -15,19 +15,19 @@
 
 `torchbend` provides end-to-end examples for the following libraries:
 
-| Model           | Weights | Activation | Script |
-| --------------- | ------- | ---------- | ------ |
-| Audio                                           |
-| vschaos         | ◇       | ◇          | ◇      |
-| RAVE            | ◇       | ◇          | ◇      |
-| MusicGen        | ✔︎    | ✕︎       | ✕︎   |
-| AudioGen        | ✔︎    | ✕︎       | ✕︎   |
-| Image           |                               |
-| StyleGAN3       | ◇       | ✕︎       | ✕︎   |
-| StableDiffusion | ◇       | ✕︎       | ✕︎   |
-| Text                                            |
-| GPT-2           | ◇       | ✕︎       | ✕︎   |
-| Llama           | ◇       | ✕︎       | ✕︎   |
+| Model                | Weights | Activation | Script |
+| :------------------- | :-----: | :--------: | :----: |
+<td colspan=4> Audio </td>                                
+| vschaos              | ◇       | ◇          | ◇      |
+| RAVE                 | ◇       | ◇          | ◇      |
+| MusicGen             | ✔︎    | ✕︎       | ✕︎   |
+| AudioGen             | ✔︎    | ✕︎       | ✕︎   |
+<td colspan=4> Image </td>                            
+| StyleGAN3            | ◇       | ✕︎       | ✕︎   |
+| StableDiffusion      | ◇       | ✕︎       | ✕︎   |
+| Text                 |         |            |        |
+| GPT-2                | ◇       | ✕︎       | ✕︎   |
+| Llama                | ◇       | ✕︎       | ✕︎   |
 
 <small>✔︎: tested ; ✕︎ : not working ; ◇ : to try out</small>
 
