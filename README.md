@@ -6,7 +6,7 @@
     - dynamic parsing (wrapping un-traceable functions, shape propagation)
     - tracing torch distributions (currently implemented : `Bernoulli`, `Normal`, `Categorical`)
 - [✔︎] easily parse and analyze model's graphs 
-- [✕︎] bend model's weights and activations
+- [︎✔︎] bend model's weights and activations
 - [✕︎] adapt the library to specific generative models, and provide handy interfaces for python notebooks
     - [✕︎] handful classes for image, text, and sound
     - [✕︎] panel implementation for real-time bending
@@ -23,6 +23,21 @@
     - StableDiffusion
 - **Text**
     - Llama
+
+| Model           | Weights | Activation | Script |
+| --------------- | ------- | ---------- | ------ |
+| Audio                                           |
+| vschaos         | ◇       | ◇          | ◇      |
+| RAVE            | ◇       | ◇          | ◇      |
+| MusicGen        | ✔︎    | ✕︎       | ✕︎   |
+| AudioGen        | ✔︎    | ✕︎       | ✕︎   |
+| Image           |                               |
+| StyleGAN3       | ◇       | ✕︎       | ✕︎   |
+| StableDiffusion | ◇       | ✕︎       | ✕︎   |
+| Text                                            |
+| GPT-2           | ◇       | ✕︎       | ✕︎   |
+| Llama           | ◇       | ✕︎       | ✕︎   |
+
 
 ## Parse and analyse model's graphs
 
@@ -74,4 +89,23 @@ bended_module.reset()
 bended_module.bend(torchbend.bending.Mask(0.), "pre_conv")
 outs = bended_module.get_activations('pre_conv', x=module_in, bended=True)
 print("pre_conv activation min and max : ", outs['pre_conv'].min(), outs['pre_conv'].max())
+```
+
+## Bending MusicGen
+
+```python
+import torchaudio
+import torchbend as tb
+from audiocraft.models import MusicGen
+
+card = 'facebook/musicgen-small'
+model = MusicGen.get_pretrained(card)
+model.set_generation_params(duration=4) 
+
+model.compression_model = tb.BendedModule(model.compression_model)
+model.compression_model.print_weights("decoder.*", "descriptions/"+card.split('/')[-1])
+model.compression_model.bend_(tb.Mask(0.7), 'decoder.model.\d+.lstm.weight_hh_l.', verbose=True)
+
+out = model.generate(['monkey kick'])
+torchaudio.save('test.wav', out[0], sample_rate=44100)
 ```

@@ -20,9 +20,9 @@ class ShapeAttribute(Attribute):
 
 
 
-class ShapedProxy(torch.fx.Proxy):
+class BendingProxy(torch.fx.Proxy):
     def __init__(self, node: Node, tracer = None, value: Optional[Any] = None):
-        super(ShapedProxy, self).__init__(node, tracer)
+        super(BendingProxy, self).__init__(node, tracer)
         self._value = value
 
     def __repr__(self):
@@ -31,8 +31,10 @@ class ShapedProxy(torch.fx.Proxy):
     def __getattr__(self, k) -> Union[Attribute, Iterable[int]]:
         if k == "shape":
             return ShapeAttribute(self, k)
+        if k == "device":
+           return None
         else:
             return Attribute(self, k)
 
 
-__all__  = ['ShapeAttribute', 'ShapedProxy']
+__all__  = ['ShapeAttribute', 'BendingProxy']

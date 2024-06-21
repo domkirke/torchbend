@@ -1,5 +1,8 @@
 import torch, inspect
+from torch.fx.proxy import TraceError
+from typing import Union, Callable, Type, LiteralString, Tuple
 from .module import BendedModule
+from ..utils import checklist
 
 def bendable_filter_fn(attr_name, obj):
     return attr_name.startswith('__') or \
@@ -28,8 +31,8 @@ def extract_objs_from_type(obj, obj_type):
 
 class BendingWrapper(object):
     _bendable_types = [torch.nn.Module]
-    def __init__(self, obj):
-        self.__bending_submodules = self._fetch_submodules(obj)
+    def __init__(self, obj, target_objs=None):
+        self.__bending_submodules = self._fetch_submodules(obj, target_objs)
         self._import_attrs_and_methods(obj)
 
     def _import_attrs_and_methods(self, obj, verbose=False):
@@ -44,10 +47,20 @@ class BendingWrapper(object):
                     obj = BendedModule(obj)
                 setattr(self, name, obj)
 
-    def _fetch_submodules(self, obj):
+    def _fetch_submodules(self, obj, target_objs=None):
         submodules = {}
-        for t in self._bendable_types:
-            submodules.update(extract_objs_from_type(obj, t))
+        if target_objs is None:
+            for t in self._bendable_types:
+                submodules.update(extract_objs_from_type(obj, t))
+        else:
+            target_objs = checklist(target_objs)
+            for target_name in target_objs:
+                if hasattr(obj, target_name):
+                    module = getattr(obj, target_name)
+                    assert True in [isinstance(module, t) for t in self._bendable_types], "object %s not in bendable types : %s"%self._bendable_types
+                    submodules[target_name] = module
+                else:
+                    raise TraceError("submodule %s is absent from %s"%(target_name, obj))
         return submodules
 
     @property
@@ -93,5 +106,28 @@ class BendingWrapper(object):
         self.graph = tracer.trace(self.module, self._inputs)
         self._activations = tracer._activations
 
+def is_within_class_definition(classname):
+    current_frame = inspect.currentframe()
+    for _ in range(2):
+        f = current_frame.f_back
+        assert f is not None
+    code_obj = current_frame.f_code
+    return code_obj.co_name != classname
 
-__all__ = ['BendingWrapper']
+
+#TODO only before instantiation ; how could we do after? 
+def wrapmethod(classname, methodname):
+    torch.fx._symbolic_trace._wrapped_methods_to_patch.append((classname, methodname))
+
+def wrapmodule(obj):
+    setattr(obj, "__torchbend_wrap__", True)
+    # obj.forward = torch.fx.wrap(obj.forward)
+
+
+
+
+
+
+
+
+__all__ = ['BendingWrapper', 'wrapmethod', 'wrapmodule']

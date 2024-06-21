@@ -1,7 +1,9 @@
 from tabulate import tabulate
+import pathlib, os
 import re
 import copy
 import torch
+import inspect
 from torch import nn
 from torch.fx import Graph
 from torch.fx.proxy import TraceError
@@ -44,8 +46,8 @@ class BendedModule(object):
         else:
             raise TraceError('cannot set graph to value of type %s'%type(graph))
     def _getgraph_(self) -> Union[torch.fx.Graph, None]:
-        if self._graph is None:
-            raise TraceError('BendedModule has not been traced ; please use trace function to build internal graph')
+        # if self._graph is None:
+        #     raise TraceError('BendedModule has not been traced ; please use trace function to build internal graph')
         return self._graph
     def _delgraph_(self) -> NoReturn:
         raise RuntimeError('cannot delete graph of BendedGraph')
@@ -83,12 +85,22 @@ class BendedModule(object):
         self._bended_params = {}
         self._bended_activations = {}
         self.module: nn.Module = module
+        print(self._inputs)
+
+    def __getattr__(self, attr_name):
+        fr = inspect.currentframe()
+        if (fr.f_back.f_code.co_filename != __file__): 
+            # import attribute from current module
+            return getattr(self.module, attr_name)
+        else:
+            super(BendedModule, self).__getattr__(self)
 
     def _init_graph_(self, graph):
         self._graph = graph
 
     def _init_module_(self, module):
         self._module = module
+        self._original_module = None
         self._version = self._default_version_key
         self._param_dict = {'_default': {}}
         for k, v in self._module.state_dict().items():
@@ -119,9 +131,17 @@ class BendedModule(object):
             raise TraceError('BendedGraph has no weights since module as not been initialized')
         return list(dict(self.module.named_parameters()).keys())
 
-    def print_weights(self):
-        """print weights"""
-        print(tabulate(map(_get_weight_properties, self.named_parameters())))
+    def print_weights(self, flt=r".*", out=None):
+        """print / export weights"""
+        parameters = dict(filter(lambda v: re.match(flt, v[0]), dict(self.named_parameters()).items()))
+        pretty_weights = tabulate(map(_get_weight_properties, parameters.items()))
+        if out is None:
+            print(pretty_weights)
+        else:
+            out = pathlib.Path(out)
+            os.makedirs(out.parent, exist_ok=True)
+            with open(out, 'w+') as f:
+                f.write(pretty_weights)
 
     def param_shape(self, param):
         return self.module.state_dict()[param].shape
@@ -203,8 +223,9 @@ class BendedModule(object):
         # loaded bended dict
         module.load_state_dict(state_dict)
         # add activation callbacks
-        for k, v in self._bended_activations.items():
-            setattr(module, k+'_callback', CallbackChain(v))
+        if self.graph is not None:
+            for k, v in self._bended_activations.items():
+                setattr(module, k+'_callback', CallbackChain(v))
         return module
 
     def bend_graph(self):
@@ -223,17 +244,29 @@ class BendedModule(object):
         self._bended_activations[parameter] = self._bended_activations.get(parameter, []) + [callback]
         callback.add_bending_target(parameter, self.activation_shape(parameter))
 
-    def bend(self, callback, *params):
+    def bend(self, callback, *params, verbose=False):
         assert isinstance(callback, BendingCallback), "callback must be a BendingCallback instance"
         target_params = self._resolve_parameters(*params)
-        target_activations = self._resolve_activations(*params)
+        target_activations = []
+        if self.graph is not None:
+            target_activations = self._resolve_activations(*params)
         if len(target_params) + len(target_activations) == 0:
             raise BendingError('Could not find bendable elements with specification %s'%params)
         # register bending
         for param in target_params:
+            if verbose: 
+                print('bending parameter %s with %s...'%(param, callback))
             self._bend_parameter(param, callback)
         for activation in target_activations:
             self._bend_activation(activation, callback)
+            if verbose: 
+                print('bending activation %s with %s...'%(param, callback))
+
+    def bend_(self, *args, **kwargs):
+        self.bend(*args, **kwargs)
+        if self._original_module is None:
+            self._original_module = self.module
+        self.module = self.bend_module()
 
     def _reset_bending(self):
         self._bending_callbacks = []
@@ -241,6 +274,9 @@ class BendedModule(object):
         self._bended_activations = {}
 
     def reset(self):
+        if self._original_module is not None:
+            self.module = self._original_module 
+            self._original_module = None
         self._version = self._default_version_key
         self._reset_bending()
 

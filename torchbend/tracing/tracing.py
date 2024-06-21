@@ -8,7 +8,7 @@ from torch.fx._symbolic_trace import _proxyable_classes
 from torch.fx.proxy import Proxy, TraceError
 from torch.fx.node import Argument, Node
 from .. import distributions as dist
-from .proxy import ShapedProxy, ShapeAttribute
+from .proxy import BendingProxy, ShapeAttribute
 from .input import Inputs
 from ..utils import checklist
 from .utils import dist_to_tensor
@@ -84,7 +84,7 @@ class BendingTracer(torch.fx.Tracer):
         elif isinstance(a, torch.nn.Module):
             for n_, p_ in self.root.named_modules():
                 if a is p_:
-                    return self.create_node("get_attr", n_, (), {})
+                    return self.create_node("get_attr", n_, (), {}, concrete_value=p_)
         elif isinstance(a, (dist.Distribution, torch.distributions.Distribution)):
             a = self._create_proxy_for_dist(a)
 
@@ -139,16 +139,13 @@ class BendingTracer(torch.fx.Tracer):
         return type(args)(new_args)
 
 
-    def get_attr(self, n: Node) -> Any:
-        args = tuple(n.args)
-        args = self._replace_args(n.args)
-        if n.name in self._values:
-            if len(args) > 0:
-                return getattr(self._values[n.target], args[0])
-            else:
-                return self._values[n.name]
+    def getattr(self, attr: str, attr_val: Any, parameter_proxy_cache: Dict[str, Any]):
+        if isinstance(attr_val, torch.nn.Parameter):
+            # by default, torch.fx creates a proxy for model parameters. 
+            # this, however, make shape propagation impossible during tracing.
+            return attr_val
         else:
-            return 
+            return super(BendingTracer, self).getattr(attr, attr_val, parameter_proxy_cache)
 
     ## ____________________________________________________________________________________________________________________
     ## CALLBACKS
@@ -164,13 +161,17 @@ class BendingTracer(torch.fx.Tracer):
             else:
                 return None
 
-    def getattr(self, attr: str, attr_val: Any, parameter_proxy_cache: Dict[str, Any]):
-        if isinstance(attr_val, torch.nn.Parameter):
-            # by default, torch.fx creates a proxy for model parameters. 
-            # this, however, make shape propagation impossible during tracing.
-            return attr_val
+    
+    def get_attr(self, n: Node) -> Any:
+        args = tuple(n.args)
+        args = self._replace_args(n.args)
+        if n.name in self._values:
+            if len(args) > 0:
+                return getattr(self._values[n.target], args[0])
+            else:
+                return self._values[n.name]
         else:
-            return super(BendingTracer, self).getattr(attr, attr_val, parameter_proxy_cache)
+            return 
 
     def call_function(self, n: Node) -> Any:
         args = self._replace_args(n.args)
@@ -189,6 +190,13 @@ class BendingTracer(torch.fx.Tracer):
         args = self._replace_args(n.args)
         kwargs = self._replace_kwargs(n.kwargs)
         self_obj, *args_tail = args
+        if isinstance(self_obj, Node):
+            if hasattr(self_obj, "concrete_value"):
+                self_obj = self_obj.concrete_value
+            else:
+                self_obj = self.run_node(self_obj)
+                if self_obj is None:
+                    raise TraceError('Cannot call method on node')
         return getattr(self_obj, target)(*args_tail, **kwargs)
 
     def call_module_run(self, n: Node) -> Any:
@@ -242,7 +250,7 @@ class BendingTracer(torch.fx.Tracer):
         self._values[node.name] = out
         shape = self._get_shape(out)
         self._activations[node.name] = ActivationProperties(op=node.op, shape=shape)
-        proxy = ShapedProxy(node, self, value=out)
+        proxy = BendingProxy(node, self, value=out)
         return proxy
     
     def _create_proxy_for_dist(self, a):
@@ -260,7 +268,7 @@ class BendingTracer(torch.fx.Tracer):
             return self._create_proxy_for_dist(a)
         return a
 
-    def to_bool(self, obj: 'ShapedProxy') -> bool:
+    def to_bool(self, obj: 'BendingProxy') -> bool:
         if obj._value is not None:
             # trace steps where control flow was made concrete
             self._concrete_flow_steps.append(obj)
@@ -329,7 +337,6 @@ class BendingTracer(torch.fx.Tracer):
             if re.match(target.replace('.', '_'), k):
                 matching_keys[re.sub(target+'_', '', k).replace('_', '.')] = v
         return matching_keys
-
 
 
 __all__ = ["BendingTracer"]
