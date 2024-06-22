@@ -265,8 +265,8 @@ class BendedModule(object):
     def bend_(self, *args, **kwargs):
         self.bend(*args, **kwargs)
         if self._original_module is None:
-            self._original_module = self.module
-        self.module = self.bend_module()
+            self._original_module = get_model_copy(self.module)
+        self._module = self.bend_module()
 
     def _reset_bending(self):
         self._bending_callbacks = []
