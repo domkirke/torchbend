@@ -10,25 +10,8 @@ from torch.fx.proxy import TraceError
 from typing import Union , NoReturn
 from .input import Inputs
 from .tracing import BendingTracer
-from .utils import BendingError, get_model_copy, bend_graph
+from .utils import BendingError, get_model_copy, bend_graph, _get_weight_properties
 from ..bending import BendingCallback, CallbackChain
-
-
-def _get_weight_properties(args):
-    name, value = args
-    try:
-       minval = value.min()
-       maxval = value.max() 
-    except ValueError:
-       minval = torch.nan
-       maxval = torch.nan
-    try:
-       meanval = value.mean()
-       stdval = value.std() 
-    except ValueError:
-       meanval = torch.nan
-       stdval = torch.nan    
-    return [name, value.shape, value.dtype, minval, maxval, meanval, stdval]
 
 
 def _get_activations_properties(args):
@@ -68,10 +51,9 @@ class BendedModule(object):
     # -- Version property --
     def _setversion_(self, version) -> NoReturn:
         if version is None: version = self._default_version_key
-        if version not in self._version: raise BendingError('BendedModule has no version %s'%version)
+        if version not in self.state_dict(True): raise BendingError('BendedModule has no version %s'%version)
         self._version = version
     def _getversion_(self) -> Union[torch.fx.Graph, None]:
-        if self._version == self._default_version_key: return None
         return self._version
     def _delversion_(self) -> NoReturn:
         self._version = self._default_version_key
@@ -81,6 +63,7 @@ class BendedModule(object):
     def __init__(self, module):
         self._graph = None
         self._inputs = None
+        self._activations = []
         self._bending_callbacks = []
         self._bended_params = {}
         self._bended_activations = {}
@@ -88,12 +71,12 @@ class BendedModule(object):
         print(self._inputs)
 
     def __getattr__(self, attr_name):
-        fr = inspect.currentframe()
-        if (fr.f_back.f_code.co_filename != __file__): 
+        # fr = inspect.currentframe()
+        if attr_name in dir(self):
+            super(BendedModule, self).__getattribute__(attr_name)
+        else:
             # import attribute from current module
             return getattr(self.module, attr_name)
-        else:
-            super(BendedModule, self).__getattr__(self)
 
     def _init_graph_(self, graph):
         self._graph = graph
@@ -216,10 +199,10 @@ class BendedModule(object):
 
     def bend_module(self):
         state_dict = self.bended_state_dict()
+        self._clone_bended_parameters(self.module, self._bended_params)
         # clone module with deep-copying parameters
         module = get_model_copy(self.module, copy_parameters=True)
         # copy target weights, as load_state_dict method replaces in place
-        self._clone_bended_parameters(self.module, self._bended_params)
         # loaded bended dict
         module.load_state_dict(state_dict)
         # add activation callbacks
@@ -264,8 +247,6 @@ class BendedModule(object):
 
     def bend_(self, *args, **kwargs):
         self.bend(*args, **kwargs)
-        if self._original_module is None:
-            self._original_module = get_model_copy(self.module)
         self._module = self.bend_module()
 
     def _reset_bending(self):
@@ -273,23 +254,26 @@ class BendedModule(object):
         self._bended_params = {}
         self._bended_activations = {}
 
-    def reset(self):
-        if self._original_module is not None:
-            self.module = self._original_module 
-            self._original_module = None
-        self._version = self._default_version_key
+    def reset(self, version=None):
         self._reset_bending()
+        if version is None:
+            self._module.load_state_dict(self.state_dict(True)[self.version])
+        else:
+            self.version = version
+            self._module.load_state_dict(self.state_dict(True)[version])
+        return
 
     # callbacks
     def __call__(self, *args, **kwargs):
         """call the module with current input."""
-        if self._graph is None: raise TraceError('call graph method before calling a BendedGraph instance')
-        # bend weights
         module = self.bend_module()
-        # bend activations
-        graph = self.bend_graph()
-        graph_module = torch.fx.GraphModule(module, graph)
-        return graph_module(*args, **kwargs)
+        if self._graph is None:
+            return module(*args, **kwargs)
+        else:
+            # bend activations
+            graph = self.bend_graph()
+            graph_module = torch.fx.GraphModule(module, graph)
+            return graph_module(*args, **kwargs)
 
     def _get_bended_activations(self, activations):
         bended_activations = []

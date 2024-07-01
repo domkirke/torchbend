@@ -5,6 +5,17 @@ from .base import BendingCallback
 
 
 class Mask(BendingCallback):
+
+    def __getstate__(self):
+        out_dict = dict(self.__dict__)
+        del out_dict["generator"]
+        return out_dict
+
+    def __setstate__(self, obj):
+        self.__dict__.update(obj)
+        self.generator = torch.Generator()
+        self.generator.manual_seed(obj.get('seed'))
+
     def __init__(self, prob: float = 0.3, seed: int = None):
         super().__init__()
         self.prob = prob
@@ -12,6 +23,9 @@ class Mask(BendingCallback):
         self.generator = torch.Generator()
         if self.seed is not None:
             self.generator.manual_seed(self.seed)
+
+    def __repr__(self):
+        return f"Mask(prob={self.prob:.3f})"
     
     def _init_mask_(self, name, shape):
         assert shape is not None, "mask preinit must be given target shape"

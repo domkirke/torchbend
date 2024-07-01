@@ -1,8 +1,20 @@
 import torch, inspect
+from types import MethodType
+import os, pathlib
+from tabulate import tabulate
+import re
 from torch.fx.proxy import TraceError
-from typing import Union, Callable, Type, LiteralString, Tuple
+from typing import Union, Callable, Type, Tuple
 from .module import BendedModule
+from .utils import _get_weight_properties
+from .tracing import BendingTracer
+from .input import Inputs
+import copy
 from ..utils import checklist
+
+
+class BendingWrappingException(Exception):
+    pass
 
 def bendable_filter_fn(attr_name, obj):
     return attr_name.startswith('__') or \
@@ -29,6 +41,11 @@ def extract_objs_from_type(obj, obj_type):
             target_objs[attr] = attr_obj
     return target_objs
 
+def _import_to_interface(fn):
+    fn.__import_to_interface = True
+    return fn
+
+
 class BendingWrapper(object):
     _bendable_types = [torch.nn.Module]
     def __init__(self, obj, target_objs=None):
@@ -36,6 +53,7 @@ class BendingWrapper(object):
         self._import_attrs_and_methods(obj)
 
     def _import_attrs_and_methods(self, obj, verbose=False):
+        type_obj = type(obj)
         current_attrs = dir(self)
         for name, obj in inspect.getmembers(obj):
             if class_import_filter_fn(name, obj):
@@ -45,7 +63,14 @@ class BendingWrapper(object):
                     print('importing attribute %s...'%name)
                 if name in self.__bending_submodules:
                     obj = BendedModule(obj)
-                setattr(self, name, obj)
+                    self.__bending_submodules[name] = obj
+                if inspect.ismethod(obj):
+                    bounded_method = MethodType(_import_to_interface(getattr(type_obj, name)), self)
+                    # bounded_method = _import_to_interface(bounded_method)
+                    # bounded_method.__wrapped_from_bending__ = True
+                    setattr(self, name, bounded_method)
+                else:
+                    setattr(self, name, obj)
 
     def _fetch_submodules(self, obj, target_objs=None):
         submodules = {}
@@ -64,47 +89,135 @@ class BendingWrapper(object):
         return submodules
 
     @property
+    @_import_to_interface
     def bended_modules(self):
         return dict(self.__bending_submodules)
 
     # parameters
+    @_import_to_interface
     def parameters(self):
-        raise NotImplementedError
+        parameters = []
+        for k, v in self.bended_modules:
+            parameters.extend(v.parameters())
+        return parameters
+
+    @_import_to_interface
     def named_parameters(self):
-        raise NotImplementedError
+        named_parameters = dict()
+        for k, v in self.bended_modules.items():
+            named_parameters.update({f"{k}.{k_m}": v_m for k_m, v_m in v.named_parameters()})
+        return named_parameters
 
-    # @property 
-    # def weights(self):
-    #     raise NotImplementedError
-    # @property
-    # def activations(self):
-    #     raise NotImplementedError
+    @_import_to_interface
+    def reset(self):
+        for v in self.bended_modules.values():
+            v.reset()
 
-    def print_weights(self):
-        raise NotImplementedError
+    def _resolve_parameters(self, *weights):
+        """get valid weight names from a regexp"""
+        valid_weights = []
+        for weight in self.weights:
+            current_weight = []
+            for w in weights:
+                if re.match(w, weight) is not None:
+                    current_weight.append(weight)
+            if len(current_weight) > 0:
+                valid_weights.extend(current_weight)
+        return valid_weights
+
+    def _resolve_activations(self, *activations):
+        """get valid activation names from a regexp"""
+        valid_acts = []
+        for act in self.activation_names:
+            current_act = []
+            for a in activations:
+                if re.match(a, act) is not None:
+                    current_act.append(act)
+            if len(current_act) > 0:
+                valid_acts.extend(current_act)
+        return valid_acts
+
+
+    @property 
+    @_import_to_interface
+    def weights(self):
+        weights = []
+        for k, v in self.bended_modules.items():
+            weights.extend([f"{k}.{param}" for param in v.weights])
+        return weights
+
+    @property
+    @_import_to_interface
+    def activations(self):
+        activations = []
+        for k, v in self.bended_modules.items():
+            activations.extend([f"{k}.{param}" for param in v.activations])
+        return activations
+
+    @_import_to_interface
+    def print_weights(self, flt=r".*", out=None):
+        """print / export weights"""
+        parameters = dict(filter(lambda v: re.match(flt, v[0]), dict(self.named_parameters()).items()))
+        pretty_weights = tabulate(map(_get_weight_properties, parameters.items()))
+        if out is None:
+            print(pretty_weights)
+        else:
+            out = pathlib.Path(out)
+            os.makedirs(out.parent, exist_ok=True)
+            with open(out, 'w+') as f:
+                f.write(pretty_weights)
+
+    @_import_to_interface
     def print_activations(self):
         raise NotImplementedError
 
+    @_import_to_interface
     def param_shape(self, param):
         raise NotImplementedError
+    @_import_to_interface
     def activation_shape(self, param):
         raise NotImplementedError
 
+    @_import_to_interface
     def state_dict(self, with_versions=False):
         raise NotImplementedError
         # if with_versions:
         #     return dict(self._param_dict)
         # else:
         #     return self._param_dict[self._version]
+
+    @_import_to_interface
     def bended_state_dict(self):
         raise NotImplementedError
 
+    @_import_to_interface
+    def bend(self, callback, *params, **kwargs):
+        params = self._resolve_parameters(*params)
+        for p in params:
+            target_module, param = p.split('.')[0], p.split('.')[:-1]
+            if len(param) == 0: raise BendingWrappingException('%s does not seem to be a parameter.'%param)
+            param = ".".join(param)
+            if not target_module in self.bended_modules: raise BendingWrappingException('%s is not a bended submodule of wrapper.'%target_module)
+            getattr(self, target_module).bend(callback, param, **kwargs)
+            
+    @_import_to_interface
+    def bend_(self, callback, *params, **kwargs):
+        params = self._resolve_parameters(*params)
+        for p in params:
+            target_module, param = p.split('.')[0], p.split('.')[1:]
+            if len(param) == 0: raise BendingWrappingException('%s does not seem to be a parameter.'%param)
+            param = ".".join(param)
+            if not target_module in self.bended_modules: raise BendingWrappingException('%s is not a bended submodule of wrapper.'%target_module)
+            getattr(self, target_module).bend_(callback, param, **kwargs)
+
+    @_import_to_interface
     def trace(self, func, *args, **kwargs):
         """Updates inner graph with the target method and inputs"""
         self._inputs = Inputs(*args, **kwargs)
         tracer = BendingTracer(func=func)
         self.graph = tracer.trace(self.module, self._inputs)
         self._activations = tracer._activations
+
 
 def is_within_class_definition(classname):
     current_frame = inspect.currentframe()

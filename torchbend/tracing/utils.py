@@ -123,3 +123,21 @@ def dist_to_tensor(target):
     else:
         raise NotImplementedError
 
+
+def _get_weight_properties(args):
+    name, value = args
+    try:
+       minval = value.min()
+       maxval = value.max() 
+    except ValueError:
+       minval = torch.nan
+       maxval = torch.nan
+    try:
+       meanval = value.mean()
+       stdval = value.std() 
+    except ValueError:
+       meanval = torch.nan
+       stdval = torch.nan    
+    return [name, value.shape, value.dtype, minval, maxval, meanval, stdval]
+
+
