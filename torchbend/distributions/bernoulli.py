@@ -1,6 +1,6 @@
 import torch, torch.nn as nn
 from collections import namedtuple
-from typing import Union, Dict, Tuple
+from typing import Union, Dict, Tuple, Optional
 from torch.nn.functional import binary_cross_entropy_with_logits, softmax
 from .base import Distribution
 
@@ -19,9 +19,15 @@ def probs_to_logits(probs, is_binary: bool=False, eps: float=1.e-7):
 
 
 class Bernoulli(Distribution):
-    def __init__(self, probs: torch.Tensor):
-        self.probs: torch.Tensor = probs
-        self.logits = probs_to_logits(self.probs)
+    def __init__(self, probs: Optional[torch.Tensor], logits: Optional[torch.Tensor]):
+        if probs is not None:
+            self.probs: torch.Tensor = probs
+            self.logits = probs_to_logits(self.probs)
+        elif logits is not None:
+            self.logits: torch.Tensor = logits
+            self.probs = logits_to_probs(self.logits)
+        else:
+            raise TypeError('Bernoulli must be initialized with probs or logits')
         self._batch_shape = probs.size() 
         self._event_shape = torch.Size([0])
 
