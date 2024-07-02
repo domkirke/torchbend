@@ -9,12 +9,18 @@ from .module import BendedModule
 from .utils import _get_weight_properties
 from .tracing import BendingTracer
 from .input import Inputs
+from collections import UserDict
 import copy
 from ..utils import checklist
 
 
 class BendingWrappingException(Exception):
     pass
+
+class BendingWrapperStateDict(UserDict):
+    def __init__(self, *args, with_versions=False, **kwargs):
+        super(BendingWrapperStateDict, self).__init__(*args, **kwargs)
+        self.__has_versions__ = with_versions
 
 def bendable_filter_fn(attr_name, obj):
     return attr_name.startswith('__') or \
@@ -137,7 +143,6 @@ class BendingWrapper(object):
                 valid_acts.extend(current_act)
         return valid_acts
 
-
     @property 
     @_import_to_interface
     def weights(self):
@@ -170,25 +175,30 @@ class BendingWrapper(object):
     @_import_to_interface
     def print_activations(self):
         raise NotImplementedError
-
     @_import_to_interface
-    def param_shape(self, param):
-        raise NotImplementedError
+    def param_shape(self, p):
+        target_module, param = p.split('.')[0], p.split('.')[:-1]
+        if target_module not in self.bended_modules:
+            raise BendingWrappingException("module %s is not bended in current wrapper"%target_module)
+        return self.bended_modules[target_module].param_shape(".".join(param))
+        
     @_import_to_interface
     def activation_shape(self, param):
         raise NotImplementedError
 
     @_import_to_interface
-    def state_dict(self, with_versions=False):
-        raise NotImplementedError
-        # if with_versions:
-        #     return dict(self._param_dict)
-        # else:
-        #     return self._param_dict[self._version]
+    def state_dict(self, with_versions=False) -> BendingWrapperStateDict:
+        state_dict = BendingWrapperStateDict(with_versions=with_versions)
+        for k, v in self.bended_modules:
+            state_dict[k] = v.state_dict(with_versions=with_versions)
+        return state_dict
 
     @_import_to_interface
     def bended_state_dict(self):
-        raise NotImplementedError
+        state_dict = BendingWrapperStateDict(with_versions=False)
+        for k, v in self.bended_modules:
+            state_dict[k] = v.bended_state_dict()
+        return state_dict
 
     @_import_to_interface
     def bend(self, callback, *params, **kwargs):
@@ -235,12 +245,5 @@ def wrapmethod(classname, methodname):
 def wrapmodule(obj):
     setattr(obj, "__torchbend_wrap__", True)
     # obj.forward = torch.fx.wrap(obj.forward)
-
-
-
-
-
-
-
 
 __all__ = ['BendingWrapper', 'wrapmethod', 'wrapmodule']

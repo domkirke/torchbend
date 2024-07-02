@@ -13,7 +13,7 @@
     - [✕︎] model analysis UI
 - [✕︎] script generative models with JIT additional bending inputs (for use in [nn~] for example)
 
-`torchbend` provides end-to-end examples for the following libraries:
+`torchbend` provides end-to-end examples and interfaces for the following libraries:
 
 | Model                | Weights | Activation | Script |
 | :------------------- | :-----: | :--------: | :----: |
