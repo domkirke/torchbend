@@ -73,6 +73,7 @@ def bend_graph(graph, callbacks, verbose=False):
         new_node.args = tuple(new_args)
         env[node.name] = new_node
         # add bending layer to graph
+        #TODO using inserting_after??
         if node.name in callbacks:
             if verbose:
                 print('bending activation %s with function %s...'%(node.name, callbacks[node.name]))

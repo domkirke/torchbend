@@ -3,6 +3,7 @@ import torchaudio
 import torch, audiocraft, os, random
 from audiocraft.models import MusicGen, AudioGen
 from .base import Interface
+from ..tracing import BendingWrapper
 from .utils import get_random_hash
 
 
@@ -18,6 +19,10 @@ class BendedMusicGen(Interface):
         model = self.get_pretrained(*args, **kwargs)
         # init interfaces
         super(BendedMusicGen, self).__init__(model)
+
+    def _bend_model(self, model):
+        self._model = BendingWrapper(model)
+        self._import_wrapper_methods(model)
 
     def get_pretrained(self, *args, **kwargs):
         model = MusicGen.get_pretrained(*args, **kwargs)
@@ -56,6 +61,10 @@ class BendedMusicGen(Interface):
 class BendedAudioGen(BendedMusicGen):
 
     _imported_callbacks_ = ['generate', 'generate_continuation']
+
+    def _bend_model(self, model):
+        self._model = BendingWrapper(model)
+        self._import_wrapper_methods(model)
 
     def get_pretrained(self, *args, **kwargs):
         model = AudioGen.get_pretrained(*args, **kwargs)
