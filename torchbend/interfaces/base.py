@@ -1,4 +1,5 @@
 from inspect import ismethod
+import abc
 from ..tracing import BendingWrapper
 
 def wrap_model_method(ext, func):
@@ -21,8 +22,7 @@ class Interface(object):
     def _getmodel_(self):
         return self._model
     def _setmodel_(self, model):
-        self._model = model
-        self._bend_model()
+        self._bend_model(model)
     def _delmodel_(self):
         raise BendingInterfaceException('cannot delete model of interface')
     model = property(_getmodel_, _setmodel_, _delmodel_)
@@ -43,6 +43,6 @@ class Interface(object):
                 if getattr(attr, "__import_to_interface"):
                     setattr(self, attr_name, wrap_model_method(self._model, attr_name))
                         
-    def _bend_model(self):
-        self._model = BendingWrapper(self._model)
-        self._import_wrapper_methods(self._model)
+    @abc.abstractmethod
+    def _bend_model(self, model):
+        pass

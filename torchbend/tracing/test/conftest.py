@@ -7,7 +7,7 @@ libpath = os.path.abspath((os.path.join(os.path.dirname(__file__), "..", "..", "
 if libpath not in sys.path:
     sys.path.append(libpath)
 import torchbend as tb
-from test_modules import Foo
+from test_modules import Foo, RAVETest
 
 
 class StateDictException():
@@ -101,4 +101,21 @@ modules_to_test = [
 
                      )}
                     )
+]
+
+modules_to_compare = [
+     ModuleTestConfig(Foo, 
+                     (tuple(), dict()), 
+                     {'forward_nodist': (
+                         tuple(),
+                         {"x": torch.randn(1, 1, 128)},
+                     )}
+     ), 
+     ModuleTestConfig(RAVETest,
+                      (tuple(), dict()),
+                      {'forward': (
+                          tuple(),
+                          {'x': torch.randn(1, 1, 4096)},
+                      )}
+    )
 ]

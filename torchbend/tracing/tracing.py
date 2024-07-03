@@ -5,7 +5,7 @@ import torch
 from typing import Union, Union,  Callable, Optional, Any, Dict
 from torch._C import ScriptObject  # type: ignore[attr-defined]
 from torch.fx._symbolic_trace import _proxyable_classes
-from torch.fx.proxy import Proxy, TraceError
+from torch.fx.proxy import Proxy, TraceError, TracerBase
 from torch.fx.node import Argument, Node
 from .. import distributions as dist
 from .proxy import BendingProxy, ShapeAttribute
@@ -13,8 +13,45 @@ from .input import Inputs
 from ..utils import checklist
 from .utils import dist_to_tensor
 
-DEBUG = True
 
+"""
+torchbend's tracing philosophy :
+
+default torch.fx is limited in several aspects, often chosen by design to extend the flexibility of the framework.
+
+However, for our purpose, we would like to reduce this flexibility and improve the capabilities of the tracer, to 
+open graph bending to most neural networks, at the cost of generality (a little like scripting for instance.)
+
+# Trace with execution.
+
+to this, we couple graph tracing with actual execution of the graph, allowing to populate the actual size of the
+inner activations. This allows to access proxies shapes in real-time, and hence to significantly open the diversity
+of traced code (for exemple, no more bugs with things like "n_dim = x.shape[2]".) This is at the cost that graph is
+conceived for a specified input shape, and possibly values for control flow (see below).
+
+This done by the overloading of the proxy() function, that is called when a node is created. 
+
+
+
+# Increased traced types
+
+## Distributions
+torch.fx was also not working with torch.Distribution. We redesigned our own Distribution, as they were not scriptable either,
+and made them scriptable by adding an "as_tuple" callback that allows dynamic Distribution instantiation through call_function call from
+a given and fixed set of args.
+
+## Control flow
+??
+
+## Loops 
+?? (idea : making a "LoopProxy" that would allow a maximum lenght, and specific graphing)
+
+
+"""
+
+
+
+DEBUG = True
 
 class ActivationProperties():
     def __init__(self, **kwargs):
@@ -28,7 +65,6 @@ class BendingTracer(torch.fx.Tracer):
     def __init__(self, *args, func="forward", **kwargs):
         super(BendingTracer, self).__init__(*args, **kwargs)
         self.traced_func_name = func 
-    
 
     def _check_input_values(self, root, inputs):
         signature = inspect.Signature.from_callable(getattr(root, self.traced_func_name))
@@ -44,8 +80,6 @@ class BendingTracer(torch.fx.Tracer):
                 print('[Warning] found value for input %s, but not in signature for function %s'%(i, self.traced_func_name))
         return inputs
 
-
-
     def trace(
         self,
         root: Union[torch.nn.Module, Callable[..., Any]],
@@ -58,9 +92,17 @@ class BendingTracer(torch.fx.Tracer):
         # kwargs = {}
         inputs.update_(**concrete_args)
         inputs = self._check_input_values(root, inputs)
+
+        # initialize all input args of the function, both from concrete_args and inputs
+        # TODO no difference between concrete_args and inputs? remove concrete_args?    
+        
         self._input_args = inputs.update_(**concrete_args)
+
         self._values = {k.replace('.', '_'): v.data for k, v in root.named_parameters()}
+
+        # concrete_flow_steps is used for boolean control flow that stay fixed during tracing.
         self._concrete_flow_steps = []
+
         self._model = root
         self._activations = {}
         graph = super(BendingTracer, self).trace(root, concrete_args)
@@ -69,6 +111,30 @@ class BendingTracer(torch.fx.Tracer):
 
     ## ____________________________________________________________________________________________________________________
     ## CREATE ARGUMENTS
+
+
+
+    """
+    create_arg callback is called when it is needed to prepare values as arguments for nodes.
+
+    from original torch.fx : 
+    '''
+    By default, the behavior includes:
+
+        #. Iterate through collection types (e.g. tuple, list, dict) and recursively
+           call ``create_args`` on the elements.
+        #. Given a Proxy object, return a reference to the underlying IR ``Node``
+        #. Given a non-Proxy Tensor object, emit IR for various cases:
+            * For a Parameter, emit a ``get_attr`` node referring to that Parameter
+            * For a non-Parameter Tensor, store the Tensor away in a special
+              attribute referring to that attribute.
+    '''
+
+    here we extend as follows : 
+        - nothing hehehe
+
+    """
+
 
     def create_arg(self, a: Any) -> "Argument":
         if DEBUG: print('creating arg for', a)
@@ -115,7 +181,6 @@ class BendingTracer(torch.fx.Tracer):
         elif type(a) in _proxyable_classes:
             # This is an instance of a proxyable class for which we did not
             # witness its construction. Intern this as a constant attribute
-
             i = 0
             while True:
                 qualname = f"_{a.__class__.__name__}_constant_{i}"
@@ -125,10 +190,30 @@ class BendingTracer(torch.fx.Tracer):
             setattr(self.root, qualname, a)
 
             return self.create_node("get_attr", qualname, (), {})
-        else:
-            return super().create_arg(a)
-    
+        return TracerBase.create_arg(self, a)
+ 
+ 
+
+    def getattr(self, attr: str, attr_val: Any, parameter_proxy_cache: Dict[str, Any]):
+        # if isinstance(attr_val, torch.nn.Parameter):
+        #     # by default, torch.fx creates a proxy for model parameters. 
+        #     # this, however, make shape propagation impossible during tracing.
+        #     #TODO ayayayay
+        #     return attr_val
+        # else:
+            return super(BendingTracer, self).getattr(attr, attr_val, parameter_proxy_cache)
+
+    ## ____________________________________________________________________________________________________________________
+    ## CALLBACKS
+
+
+    """
+    Below are implemented executions corresponding to graph tracing. This way, each time a node is created,
+    it also executed using the callbacks below to allow shape propagation at tracing. 
+    """
+          
     def _replace_args(self, args):
+        """replaces proxy and nodes with actual values."""
         new_args = list(args)
         for i, n in enumerate(args):
             if isinstance(n, (tuple, list)):
@@ -136,21 +221,22 @@ class BendingTracer(torch.fx.Tracer):
             elif isinstance(n, (Proxy, Node)):
                 if n.name in self._values:
                     new_args[i] = self._values[n.name]
+                elif hasattr(n, "concrete_value"):
+                    if n.concrete_value:
+                        new_args[i] = n.concrete_value
         return type(args)(new_args)
-
-
-    def getattr(self, attr: str, attr_val: Any, parameter_proxy_cache: Dict[str, Any]):
-        if isinstance(attr_val, torch.nn.Parameter):
-            # by default, torch.fx creates a proxy for model parameters. 
-            # this, however, make shape propagation impossible during tracing.
-            return attr_val
-        else:
-            return super(BendingTracer, self).getattr(attr, attr_val, parameter_proxy_cache)
-
-    ## ____________________________________________________________________________________________________________________
-    ## CALLBACKS
+    
+    def _replace_kwargs(self, kwargs):
+        """replaces proxy and nodes with actual values."""
+        kwargs = dict(kwargs)
+        for k, n in kwargs.items():
+            if isinstance(n, (Proxy, Node)):
+                if n.name in self._values:
+                    kwargs[k] = self._values[n.name]
+        return kwargs
 
     def placeholder(self, n: Node) -> Any:
+        """returns the actual value of a placeholder's input"""
         if n.name in self._input_args:
             return self._input_args[n.name]
         else:
@@ -160,15 +246,14 @@ class BendingTracer(torch.fx.Tracer):
                 return self._input_args[names[0]]
             else:
                 return None
-
     
     def get_attr(self, n: Node) -> Any:
-        args = tuple(n.args)
         args = self._replace_args(n.args)
         if n.name in self._values:
             if len(args) > 0:
                 return getattr(self._values[n.target], args[0])
             else:
+                # this happends when....? (it occurs, check why)
                 return self._values[n.name]
         else:
             return 
@@ -206,10 +291,19 @@ class BendingTracer(torch.fx.Tracer):
         module = self._get_unwrapped_submodule(self._model, target)
         if DEBUG: print('calling module', n, n.target, n.args)
         return type(module).forward(module, *args, **kwargs)
+
+    def call_function_run(self, n: Node) -> Any:
+        target = n.target
+        args = self._replace_args(n.args)
+        kwargs = self._replace_kwargs(n.kwargs)
+        if DEBUG: print('calling function', n, n.target, n.args)
+        return target(*args, **kwargs)
     
     def run_node(self, n):
         if n.op == "call_module":
             return self.call_module_run(n)
+        elif n.op == "call_function":
+            return self.call_function_run(n)
         else:
             return getattr(self, n.op)(n)
 
@@ -220,6 +314,17 @@ class BendingTracer(torch.fx.Tracer):
     ## NODES
 
     def create_node(self, kind : str, target, args, kwargs, name = None, type_expr = None, dist_args = {}, concrete_value = None) -> Node:
+        """
+        original torch.fx documentation : 
+            '''
+            Inserts a graph node given target, args, kwargs, and name.
+
+            This method can be overridden to do extra checking, validation, or
+            modification of values used in node creation. For example, one might
+            want to disallow in-place operations from being recorded.
+            '''
+        """
+
         if DEBUG: print('creating node', kind, target, args, kwargs, name)
         # create node
         if kind == "output":
@@ -234,10 +339,27 @@ class BendingTracer(torch.fx.Tracer):
     ## PROXIES
 
     def create_proxy(self, kind, target, args, kwargs, name=None, type_expr=None, proxy_factory_fn=None):
+        """
+        original torch.fx documentation : 
+            '''
+            Create a Node from the given arguments, then return the Node
+            wrapped in a Proxy object.
+
+            If kind = 'placeholder', then we're creating a Node that
+            represents the parameter of a function. If we need to encode
+            a default parameter, we use the ``args`` tuple. ``args`` is
+            otherwise empty for ``placeholder`` Nodes.
+            '''
+        """
         if DEBUG: print("creating proxy : ", kind, target, args, kwargs, name)
         return super().create_proxy(kind, target, args, kwargs, name=name, type_expr=type_expr, proxy_factory_fn=proxy_factory_fn)
 
     def proxy(self, node: Node) -> 'Proxy':
+        """
+        this is the default callback to call a proxy after the node creation, if not specified
+        with node_factory when calling create_proxy.
+        This is where we record various activations shapes, and corresponding values. 
+        """
         if DEBUG: print("creating proxy for node : ", node)
         # proxys are "empty values" that are populated among tracing.
         if node.op == "placeholder":
@@ -247,6 +369,7 @@ class BendingTracer(torch.fx.Tracer):
                 out = node.concrete_value
             else: 
                 out = self.run_node(node)
+
         self._values[node.name] = out
         shape = self._get_shape(out)
         self._activations[node.name] = ActivationProperties(op=node.op, shape=shape)
@@ -254,6 +377,12 @@ class BendingTracer(torch.fx.Tracer):
         return proxy
     
     def _create_proxy_for_dist(self, a):
+        """
+        this is where we override creation of distribution, by making a proxy with call_function. 
+        arguments have been previously parsed using an "as_tuple" code, and given as arguments for object creation.
+        """
+
+        #TODO i don't remember why I did if/elif for each type, I remember this has to do with scripting. Let's check taht
         if isinstance(a, dist.Bernoulli):
             a = a.as_tuple()
             a = self.create_proxy("call_function", dist.Bernoulli, args=a, kwargs={}, name=f"_dist_Bernoulli_{self._get_dist_count('Bernoulli')}")
@@ -301,14 +430,6 @@ class BendingTracer(torch.fx.Tracer):
             a = self.create_node("call_function", dist_to_tensor(a.target), args=(a,), kwargs = dist_args, name=a.name+"_tensor")#, type_expr="torch.Tensor")
             type_expr = None
         return a, type_expr
-
-    def _replace_kwargs(self, kwargs):
-        kwargs = dict(kwargs)
-        for k, n in kwargs.items():
-            if isinstance(n, (Proxy, Node)):
-                if n.name in self._values:
-                    kwargs[k] = self._values[n.name]
-        return kwargs
     
     def _get_shape(self, x):
         if torch.is_tensor(x):

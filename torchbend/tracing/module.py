@@ -98,6 +98,7 @@ class BendedModule(object):
         self._bended_activations[func] = dict()
         if func != "forward":
             self._register_forward_call(func)
+        return self._graphs[func]
     
     # parameters
     def parameters(self):
