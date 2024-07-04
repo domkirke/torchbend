@@ -14,7 +14,8 @@ class Normal(BendingCallback):
     def __setstate__(self, obj):
         self.__dict__.update(obj)
         self.generator = torch.Generator()
-        self.generator.manual_seed(obj.get('seed'))
+        if obj.get('seed'):
+            self.generator.manual_seed(obj.get('seed'))
 
     def __init__(self, std: float = 0.3, seed: int = None, op = "add"):
         super().__init__()

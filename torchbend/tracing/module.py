@@ -11,7 +11,7 @@ from torch.fx.proxy import TraceError
 from typing import Union , NoReturn
 from .input import Inputs
 from .tracing import BendingTracer
-from .utils import BendingError, get_model_copy, bend_graph, _get_weight_properties
+from .utils import BendingError, get_model_copy, bend_graph, _get_weight_properties, _import_to_interface
 from ..utils import checklist
 from ..bending import BendingCallback, CallbackChain
 
@@ -123,6 +123,7 @@ class BendedModule(object):
             raise TraceError('BendedGraph has no weights since module as not been initialized')
         return list(dict(self.module.named_parameters()).keys())
 
+    @_import_to_interface
     def print_weights(self, flt=r".*", out=None):
         """print / export weights"""
         parameters = dict(filter(lambda v: re.match(flt, v[0]), dict(self.named_parameters()).items()))
@@ -151,6 +152,7 @@ class BendedModule(object):
     def is_traced(self, fn):
         return fn in self._graphs
 
+    @_import_to_interface
     def print_activations(self, fn="forward", op=None, flt=r".*", out=None):
         activations = self.activations(fn)
         if op is not None:
@@ -259,12 +261,14 @@ class BendedModule(object):
     def _bend_activation(self, parameter, callback, fn="forward"):
         if callback not in self._bending_callbacks:
             self._bending_callbacks.append(callback)
+        if fn not in self._bended_activations: self._bended_activations[fn] = {}
         self._bended_activations[fn][parameter] = self._bended_activations[fn].get(parameter, []) + [callback]
         try: 
             callback.add_bending_target(parameter, self.activation_shape(parameter, fn=fn))
         except Exception as e:
             print('Cannot bend activation %s with callback %s.\nException : %s\n Proceeding'%(parameter, callback, e))
 
+    @_import_to_interface
     def bend(self, callback, *params, fn="forward", verbose=False):
         assert isinstance(callback, BendingCallback), "callback must be a BendingCallback instance"
         target_params = self._resolve_parameters(*params)
@@ -283,23 +287,35 @@ class BendedModule(object):
             if verbose: 
                 print('bending activation %s with %s...'%(activation, callback))
 
-    def bend_(self, *args, **kwargs):
+    @_import_to_interface
+    def bend_(self, *args, fn="forward", **kwargs):
         self.bend(*args, **kwargs)
         self._module = self.bend_module()
+        if self._graphs.get(fn):
+            self._graphs[fn+"_orig"] = self._graphs[fn]
+            self._graphs[fn] = self.bend_graph(fn)
         self._reset_bending()
 
     def _reset_bending(self):
         self._bending_callbacks = []
         self._bended_params = {}
-        self._bended_activations = {}
+        self._bended_activations = {k: {} for k in self._bended_activations.keys()}
 
+    @_import_to_interface
     def reset(self, version=None):
         self._reset_bending()
+        for fn in list(self._graphs.keys()):
+            if  fn+"_orig" not in self._graphs:
+                print('[Warning] could not recover graph for method %s'%fn)
+                continue
+            self._graphs[fn] = self._graphs[fn+"_orig"]
+            del self._graphs[fn+"_orig"]
+        #TODO : callbacks are in modules for activations, handle it in proper way
         if version is None:
-            self._module.load_state_dict(self.state_dict(True)[self.version])
+            self._module.load_state_dict(self.state_dict(True)[self.version], strict=False)
         else:
             self.version = version
-            self._module.load_state_dict(self.state_dict(True)[version])
+            self._module.load_state_dict(self.state_dict(True)[version], strict=False)
 
     # callbacks
     def forward(self, *args, **kwargs):

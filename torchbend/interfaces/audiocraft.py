@@ -22,7 +22,7 @@ class BendedMusicGen(Interface):
 
     def _bend_model(self, model):
         self._model = BendingWrapper(model)
-        self._import_wrapper_methods(model)
+        self._import_methods(model)
 
     def get_pretrained(self, *args, **kwargs):
         model = MusicGen.get_pretrained(*args, **kwargs)
@@ -62,9 +62,6 @@ class BendedAudioGen(BendedMusicGen):
 
     _imported_callbacks_ = ['generate', 'generate_continuation']
 
-    def _bend_model(self, model):
-        self._model = BendingWrapper(model)
-        self._import_wrapper_methods(self._model)
 
     def get_pretrained(self, *args, **kwargs):
         model = AudioGen.get_pretrained(*args, **kwargs)

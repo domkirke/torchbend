@@ -1,6 +1,6 @@
 from inspect import ismethod
 import abc
-from ..tracing import BendingWrapper
+from ..tracing import BendingWrapper, BendedModule
 
 def wrap_model_method(ext, func):
     def wrapped_function(*args, **kwargs):
@@ -33,8 +33,8 @@ class Interface(object):
                 assert "method %s not present in base class %s"%(cb, type(self._model))
             setattr(self, cb, wrap_model_method(self._model, cb))
 
-    def _import_wrapper_methods(self, model):
-        assert isinstance(model, BendingWrapper)
+    def _import_methods(self, model):
+        assert isinstance(model, (BendingWrapper, BendedModule))
         for attr_name in dir(model):
             attr = getattr(model, attr_name)
             if ismethod(attr) and (hasattr(attr,"__import_to_interface")):
@@ -46,3 +46,5 @@ class Interface(object):
     @abc.abstractmethod
     def _bend_model(self, model):
         pass
+
+    

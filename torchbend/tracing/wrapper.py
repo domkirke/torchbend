@@ -6,7 +6,7 @@ import re
 from torch.fx.proxy import TraceError
 from typing import Union, Callable, Type, Tuple
 from .module import BendedModule
-from .utils import _get_weight_properties
+from .utils import _get_weight_properties, _import_to_interface
 from .tracing import BendingTracer
 from .input import Inputs
 from collections import UserDict
@@ -47,9 +47,6 @@ def extract_objs_from_type(obj, obj_type):
             target_objs[attr] = attr_obj
     return target_objs
 
-def _import_to_interface(fn):
-    fn.__import_to_interface = True
-    return fn
 
 
 class BendingWrapper(object):

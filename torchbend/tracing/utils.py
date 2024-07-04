@@ -42,7 +42,8 @@ def get_model_copy(model, copy_parameters=False):
         if attr in __COPY_HOOKS:
             hook_dict = copy.copy(getattr(model_copy, attr))
             for k in hook_dict.keys():
-                hook_dict[k].module = weakref.ref(model_copy)
+                # hook_dict[k].module = weakref.ref(model_copy)
+                hook_dict[k].module = lambda: model_copy
             setattr(model_copy, attr, hook_dict)
         elif attr in __COPY_LIST: 
             setattr(model_copy, attr, getattr(model_copy, attr).copy())
@@ -149,5 +150,10 @@ def _get_weight_properties(args):
        meanval = torch.nan
        stdval = torch.nan    
     return [name, value.shape, value.dtype, minval, maxval, meanval, stdval]
+
+
+def _import_to_interface(fn):
+    fn.__import_to_interface = True
+    return fn
 
 
