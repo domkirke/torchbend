@@ -39,7 +39,7 @@ class Interface(object):
             attr = getattr(model, attr_name)
             if ismethod(attr) and (hasattr(attr,"__import_to_interface")):
                 if hasattr(self, attr_name):
-                    print('[Warning]: method %s seems in conflict with original module method. May cause discrepencies')
+                    print('[Warning]: method %s seems in conflict with original module method. May cause discrepencies'%attr_name)
                 if getattr(attr, "__import_to_interface"):
                     setattr(self, attr_name, wrap_model_method(self._model, attr_name))
                         

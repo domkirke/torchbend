@@ -31,7 +31,7 @@ class Permute(BendingCallback):
     def _init_permute_(self, name, shape):
         assert shape is not None, "mask preinit must be given target shape"
         buffer_name = "prm_"+name.replace('.', '_')
-        perm = torch.randperm(shape[self.dim])
+        perm = torch.randperm(shape[self.dim], generator=self.generator)
         self.register_buffer(buffer_name, perm.int())
 
     def add_bending_target(self, name, shape=None):

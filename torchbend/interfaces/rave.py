@@ -1,6 +1,6 @@
 import torch
 import torchaudio
-from typing import LiteralString, Union, Optional
+from typing import Union, Optional
 import rave as ravelib
 from .base import Interface
 from ..tracing import BendedModule
@@ -50,20 +50,20 @@ class BendedRAVE(Interface):
     def write_audio(self, path, audio):
         torchaudio.save(path, audio, self.sample_rate)
 
-    def forward(self, x: Union[torch.Tensor, LiteralString], out: Optional[LiteralString] = None):
+    def forward(self, x: Union[torch.Tensor, str], out: Optional[str] = None):
         if isinstance(x, str):
             x = self.load_audio(x)
         audio = self._model.forward(x)
         if out is not None: self.write_audio(out, audio[0])
         return audio
 
-    def encode(self, x: Union[torch.Tensor, LiteralString]):
+    def encode(self, x: Union[torch.Tensor, str]):
         if isinstance(x, str):
             x = self.load_audio(x)
         decoder_out = self._model.encode(x)
         return self._model.encoder.reparametrize(decoder_out)[:2][0]
 
-    def decode(self, z: torch.Tensor, out: Optional[LiteralString] = None):
+    def decode(self, z: torch.Tensor, out: Optional[str] = None):
         audio = self._model.decode(z)
         if out is not None: self.write_audio(out, audio[0])
         return audio

@@ -21,7 +21,7 @@ class Scale(BendingCallback):
         self.scale = scale
 
     def __repr__(self):
-        return f"Bias(scale={self.scale:.4f})"
+        return f"Scale(scale={self.scale:.4f})"
 
     def forward(self, param: torch.Tensor, name: Optional[str] = None):
         return param * self.scale

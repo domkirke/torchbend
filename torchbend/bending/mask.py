@@ -11,6 +11,7 @@ class Mask(BendingCallback):
         del out_dict["generator"]
         return out_dict
 
+
     def __setstate__(self, obj):
         self.__dict__.update(obj)
         self.generator = torch.Generator()
