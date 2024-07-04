@@ -1,18 +1,29 @@
 import re, copy
+from enum import Enum
 import inspect
 import sys
 import torch
-from typing import Union, Union,  Callable, Optional, Any, Dict
+import functools
+from types import FunctionType
+from typing import Union, Union,  Callable, Optional, Any, Dict, List, Type
 from torch._C import ScriptObject  # type: ignore[attr-defined]
-from torch.fx._symbolic_trace import _proxyable_classes
-from torch.fx.proxy import Proxy, TraceError, TracerBase
+from torch.fx._symbolic_trace import _proxyable_classes, Tracer, _Patcher, _autowrap_check, _patch_wrapped_functions
+from torch.fx.proxy import Proxy, TraceError, TracerBase, ParameterProxy
 from torch.fx.node import Argument, Node
+from torch.fx.graph import Graph
 from .. import distributions as dist
 from .proxy import BendingProxy, ShapeAttribute
 from .input import Inputs
 from ..utils import checklist
 from .utils import dist_to_tensor
 
+DEBUG = True
+_orig_module_call: Callable = torch.nn.Module.__call__
+_orig_module_getattr: Callable = torch.nn.Module.__getattr__
+_is_fx_tracing_flag = False
+
+def is_fx_tracing():
+    return _is_fx_tracing_flag
 
 """
 torchbend's tracing philosophy :
@@ -51,12 +62,38 @@ a given and fixed set of args.
 
 
 
-DEBUG = True
 
 class ActivationProperties():
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
             setattr(self, k, v)
+
+class TracingState(Enum):
+    TRACING = 0
+    RUNNING = 1
+
+class TracingContext():
+    
+    count = 0
+    def __init__(self, tracer: Tracer, state: TracingState):
+        self._tracer = tracer
+        self._state = state
+        self._id = TracingContext.get_id()
+
+    @property
+    def state(self):
+        return self._state
+
+    @classmethod
+    def get_id(cls):
+        cls.count += 1
+        return int(cls.count)
+
+    def __enter__(self):
+        self._tracer.set_current_context(self)
+
+    def __exit__(self, *args, **kwargs):
+        self._tracer.remove_context(self)
 
 
 class BendingTracer(torch.fx.Tracer):
@@ -65,6 +102,9 @@ class BendingTracer(torch.fx.Tracer):
     def __init__(self, *args, func="forward", **kwargs):
         super(BendingTracer, self).__init__(*args, **kwargs)
         self.traced_func_name = func 
+        self._active_contexts = []
+        self._current_context = None
+
 
     def _check_input_values(self, root, inputs):
         signature = inspect.Signature.from_callable(getattr(root, self.traced_func_name))
@@ -85,6 +125,7 @@ class BendingTracer(torch.fx.Tracer):
         root: Union[torch.nn.Module, Callable[..., Any]],
         inputs: Inputs, 
         concrete_args: Optional[Dict[str, Any]] = {},
+        return_out: bool = False, 
         **kwargs
     ):
         # how could we prevent model recursion when shape cannot be fetched? making a special object that
@@ -105,9 +146,15 @@ class BendingTracer(torch.fx.Tracer):
 
         self._model = root
         self._activations = {}
-        graph = super(BendingTracer, self).trace(root, concrete_args)
-        del self._values, self._input_args
-        return graph
+        graph = self._trace(root, concrete_args)
+        if return_out:
+            out_node = list(filter(lambda x: x.op == "output", self.graph.nodes))[0]
+            outs = tuple([self._values[o.name] for o in out_node.args])
+            del self._values, self._input_args
+            return graph, outs
+        else:
+            del self._values, self._input_args
+            return graph
 
     ## ____________________________________________________________________________________________________________________
     ## CREATE ARGUMENTS
@@ -192,16 +239,6 @@ class BendingTracer(torch.fx.Tracer):
             return self.create_node("get_attr", qualname, (), {})
         return TracerBase.create_arg(self, a)
  
- 
-
-    def getattr(self, attr: str, attr_val: Any, parameter_proxy_cache: Dict[str, Any]):
-        # if isinstance(attr_val, torch.nn.Parameter):
-        #     # by default, torch.fx creates a proxy for model parameters. 
-        #     # this, however, make shape propagation impossible during tracing.
-        #     #TODO ayayayay
-        #     return attr_val
-        # else:
-            return super(BendingTracer, self).getattr(attr, attr_val, parameter_proxy_cache)
 
     ## ____________________________________________________________________________________________________________________
     ## CALLBACKS
@@ -297,7 +334,8 @@ class BendingTracer(torch.fx.Tracer):
         args = self._replace_args(n.args)
         kwargs = self._replace_kwargs(n.kwargs)
         if DEBUG: print('calling function', n, n.target, n.args)
-        return target(*args, **kwargs)
+        with self.create_context(TracingState.RUNNING):
+            return target(*args, **kwargs)
     
     def run_node(self, n):
         if n.op == "call_module":
@@ -375,35 +413,17 @@ class BendingTracer(torch.fx.Tracer):
         self._activations[node.name] = ActivationProperties(op=node.op, shape=shape)
         proxy = BendingProxy(node, self, value=out)
         return proxy
-    
-    def _create_proxy_for_dist(self, a):
-        """
-        this is where we override creation of distribution, by making a proxy with call_function. 
-        arguments have been previously parsed using an "as_tuple" code, and given as arguments for object creation.
-        """
 
-        #TODO i don't remember why I did if/elif for each type, I remember this has to do with scripting. Let's check taht
-        if isinstance(a, dist.Bernoulli):
-            a = a.as_tuple()
-            a = self.create_proxy("call_function", dist.Bernoulli, args=a, kwargs={}, name=f"_dist_Bernoulli_{self._get_dist_count('Bernoulli')}")
-        elif isinstance(a, dist.Normal):
-            a = a.as_tuple()
-            a = self.create_proxy("call_function", dist.Normal, args=a, kwargs={}, name=f"_dist_Normal_{self._get_dist_count('Normal')}")
-        elif isinstance(a, dist.Categorical):
-            a = a.as_tuple()
-            a = self.create_proxy("call_function", dist.Categorical, args=a, kwargs={}, name=f"_dist_Categorical_{self._get_dist_count('Categorical')}")
-        else:
-            a = dist.convert_from_torch(a)
-            return self._create_proxy_for_dist(a)
-        return a
 
-    def to_bool(self, obj: 'BendingProxy') -> bool:
-        if obj._value is not None:
-            # trace steps where control flow was made concrete
-            self._concrete_flow_steps.append(obj)
-            return bool(obj._value)
-        else:
-            raise TraceError('symbolically traced variables cannot be used as inputs to control flow')
+    def getattr(self, attr: str, attr_val: Any, parameter_proxy_cache: Dict[str, Any]):
+        # if isinstance(attr_val, torch.nn.Parameter):
+        #     # by default, torch.fx creates a proxy for model parameters. 
+        #     # this, however, make shape propagation impossible during tracing.
+        #     #TODO ayayayay
+        #     return attr_val
+        # else:
+        # with self.create_context(TracingState.RUNNING):
+        return super(BendingTracer, self).getattr(attr, attr_val, parameter_proxy_cache)
 
 
     ## ____________________________________________________________________________________________________________________
@@ -458,6 +478,196 @@ class BendingTracer(torch.fx.Tracer):
             if re.match(target.replace('.', '_'), k):
                 matching_keys[re.sub(target+'_', '', k).replace('_', '.')] = v
         return matching_keys
+
+    def _create_proxy_for_dist(self, a):
+        """
+        this is where we override creation of distribution, by making a proxy with call_function. 
+        arguments have been previously parsed using an "as_tuple" code, and given as arguments for object creation.
+        """
+
+        #TODO i don't remember why I did if/elif for each type, I remember this has to do with scripting. Let's check taht
+        if isinstance(a, dist.Bernoulli):
+            a = a.as_tuple()
+            a = self.create_proxy("call_function", dist.Bernoulli, args=a, kwargs={}, name=f"_dist_Bernoulli_{self._get_dist_count('Bernoulli')}")
+        elif isinstance(a, dist.Normal):
+            a = a.as_tuple()
+            a = self.create_proxy("call_function", dist.Normal, args=a, kwargs={}, name=f"_dist_Normal_{self._get_dist_count('Normal')}")
+        elif isinstance(a, dist.Categorical):
+            a = a.as_tuple()
+            a = self.create_proxy("call_function", dist.Categorical, args=a, kwargs={}, name=f"_dist_Categorical_{self._get_dist_count('Categorical')}")
+        else:
+            a = dist.convert_from_torch(a)
+            return self._create_proxy_for_dist(a)
+        return a
+
+    def to_bool(self, obj: 'BendingProxy') -> bool:
+        if obj._value is not None:
+            # trace steps where control flow was made concrete
+            self._concrete_flow_steps.append(obj)
+            return bool(obj._value)
+        else:
+            raise TraceError('symbolically traced variables cannot be used as inputs to control flow')
+
+    ## ____________________________________________________________________________________________________________________
+    ##  overriden trace function
+
+    def set_current_context(self, context):
+        self._active_contexts.append(context)
+        self._current_context = context
+
+    def remove_context(self, context):
+        try:
+            ctx_idx = self._active_contexts.index(context)
+            del self._active_contexts[ctx_idx]
+        except ValueError:
+            pass
+        if len(self._active_contexts) > 0:
+            self._current_context = self._active_contexts[-1]
+        else:
+            self._current_context = None
+
+    def create_context(self, state):
+        return TracingContext(self, state)
+
+    def get_current_context_state(self):
+        if self._current_context is None:
+            return TracingState.TRACING
+        else:
+            return self._current_context.state
+
+    def _trace(
+        self,
+        root: Union[torch.nn.Module, Callable[..., Any]],
+        concrete_args: Optional[Dict[str, Any]] = None,
+    ) -> Graph:
+        """
+        Trace ``root`` and return the corresponding FX ``Graph`` representation. ``root``
+        can either be an ``nn.Module`` instance or a Python callable.
+
+        Note that after this call, ``self.root`` may be different from the ``root`` passed
+        in here. For example, when a free function is passed to ``trace()``, we will
+        create an ``nn.Module`` instance to use as the root and add embedded constants
+        to.
+
+
+        Args:
+
+            root (Union[Module, Callable]): Either a ``Module`` or a function to be
+                traced through. Backwards-compatibility for this parameter is
+                guaranteed.
+            concrete_args (Optional[Dict[str, any]]): Concrete arguments that should
+                not be treated as Proxies. This parameter is experimental and
+                its backwards-compatibility is *NOT* guaranteed.
+
+        Returns:
+
+            A ``Graph`` representing the semantics of the passed-in ``root``.
+        """
+        global _is_fx_tracing_flag
+        old_is_fx_tracing_flag = _is_fx_tracing_flag
+        _is_fx_tracing_flag = True
+        try:
+            if isinstance(root, torch.nn.Module):
+                self.root = root
+
+                assert hasattr(
+                    type(root), self.traced_func_name
+                ), f"traced_func_name={self.traced_func_name} doesn't exist in {type(root).__name__}"
+
+                fn = getattr(type(root), self.traced_func_name)
+                self.root_module_name = root._get_name()
+                self.submodule_paths = {mod: name for name, mod in root.named_modules()}
+            else:
+                self.root = torch.nn.Module()
+                fn = root
+
+            tracer_cls: Optional[Type[Tracer]] = getattr(self, "__class__", None)
+            self.graph = Graph(tracer_cls=tracer_cls)
+            if hasattr(fn, '__code__'):
+                code = fn.__code__
+                self.graph._co_fields = {
+                    'co_name': code.co_name,
+                    'co_filename': code.co_filename,
+                    'co_firstlineno': code.co_firstlineno,
+                }
+
+            # When we encounter a Tensor value that's not a parameter, we look if it
+            # is some other attribute on the model. Construct a dict mapping Tensor
+            # values to the qualified name here for efficiency. This is used downstream
+            # in create_arg
+            self.tensor_attrs: Dict[Union[torch.Tensor, ScriptObject], str] = {}
+
+            def collect_tensor_attrs(m: torch.nn.Module, prefix_atoms: List[str]):
+                for k, v in m.__dict__.items():
+                    if isinstance(v, (torch.Tensor, ScriptObject)):
+                        self.tensor_attrs[v] = ".".join(prefix_atoms + [k])
+                for k, v in m.named_children():
+                    collect_tensor_attrs(v, prefix_atoms + [k])
+
+            collect_tensor_attrs(self.root, [])
+
+            assert isinstance(fn, FunctionType)
+
+            fn_globals = fn.__globals__  # run before it gets patched
+            fn, args = self.create_args_for_root(
+                fn, isinstance(root, torch.nn.Module), concrete_args
+            )
+
+            parameter_proxy_cache: Dict[
+                str, Proxy
+            ] = {}  # Reduce number of get_attr calls
+
+            # Method dispatch on parameters is not recorded unless it's directly used.
+            # Thus, we need to insert a proxy when __getattr__ requests a parameter.
+            @functools.wraps(_orig_module_getattr)
+            def module_getattr_wrapper(mod, attr):
+                attr_val = _orig_module_getattr(mod, attr)
+                if self.get_current_context_state() == TracingState.RUNNING:
+                    return attr_val
+                else:
+                    return self.getattr(attr, attr_val, parameter_proxy_cache)
+
+            @functools.wraps(_orig_module_call)
+            def module_call_wrapper(mod, *args, **kwargs):
+                def forward(*args, **kwargs):
+                    return _orig_module_call(mod, *args, **kwargs)
+
+                _autowrap_check(
+                    patcher,
+                    getattr(getattr(mod, "forward", mod), "__globals__", {}),
+                    self._autowrap_function_ids,
+                )
+                return self.call_module(mod, forward, args, kwargs)
+
+            with _Patcher() as patcher:
+                # allow duplicate patches to support the case of nested calls
+                patcher.patch_method(
+                    torch.nn.Module,
+                    "__getattr__",
+                    module_getattr_wrapper,
+                    deduplicate=False,
+                )
+                patcher.patch_method(
+                    torch.nn.Module, "__call__", module_call_wrapper, deduplicate=False
+                )
+                _patch_wrapped_functions(patcher)
+                _autowrap_check(patcher, fn_globals, self._autowrap_function_ids)
+                for module in self._autowrap_search:
+                    _autowrap_check(
+                        patcher, module.__dict__, self._autowrap_function_ids
+                    )
+                self.create_node(
+                    "output",
+                    "output",
+                    (self.create_arg(fn(*args)),),
+                    {},
+                    type_expr=fn.__annotations__.get("return", None),
+                )
+
+            self.submodule_paths = None
+        finally:
+            _is_fx_tracing_flag = old_is_fx_tracing_flag
+        return self.graph
 
 
 __all__ = ["BendingTracer"]

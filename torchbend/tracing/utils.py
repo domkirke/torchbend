@@ -1,4 +1,5 @@
 import copy
+import weakref
 from collections import OrderedDict
 import torch
 from .. import distributions as dist
@@ -12,9 +13,14 @@ def set_callback(x, env):
 __COPY_LIST = [
     "_parameters",
     "_buffers",
+    "_is_full_backward",
+    "_modules",
+    "_versions"
+]
+
+__COPY_HOOKS = [
     "_backward_pre_hooks",
     "_backward_hooks",
-    "_is_full_backward",
     "_forward_hooks",
     "_forward_hooks_with_kw",
     "_forward_pre_hooks",
@@ -23,8 +29,6 @@ __COPY_LIST = [
     "_load_state_dict_pre_hooks",
     "_state_dict_pre_hooks",
     "_load_state_dict_post_hooks",
-    "_modules",
-    "_versions"
 ]
 
 
@@ -35,7 +39,12 @@ def get_model_copy(model, copy_parameters=False):
     for attr in dir(model_copy):
         if attr == "_modules":
             continue
-        if attr in __COPY_LIST:
+        if attr in __COPY_HOOKS:
+            hook_dict = copy.copy(getattr(model_copy, attr))
+            for k in hook_dict.keys():
+                hook_dict[k].module = weakref.ref(model_copy)
+            setattr(model_copy, attr, hook_dict)
+        elif attr in __COPY_LIST: 
             setattr(model_copy, attr, getattr(model_copy, attr).copy())
 
     if copy_parameters:

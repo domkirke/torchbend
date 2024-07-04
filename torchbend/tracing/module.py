@@ -12,6 +12,7 @@ from typing import Union , NoReturn
 from .input import Inputs
 from .tracing import BendingTracer
 from .utils import BendingError, get_model_copy, bend_graph, _get_weight_properties
+from ..utils import checklist
 from ..bending import BendingCallback, CallbackChain
 
 
@@ -76,7 +77,9 @@ class BendedModule(object):
             return getattr(self.module, attr_name)
 
     def _init_module_(self, module):
+        #TODO Noooo
         self._module = get_model_copy(module, copy_parameters=True)
+        self._module = module
         self._original_module = None
         self._version = self._default_version_key
         self._param_dict = {'_default': {}}
@@ -89,16 +92,21 @@ class BendedModule(object):
     def _register_forward_call(self, func):
         setattr(self, func, types.MethodType(_get_wrapped_module_forward_call(func), self))
     
-    def trace(self, func="forward", *args, **kwargs):
+    def trace(self, func="forward", *args, _return_out=False, **kwargs):
         """Updates inner graph with the target method and inputs"""
         inputs = Inputs(*args, **kwargs)
         tracer = BendingTracer(func=func)
-        self._graphs[func] = tracer.trace(self.module, inputs)
+        tracer_out = tracer.trace(self.module, inputs, return_out=_return_out)
+        graph = tracer_out[0] if _return_out else tracer_out
+        self._graphs[func] = graph
         self._activations[func] = tracer._activations
         self._bended_activations[func] = dict()
         if func != "forward":
             self._register_forward_call(func)
-        return self._graphs[func]
+        if _return_out:
+            return graph, tracer_out[1]
+        else:
+            return graph
     
     # parameters
     def parameters(self):
@@ -143,9 +151,21 @@ class BendedModule(object):
     def is_traced(self, fn):
         return fn in self._graphs
 
-    def print_activations(self, fn="forward"):
-        print(tabulate(map(_get_activations_properties, self.activations(fn).items())))
-        
+    def print_activations(self, fn="forward", op=None, flt=r".*", out=None):
+        activations = self.activations(fn)
+        if op is not None:
+            op = checklist(op)
+            activations = dict(filter(lambda obj: obj[1].op in op, activations.items()))
+        activations = dict(filter(lambda obj: re.match(flt, obj[0]), activations.items()))
+        act_txt = tabulate(map(_get_activations_properties, activations.items()))
+        if out is None:
+            print(act_txt)
+        else:
+            out = pathlib.Path(out)
+            os.makedirs(out.parent, exist_ok=True)
+            with open(out, 'w+') as f:
+                f.write(act_txt)
+
 
     def _resolve_parameters(self, *weights):
         """get valid weight names from a regexp"""
@@ -212,18 +232,19 @@ class BendedModule(object):
         return {k: list(v) for k, v in self._bended_activations[fn].items()}
 
     def bend_module(self, fn="forward"):
-        state_dict = self.bended_state_dict()
-        self._clone_bended_parameters(self.module, self._bended_params)
-        # clone module with deep-copying parameters
-        module = get_model_copy(self.module, copy_parameters=True)
-        # copy target weights, as load_state_dict method replaces in place
-        # loaded bended dict
-        module.load_state_dict(state_dict)
-        # add activation callbacks
-        if self._graphs.get(fn) is not None:
-            for k, v in self.bended_activations(fn).items():
-                setattr(module, k+'_callback', CallbackChain(v))
-        return module
+        with torch.no_grad():
+            state_dict = self.bended_state_dict()
+            self._clone_bended_parameters(self.module, self._bended_params)
+            # clone module with deep-copying parameters
+            module = get_model_copy(self.module, copy_parameters=True)
+            # copy target weights, as load_state_dict method replaces in place
+            # loaded bended dict
+            module.load_state_dict(state_dict)
+            # add activation callbacks
+            if self._graphs.get(fn) is not None:
+                for k, v in self.bended_activations(fn).items():
+                    setattr(module, k+'_callback', CallbackChain(v))
+            return module
 
     def bend_graph(self, fn="forward"):
         return bend_graph(self._graphs[fn], {k: CallbackChain(v) for k, v in self._bended_activations[fn].items()})

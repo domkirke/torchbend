@@ -26,7 +26,7 @@ class BendingProxy(torch.fx.Proxy):
         self._value = value
 
     def __repr__(self):
-        return "ShapedProxy(%s)"%self.node#, value=%s)"%(self.node, self._value if self._value is None else self._value.shape)
+        return "BendingProxy(%s)"%self.node#, value=%s)"%(self.node, self._value if self._value is None else self._value.shape)
 
     def __getattr__(self, k) -> Union[Attribute, Iterable[int]]:
         if k == "shape":
