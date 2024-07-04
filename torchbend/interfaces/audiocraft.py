@@ -64,7 +64,7 @@ class BendedAudioGen(BendedMusicGen):
 
     def _bend_model(self, model):
         self._model = BendingWrapper(model)
-        self._import_wrapper_methods(model)
+        self._import_wrapper_methods(self._model)
 
     def get_pretrained(self, *args, **kwargs):
         model = AudioGen.get_pretrained(*args, **kwargs)

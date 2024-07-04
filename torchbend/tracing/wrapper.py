@@ -151,13 +151,12 @@ class BendingWrapper(object):
             weights.extend([f"{k}.{param}" for param in v.weights])
         return weights
 
-    @property
-    @_import_to_interface
-    def activations(self):
-        activations = []
-        for k, v in self.bended_modules.items():
-            activations.extend([f"{k}.{param}" for param in v.activations])
-        return activations
+    # @_import_to_interface
+    # def activations(self, fn="forward"):
+    #     activations = []
+    #     for k, v in self.bended_modules.items():
+    #         activations.extend([f"{k}.{param}" for param in v.activations()])
+    #     return activations
 
     @_import_to_interface
     def print_weights(self, flt=r".*", out=None):
@@ -182,9 +181,9 @@ class BendingWrapper(object):
             raise BendingWrappingException("module %s is not bended in current wrapper"%target_module)
         return self.bended_modules[target_module].param_shape(".".join(param))
         
-    @_import_to_interface
-    def activation_shape(self, param):
-        raise NotImplementedError
+    # @_import_to_interface
+    # def activation_shape(self, param):
+    #     raise NotImplementedError
 
     @_import_to_interface
     def state_dict(self, with_versions=False) -> BendingWrapperStateDict:
