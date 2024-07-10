@@ -71,13 +71,17 @@ class BendedModule(object):
 
     def __getattr__(self, attr_name):
         if attr_name in dir(self):
-            super(BendedModule, self).__getattribute__(attr_name)
+            return super(BendedModule, self).__getattribute__(attr_name)
         else:
             # import attribute from current module
-            return getattr(self.module, attr_name)
+            attr = getattr(self.module, attr_name)
+            if isinstance(attr, types.MethodType):
+                self._register_forward_call(attr_name)
+                return super(BendedModule, self).__getattribute__(attr_name)
+            else:
+                return attr
 
     def _init_module_(self, module):
-        #TODO Noooo
         self._module = get_model_copy(module, copy_parameters=True)
         self._module = module
         self._original_module = None
@@ -217,11 +221,6 @@ class BendedModule(object):
                     state_dict[k] = bc(v, name=k.replace(".", "_"))
         return state_dict
 
-    def _clone_bended_parameters(self, module, params):
-        """makes copy of internal parameter values of a module"""
-        for p in params:
-            module.get_parameter(p).data = module.get_parameter(p).data.clone()
-
     @property
     def bending_callbacks(self):
         return list(self._bending_callbacks)
@@ -233,13 +232,18 @@ class BendedModule(object):
     def bended_activations(self, fn):
         return {k: list(v) for k, v in self._bended_activations[fn].items()}
 
+    def _clone_bended_parameters(self, module, params):
+        """makes copy of internal parameter values of a module"""
+        for p in params:
+            module.get_parameter(p).set_(module.get_parameter(p).data.clone())
+
     def bend_module(self, fn="forward"):
         with torch.no_grad():
-            state_dict = self.bended_state_dict()
-            self._clone_bended_parameters(self.module, self._bended_params)
-            # clone module with deep-copying parameters
             module = get_model_copy(self.module, copy_parameters=True)
+            state_dict = self.bended_state_dict()
             # copy target weights, as load_state_dict method replaces in place
+            self._clone_bended_parameters(module, self._bended_params)
+            # clone module with deep-copying parameters
             # loaded bended dict
             module.load_state_dict(state_dict)
             # add activation callbacks

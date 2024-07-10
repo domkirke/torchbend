@@ -1,6 +1,6 @@
 import pytest
 import torch
-from conftest import compare_outs
+from torchbend import compare_outs
 
 const_tensor = torch.rand(2, 2)
 
