@@ -98,6 +98,8 @@ class TracingContext():
 
 class BendingTracer(torch.fx.Tracer):
     _dist_count_hash = {}
+    # TODO better handling of this
+    proxy_buffer_attributes = False 
 
     def __init__(self, *args, func="forward", **kwargs):
         super(BendingTracer, self).__init__(*args, **kwargs)
@@ -125,6 +127,7 @@ class BendingTracer(torch.fx.Tracer):
         root: Union[torch.nn.Module, Callable[..., Any]],
         inputs: Inputs, 
         concrete_args: Optional[Dict[str, Any]] = {},
+        proxied_buffers = [],
         return_out: bool = False, 
         **kwargs
     ):
@@ -146,6 +149,7 @@ class BendingTracer(torch.fx.Tracer):
 
         self._model = root
         self._activations = {}
+        self._proxied_buffers = proxied_buffers
         graph = self._trace(root, concrete_args)
         if return_out:
             out_node = list(filter(lambda x: x.op == "output", self.graph.nodes))[0]
@@ -327,7 +331,8 @@ class BendingTracer(torch.fx.Tracer):
         kwargs = self._replace_kwargs(n.kwargs)
         module = self._get_unwrapped_submodule(self._model, target)
         if DEBUG: print('calling module', n, n.target, n.args)
-        return type(module).forward(module, *args, **kwargs)
+        with self.create_context(TracingState.RUNNING):
+            return type(module).forward(module, *args, **kwargs)
 
     def call_function_run(self, n: Node) -> Any:
         target = n.target
@@ -416,14 +421,66 @@ class BendingTracer(torch.fx.Tracer):
 
 
     def getattr(self, attr: str, attr_val: Any, parameter_proxy_cache: Dict[str, Any]):
-        # if isinstance(attr_val, torch.nn.Parameter):
-        #     # by default, torch.fx creates a proxy for model parameters. 
-        #     # this, however, make shape propagation impossible during tracing.
-        #     #TODO ayayayay
-        #     return attr_val
-        # else:
-        # with self.create_context(TracingState.RUNNING):
-        return super(BendingTracer, self).getattr(attr, attr_val, parameter_proxy_cache)
+        """
+        Method that specifies the behavior of this ``Tracer`` when we call getattr
+        on a call to an ``nn.Module`` instance.
+
+        By default, the behavior is to return a proxy value for the attribute. It
+        also stores the proxy value in the ``parameter_proxy_cache``, so that future
+        calls will reuse the proxy rather than creating a new one.
+
+        This method can be overridden to --for example-- not return proxies when
+        querying parameters.
+
+        Args:
+
+            attr (str): The name of the attribute being queried
+            attr_val (Any): The value of the attribute
+            parameter_proxy_cache (Dict[str, Any]): A cache of attr names to proxies
+
+        Return:
+
+            The return value from the getattr call.
+        """
+        def maybe_get_proxy_for_attr(
+            attr_val, collection_to_search, parameter_proxy_cache
+        ):
+            for n, p in collection_to_search:
+                if attr_val is p:
+                    if n not in parameter_proxy_cache:
+                        kwargs = {}
+                        if (
+                            "proxy_factory_fn"
+                            in inspect.signature(self.create_proxy).parameters
+                        ):
+                            kwargs["proxy_factory_fn"] = (
+                                None
+                                if not self.param_shapes_constant
+                                else lambda node: ParameterProxy(
+                                    self, node, n, attr_val
+                                )
+                            )
+                        val_proxy = self.create_proxy("get_attr", n, (), {}, **kwargs)  # type: ignore[arg-type]
+                        parameter_proxy_cache[n] = val_proxy
+                    self._values[attr] = attr_val
+                    return parameter_proxy_cache[n]
+            return None
+
+        if isinstance(attr_val, torch.nn.Parameter):
+            maybe_parameter_proxy = maybe_get_proxy_for_attr(
+                attr_val, self.root.named_parameters(), parameter_proxy_cache
+            )
+            if maybe_parameter_proxy is not None:
+                return maybe_parameter_proxy
+
+        if (self.proxy_buffer_attributes and isinstance(attr_val, torch.Tensor)) or (attr in self._proxied_buffers):
+            maybe_buffer_proxy = maybe_get_proxy_for_attr(
+                attr_val, self.root.named_buffers(), parameter_proxy_cache
+            )
+            if maybe_buffer_proxy is not None:
+                return maybe_buffer_proxy
+
+        return attr_val
 
 
     ## ____________________________________________________________________________________________________________________
@@ -436,7 +493,7 @@ class BendingTracer(torch.fx.Tracer):
         self._dist_count_hash[dist_name] += 1
         return dist_count
     
-    def _check_output_args(self, a, type_expr = None, dist_args = {}):
+    def _check_output_args(self, a, type_expr = None, dist_args = {}, force_tensor_out = False):
         if not isinstance(a, (tuple, list, torch.fx.Node)):
             return a, type_expr
         if isinstance(a, (tuple, list)):
@@ -447,17 +504,23 @@ class BendingTracer(torch.fx.Tracer):
                 assert len(type_expr) == len(a)
             return tuple(zip(*[self._check_output_args(a[i], type_expr=type_expr[i], dist_args=dist_args) for i in range(len(a))]))
         if a.name.startswith('_dist'):
-            a = self.create_node("call_function", dist_to_tensor(a.target), args=(a,), kwargs = dist_args, name=a.name+"_tensor")#, type_expr="torch.Tensor")
-            type_expr = None
+            if force_tensor_out:
+                a = self.create_node("call_function", dist_to_tensor(a.target), args=(a,), kwargs = dist_args, name=a.name+"_tensor")#, type_expr="torch.Tensor")
+                type_expr = None
+            else:
+                a = self.create_node("call_function", dist.convert_to_torch, args=(a,), kwargs = dist_args, name=a.name+"_tensor")#, type_expr="torch.Tensor")
+                type_expr = None
         return a, type_expr
     
     def _get_shape(self, x):
         if torch.is_tensor(x):
             return x.shape
-        elif type(x) in (list, tuple):
+        elif type(x) == (list, tuple):
             return type(x)([self._get_shape(x_i) for x_i in x])
+        elif isinstance(x, BendingProxy):
+            return self._get_shape(x._value)
         elif hasattr(x, "__len__"):
-            return len(x)
+            return x.__len__()
 
     def _get_unwrapped_submodule(self, module, address):
         paths = address.split('.')
@@ -566,8 +629,15 @@ class BendingTracer(torch.fx.Tracer):
         global _is_fx_tracing_flag
         old_is_fx_tracing_flag = _is_fx_tracing_flag
         _is_fx_tracing_flag = True
+
         try:
-            if isinstance(root, torch.nn.Module):
+            if isinstance(root, torch.jit._script.RecursiveScriptModule):
+                self.root = root 
+                fn = getattr(root, self.traced_func_name)
+                self.root_module_name = root._get_name()
+                self.submodule_paths = {mod: name for name, mod in root.named_modules()}
+
+            elif isinstance(root, torch.nn.Module):
                 self.root = root
 
                 assert hasattr(
@@ -606,12 +676,18 @@ class BendingTracer(torch.fx.Tracer):
 
             collect_tensor_attrs(self.root, [])
 
-            assert isinstance(fn, FunctionType)
-
-            fn_globals = fn.__globals__  # run before it gets patched
-            fn, args = self.create_args_for_root(
-                fn, isinstance(root, torch.nn.Module), concrete_args
-            )
+            if isinstance(fn, FunctionType):
+                fn_globals = fn.__globals__  # run before it gets patched
+                fn, args = self.create_args_for_root(
+                    fn, isinstance(root, torch.nn.Module), concrete_args
+                )
+            elif isinstance(fn, torch.ScriptMethod):
+                fn_globals = {}
+                fn, args = self.create_args_for_root(
+                    fn, isinstance(root, torch.nn.Module), concrete_args
+                )
+            else:
+                assert TraceError('Cannot trace function %s'%fn)
 
             parameter_proxy_cache: Dict[
                 str, Proxy

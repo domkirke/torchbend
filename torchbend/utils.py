@@ -17,7 +17,8 @@ class TestModule(nn.Module):
         for i in range(self.nlayers):
             out = self.conv_modules[i](out)
             out = self.activations[i](out)
-        return torch.distributions.Normal(out, torch.ones_like(out))
+        return out
+        # return torch.distributions.Normal(out, torch.ones_like(out))
 
 
 def parse_slice(item, length):

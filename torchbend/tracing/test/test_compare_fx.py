@@ -41,7 +41,7 @@ def test_compare_with_fx(module_config):
           with open(os.path.join(printed_graph_out, test_name+"_tb.txt"), 'w+') as f:
                try:
                     bended_graph = bended_module.trace(method, **kwargs)
-                    bended_module.print_activations(out=os.path.join(printed_graph_out, test_name+"_activations.txt"))
+                    bended_module.print_activations(fn=method, out=os.path.join(printed_graph_out, test_name+"_activations.txt"))
                     f.write(get_tabular_from_graph(bended_graph)) 
                except Exception as e:
                     f.write("".join(traceback.format_exception(e)))

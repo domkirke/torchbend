@@ -23,7 +23,7 @@ def _get_activations_properties(args):
 
 def _get_wrapped_module_forward_call(fn):
     def _wrapped_module_forward_call(self, *args, **kwargs):
-        module = self.bend_module()
+        module = self.bend_module(fn=fn)
         if self._graphs.get(fn) is None:
             return getattr(module, fn)(*args, **kwargs)
         else:
@@ -59,14 +59,17 @@ class BendedModule(object):
     def _delversion_(self) -> NoReturn:
         self._version = self._default_version_key
     version = property(_getversion_, _setversion_, _delversion_)
-
     
     def __init__(self, module):
         self._graphs = {}
         self._activations = {}
+        # callback, parameters and activations
         self._bending_callbacks = []
         self._bended_params = {}
         self._bended_activations = {}
+        # controllables parameters
+        self._controllables = {}
+        self._controllable_hash = {}
         self.module: nn.Module = module
 
     def __getattr__(self, attr_name):
@@ -93,14 +96,24 @@ class BendedModule(object):
             else:
                 self._param_dict[self._default_version_key][k] = v
 
+    def get_module(self):
+        return self._module
+
     def _register_forward_call(self, func):
         setattr(self, func, types.MethodType(_get_wrapped_module_forward_call(func), self))
+
+    def update(self, param_name, value):
+        if param_name not in self._controllables:
+            raise BendingError("parameter %s not present in BendingModule"%param_name)
+        self._controllables[param_name].set_value(value)
+        for i in self._controllable_hash[param_name]:
+            self._bending_callbacks[i].update()
     
-    def trace(self, func="forward", *args, _return_out=False, **kwargs):
+    def trace(self, func="forward", *args, _return_out=False, _proxied_buffers=[], **kwargs):
         """Updates inner graph with the target method and inputs"""
         inputs = Inputs(*args, **kwargs)
         tracer = BendingTracer(func=func)
-        tracer_out = tracer.trace(self.module, inputs, return_out=_return_out)
+        tracer_out = tracer.trace(self.module, inputs, return_out=_return_out, proxied_buffers=_proxied_buffers)
         graph = tracer_out[0] if _return_out else tracer_out
         self._graphs[func] = graph
         self._activations[func] = tracer._activations
@@ -121,6 +134,7 @@ class BendedModule(object):
         return self.module.named_parameters()
 
     @property
+    @_import_to_interface
     def weights(self):
         """returns weights names"""
         if self.module is None:
@@ -147,8 +161,13 @@ class BendedModule(object):
         return self.activations(fn)[param].shape
 
     # activations
-    def activations(self, fn):
-        return self._activations[fn]
+    def activations(self, fn, op=None, flt=r".*"):
+        activations = self._activations[fn] 
+        if op is not None:
+            op = checklist(op)
+            activations = dict(filter(lambda obj: obj[1].op in op, activations.items()))
+        activations = dict(filter(lambda obj: re.match(flt, obj[0]), activations.items()))
+        return activations
 
     def activation_names(self, fn="forward"):
         return list(self._activations[fn].keys())
@@ -158,11 +177,7 @@ class BendedModule(object):
 
     @_import_to_interface
     def print_activations(self, fn="forward", op=None, flt=r".*", out=None):
-        activations = self.activations(fn)
-        if op is not None:
-            op = checklist(op)
-            activations = dict(filter(lambda obj: obj[1].op in op, activations.items()))
-        activations = dict(filter(lambda obj: re.match(flt, obj[0]), activations.items()))
+        activations = self.activations(fn, op=op, flt=flt)
         act_txt = tabulate(map(_get_activations_properties, activations.items()))
         if out is None:
             print(act_txt)
@@ -252,6 +267,12 @@ class BendedModule(object):
                     setattr(module, k+'_callback', CallbackChain(v))
             return module
 
+    def graph_module(self, fn="forward"):
+        module = self.bend_module(fn=fn)
+        graph = self.bend_graph(fn=fn)
+        graph.print_tabular()
+        return torch.fx.GraphModule(module, graph)
+
     def bend_graph(self, fn="forward"):
         return bend_graph(self._graphs[fn], {k: CallbackChain(v) for k, v in self._bended_activations[fn].items()})
 
@@ -260,7 +281,8 @@ class BendedModule(object):
         if callback not in self._bending_callbacks:
             self._bending_callbacks.append(callback)
         self._bended_params[parameter] = self._bended_params.get(parameter, []) + [callback]
-        callback.add_bending_target(parameter, self.param_shape(parameter))
+        #TODO register parameter in callback
+        callback.add_bending_target(parameter, parameter=self._module.get_parameter(parameter))
 
     def _bend_activation(self, parameter, callback, fn="forward"):
         if callback not in self._bending_callbacks:
@@ -268,9 +290,17 @@ class BendedModule(object):
         if fn not in self._bended_activations: self._bended_activations[fn] = {}
         self._bended_activations[fn][parameter] = self._bended_activations[fn].get(parameter, []) + [callback]
         try: 
-            callback.add_bending_target(parameter, self.activation_shape(parameter, fn=fn))
+            #TODO register activation shape
+            callback.add_bending_target(parameter, shape=self.activation_shape(parameter, fn=fn))
         except Exception as e:
             print('Cannot bend activation %s with callback %s.\nException : %s\n Proceeding'%(parameter, callback, e))
+
+    def _register_controllables(self, callback):
+        #TODO be sure that controllables does not have the same name at creation
+        for k, v in callback._controllables.items():
+            if k not in self._controllables:
+                self._controllables[v.name] = v
+                self._controllable_hash[v.name] = self._controllable_hash.get(v.name, []) + [self._bending_callbacks.index(callback)]
 
     @_import_to_interface
     def bend(self, callback, *params, fn="forward", verbose=False):
@@ -290,6 +320,8 @@ class BendedModule(object):
             self._bend_activation(activation, callback, fn=fn)
             if verbose: 
                 print('bending activation %s with %s...'%(activation, callback))
+        # extract controllables in case
+        self._register_controllables(callback)
 
     @_import_to_interface
     def bend_(self, *args, fn="forward", **kwargs):

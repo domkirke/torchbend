@@ -48,7 +48,11 @@ def get_model_copy(model, copy_parameters=False):
                 hook_dict[k].module = lambda: model_copy
             setattr(model_copy, attr, hook_dict)
         elif attr in __COPY_LIST: 
-            setattr(model_copy, attr, getattr(model_copy, attr).copy())
+            obj = getattr(model_copy, attr)
+            if isinstance(obj, torch.jit._script.OrderedDictWrapper):
+                setattr(model_copy, attr, copy.copy(obj))
+            else:
+                setattr(model_copy, attr, obj.copy())
 
     if copy_parameters:
         parameters = OrderedDict([(k, copy.copy(m)) for k, m in model._parameters.items()])
@@ -56,11 +60,19 @@ def get_model_copy(model, copy_parameters=False):
     else:
         model_copy._parameters = model._parameters.copy()
     
-    model_copy._buffers = model._buffers.copy()
-    model_copy._modules = {}
+    if isinstance(model_copy._buffers, torch.jit._script.OrderedDictWrapper):
+        model_copy._buffers = copy.copy(model_copy._buffers)
+    else:
+        model_copy._buffers = model._buffers.copy()
+
+    modules = {}
     for name, mod in model._modules.items():
         if mod is not None:
-            model_copy._modules[name] = get_model_copy(mod, copy_parameters=copy_parameters)
+            modules[name] = get_model_copy(mod, copy_parameters=copy_parameters)
+    if isinstance(model_copy._modules, torch.jit._script.OrderedModuleDict):
+        model_copy._modules = torch.jit._script.OrderedModuleDict(model_copy._c, modules)
+    else:
+        model_copy._modules = modules
     return model_copy
 
 

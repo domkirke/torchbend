@@ -61,7 +61,7 @@ class BendingWrapper(object):
         for name, obj in inspect.getmembers(obj):
             if class_import_filter_fn(name, obj):
                 if name in current_attrs:
-                    print('[Warning] tried to override %s in BendingWrapper. May cause conflict'%name)
+                    print('[Warning] overrided %s in BendingWrapper. May cause conflict'%name)
                 if verbose:
                     print('importing attribute %s...'%name)
                 if name in self.__bending_submodules:
@@ -128,6 +128,7 @@ class BendingWrapper(object):
                 valid_weights.extend(current_weight)
         return valid_weights
 
+    @torch.jit.ignore
     def _resolve_activations(self, *activations):
         """get valid activation names from a regexp"""
         valid_acts = []
@@ -171,6 +172,7 @@ class BendingWrapper(object):
     @_import_to_interface
     def print_activations(self):
         raise NotImplementedError
+
     @_import_to_interface
     def param_shape(self, p):
         target_module, param = p.split('.')[0], p.split('.')[:-1]

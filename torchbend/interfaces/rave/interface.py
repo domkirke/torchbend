@@ -1,9 +1,12 @@
 import torch
+import copy
+import os
 import torchaudio
 from typing import Union, Optional
 import rave as ravelib
-from .base import Interface
-from ..tracing import BendedModule
+from ..base import Interface
+from ...tracing import BendedModule, BendingWrapper
+from .scripting import *
 import gin
 
 class BendingRAVEException(Exception):
@@ -18,6 +21,16 @@ class BendedRAVE(Interface):
 
     @staticmethod
     def load_model(model_path):
+        try:
+            if (not os.path.isfile(model_path)) or (os.path.splitext(model_path) == ".ckpt"):
+                return BendedRAVE.load_checkpoint(model_path)
+            else:
+                return BendedRAVE.load_scripted(model_path)
+        except Exception:
+            raise BendingRAVEException("Could not load model %s ; does not seem to be a valid file."%model_path)
+
+    @staticmethod
+    def load_checkpoint(model_path):
         config_path = ravelib.core.search_for_config(model_path)
         if config_path is None:
             raise BendingRAVEException('config not found in folder %s'%model_path)
@@ -27,6 +40,11 @@ class BendedRAVE(Interface):
         if run is None:
             raise BendingRAVEException("run not found in folder %s"%model_path)
         model = model.load_from_checkpoint(run)
+        return model
+
+    @staticmethod
+    def load_scripted(model_path):
+        model = torch.jit.load(model_path)
         return model
 
     def _bend_model(self, model):
@@ -67,7 +85,27 @@ class BendedRAVE(Interface):
         audio = self._model.decode(z)
         if out is not None: self.write_audio(out, audio[0])
         return audio
-        
+
+    def script(self, **kwargs):
+        pretrained = self._model.get_module()
+        if isinstance(pretrained.encoder, ravelib.blocks.VariationalEncoder):
+            script_class = VariationalScriptedRAVE
+        elif isinstance(pretrained.encoder, ravelib.blocks.DiscreteEncoder):
+            script_class = DiscreteScriptedRAVE
+        elif isinstance(pretrained.encoder, ravelib.blocks.WasserteinEncoder):
+            script_class = WasserteinScriptedRAVE
+        elif isinstance(pretrained.encoder, ravelib.blocks.SphericalEncoder):
+            script_class = SphericalScriptedRAVE
+        else:
+            raise ValueError(f"Encoder type {type(pretrained.encoder)} "
+                            "not supported for export.")
+        scripted_model = script_class(pretrained=pretrained, **kwargs)
+        for m in pretrained.modules():
+            if hasattr(m, "weight_g"):
+                nn.utils.remove_weight_norm(m)
+        return BendedModule(scripted_model)
+
+
 
 
 __all__ = ['BendedRAVE']

@@ -1,3 +1,4 @@
+from .parameter import BendingParameter
 from .base import BendingCallback, CallbackChain
 from .mask import Mask
 from .affine import *
