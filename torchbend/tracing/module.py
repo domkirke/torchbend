@@ -141,6 +141,11 @@ class BendedModule(object):
             raise TraceError('BendedGraph has no weights since module as not been initialized')
         return list(dict(self.module.named_parameters()).keys())
 
+    @property
+    @_import_to_interface
+    def controllables(self):
+        return copy.copy(self._controllables)
+
     @_import_to_interface
     def print_weights(self, flt=r".*", out=None):
         """print / export weights"""
@@ -354,6 +359,7 @@ class BendedModule(object):
             self._module.load_state_dict(self.state_dict(True)[version], strict=False)
 
     # callbacks
+    @_import_to_interface
     def forward(self, *args, **kwargs):
         """call the module with current input."""
         module = self.bend_module()

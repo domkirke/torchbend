@@ -26,6 +26,10 @@ class BendingCallback(nn.Module):
         self._bending_shapes = OrderedDict()
         self._parameter_idx = 0
 
+    def __contains__(self, i: BendingParameter):
+        """checks if a parameter is used by the callback instance"""
+        return i in list(self._controllables.values())
+
     def _register_controllable_param(self, name, value):
         if isinstance(value, BendingParameter):
             self._controllables[name] = value

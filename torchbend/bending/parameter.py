@@ -70,6 +70,7 @@ class BendingParameter(nn.Module):
         else:
             raise TypeError('BendingParameter values can only be int or float')
 
+    @torch.jit.export
     def __float__(self):
         return float(self.value)
 

@@ -1,5 +1,5 @@
 import torch
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 from torch.nn.parameter import Parameter as Parameter
 from .base import BendingCallback
@@ -19,7 +19,9 @@ class Mask(BendingCallback):
         self._register_controllable_param("prob", prob)
         self.seed = seed
         self.generator = torch.Generator()
-        self._masks = torch.nn.ParameterDict()
+        self._masks = torch.nn.ParameterList()
+        self._mask_names = []
+        self._hash = {}
         if self.seed is not None:
             self.generator.manual_seed(self.seed)
 
@@ -37,15 +39,26 @@ class Mask(BendingCallback):
     def __repr__(self):
         return f"Mask(prob={float(self.prob):.3f})"
     
-    def _init_mask(self, shape):
-        mask = torch.bernoulli(torch.full(size=shape, fill_value=float(self.prob)), generator=self.generator)
+    def _init_mask(self, shape: List[int]):
+        #TODO generator not scriptable
+        mask = torch.bernoulli(torch.full(size=shape, fill_value=float(self.prob)))#, generator=self.generator)
         return mask
-    
+
+    def _add_mask(self, name, mask):
+        self._masks.append(mask)
+        self._mask_names.append(name)
+
+    def _mask_from_name(self, name: str) -> torch.Tensor:
+        for i, m in enumerate(self._masks):
+            if self._mask_names[i] == name:
+                return m
+        raise RuntimeError('does not have mask for name %s'%name)
+        
     def _register_shape(self, name, shape):
         super(Mask, self)._register_shape(name, shape)
-        buffer_name = name.replace('.', '_')
+        name = name.replace('.', '_')
         mask = self._init_mask(shape)
-        self._masks[buffer_name] = mask
+        self._add_mask(name, mask)
 
     def _register_parameter(self, parameter: List[Parameter], name=None):
         super()._register_parameter(parameter)
@@ -54,18 +67,23 @@ class Mask(BendingCallback):
             name = self._generate_parameter_name()
         else:
             name = name.replace(".", "_")
-        self._masks[name] = mask
+        self._add_mask(name, mask)
 
     def get_mask(self, param, name: Optional[str]) -> torch.Tensor:
         if name is not None:
-            mask = self._masks[name]
+            return self._mask_from_name(name)
         else:
             mask = torch.bernoulli(torch.full_like(param, fill_value=float(self.prob))).to(param)
         return mask
 
     def update(self):
-        for n, v in self._masks.items():
-            self._masks[n] = self._init_mask(v.shape)
+        for i, v in enumerate(self._masks):
+            v.set_(self._init_mask(v.shape))
+
+    def apply(self, update:bool=True):
+        if update:
+            self.update()
+        prob = self.prob.get_value()
 
     def forward(self, param: torch.Tensor, name: Optional[str] = None):
         mask = self.get_mask(param, name).to(param)

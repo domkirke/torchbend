@@ -7,6 +7,7 @@ import rave as ravelib
 from ..base import Interface
 from ...tracing import BendedModule, BendingWrapper
 from .scripting import *
+from .nntilde import ScriptableRAVE
 import gin
 
 class BendingRAVEException(Exception):
