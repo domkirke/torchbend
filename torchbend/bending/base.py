@@ -35,7 +35,7 @@ class BendingCallback(nn.Module):
             self._controllables[name] = value
         setattr(self, name, value)
 
-    def _register_parameter(self, parameter: List[nn.Parameter]):
+    def _register_parameter(self, parameter: List[nn.Parameter], name=None) :
         if not isinstance(parameter, nn.Parameter):
             raise BendingCallbackException("tried to register a parameter, but got type %s"%type(parameter))
         self._cache.append(parameter.data.clone())
