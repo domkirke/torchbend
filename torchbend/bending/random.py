@@ -1,5 +1,5 @@
 import torch
-from typing import Optional
+from typing import Optional, List
 from .base import BendingCallback
 
 
@@ -40,11 +40,21 @@ class Normal(BendingCallback):
         mask = torch.randn(shape, generator=self.generator) * self.std
         self.register_buffer(buffer_name, mask)
 
-    def add_bending_target(self, name, shape=None):
+    def _register_shape(self, name, shape):
         super(Normal, self).add_bending_target(name, shape=shape)
         if shape is not None:
             self._init_rnd_(name, shape)
-    
+
+    def _register_parameter(self, parameter: List[torch.nn.Parameter], name=None):
+        super()._register_parameter(parameter)
+        mask = self._init_rnd_(name, parameter.shape)
+        if name is None:
+            name = self._generate_parameter_name()
+        else:
+            name = name.replace(".", "_")
+        #TODO fixed random noise, and dynamic mean / std
+        self._add_noise(name, mask)
+
     def get_noise(self, param, name: Optional[str]) -> torch.Tensor:
         if name is not None:
             mask = self._buffers["rnd_"+name]
