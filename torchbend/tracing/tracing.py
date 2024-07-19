@@ -17,7 +17,7 @@ from .input import Inputs
 from ..utils import checklist
 from .utils import dist_to_tensor
 
-DEBUG = True
+DEBUG = False
 _orig_module_call: Callable = torch.nn.Module.__call__
 _orig_module_getattr: Callable = torch.nn.Module.__getattr__
 _is_fx_tracing_flag = False
@@ -149,7 +149,12 @@ class BendingTracer(torch.fx.Tracer):
 
         self._model = root
         self._activations = {}
-        self._proxied_buffers = proxied_buffers
+        self._proxied_buffers = []
+        buffers = dict(root.named_buffers())
+        for p in proxied_buffers:
+            buffers_to_proxy = list(filter(lambda x: re.match(p, x), buffers.keys()))
+            self._proxied_buffers.extend(buffers_to_proxy)
+
         graph = self._trace(root, concrete_args)
         if return_out:
             out_node = list(filter(lambda x: x.op == "output", self.graph.nodes))[0]
@@ -340,6 +345,7 @@ class BendingTracer(torch.fx.Tracer):
         kwargs = self._replace_kwargs(n.kwargs)
         if DEBUG: print('calling function', n, n.target, n.args)
         with self.create_context(TracingState.RUNNING):
+            args = self._replace_args(args)
             return target(*args, **kwargs)
     
     def run_node(self, n):
@@ -474,11 +480,14 @@ class BendingTracer(torch.fx.Tracer):
                 return maybe_parameter_proxy
 
         if (self.proxy_buffer_attributes and isinstance(attr_val, torch.Tensor)) or (attr in self._proxied_buffers):
-            maybe_buffer_proxy = maybe_get_proxy_for_attr(
-                attr_val, self.root.named_buffers(), parameter_proxy_cache
-            )
-            if maybe_buffer_proxy is not None:
-                return maybe_buffer_proxy
+            if attr in self._proxied_buffers and self.get_current_context_state() == TracingState.RUNNING:
+                return attr_val
+            else:
+                maybe_buffer_proxy = maybe_get_proxy_for_attr(
+                        attr_val, self.root.named_buffers(), parameter_proxy_cache
+                    )
+                if maybe_buffer_proxy is not None:
+                    return maybe_buffer_proxy
 
         return attr_val
 

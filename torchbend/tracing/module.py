@@ -272,10 +272,10 @@ class BendedModule(object):
                     setattr(module, k+'_callback', CallbackChain(v))
             return module
 
-    def graph_module(self, fn="forward"):
-        module = self.bend_module(fn=fn)
+    def graph_module(self, fn="forward", module=None):
+        if module is None:
+            module = self.bend_module(fn=fn)
         graph = self.bend_graph(fn=fn)
-        graph.print_tabular()
         return torch.fx.GraphModule(module, graph)
 
     def bend_graph(self, fn="forward"):

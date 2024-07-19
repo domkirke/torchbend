@@ -2,7 +2,7 @@ import torch
 from typing import Optional, List, Tuple
 
 from torch.nn.parameter import Parameter as Parameter
-from .base import BendingCallback
+from .base import BendingCallback, BendingCallbackException
 
 
 
@@ -41,7 +41,8 @@ class Mask(BendingCallback):
     
     def _init_mask(self, shape: List[int]):
         #TODO generator not scriptable
-        mask = torch.bernoulli(torch.full(size=shape, fill_value=float(self.prob)))#, generator=self.generator)
+        prob = self.prob.get_value()
+        mask = torch.bernoulli(torch.full(size=shape, fill_value=prob))#, generator=self.generator)
         return mask
 
     def _add_mask(self, name, mask):
@@ -76,6 +77,20 @@ class Mask(BendingCallback):
             mask = torch.bernoulli(torch.full_like(param, fill_value=float(self.prob))).to(param)
         return mask
 
+    def get_mask_from_id(self, idx: int) -> torch.nn.Parameter:
+        #grrrr
+        for i, v in enumerate(self._masks):
+            if i == idx:
+                return v
+        raise BendingCallbackException('%s not present in masks'%idx)
+
+    def cache_from_id(self, idx: int) -> torch.nn.Parameter:
+        #grrrr
+        for i, v in enumerate(self._cache):
+            if i == idx:
+                return v
+        raise BendingCallbackException('%s not present in masks'%idx)
+
     def update(self):
         for i, v in enumerate(self._masks):
             v.set_(self._init_mask(v.shape))
@@ -83,7 +98,8 @@ class Mask(BendingCallback):
     def apply(self, update:bool=True):
         if update:
             self.update()
-        prob = self.prob.get_value()
+        for i, v in enumerate(self._bending_targets):
+            v.set_(self.get_mask_from_id(i) * self.cache_from_id(i).data)
 
     def forward(self, param: torch.Tensor, name: Optional[str] = None):
         mask = self.get_mask(param, name).to(param)

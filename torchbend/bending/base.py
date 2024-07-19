@@ -1,12 +1,14 @@
 import torch
 import torch.nn as nn
 from collections import OrderedDict
-from typing import Union, List
+from typing import Union, List, Optional
 from .parameter import BendingParameter
 
 
 class BendingCallbackException(Exception):
     pass
+
+
 
 
 class BendingCallback(nn.Module):
@@ -20,7 +22,7 @@ class BendingCallback(nn.Module):
         self._controllables = nn.ModuleDict()
         # targets and shapes are used for weight activation ; copies internally 
         # parameter to cache for dynamic bending
-        self._bending_targets = []
+        self._bending_targets = nn.ParameterList()
         self._cache = []
         # bending shapes are used for activation bending, where just shapes are needed. 
         self._bending_shapes = OrderedDict()
@@ -38,8 +40,17 @@ class BendingCallback(nn.Module):
     def _register_parameter(self, parameter: List[nn.Parameter], name=None) :
         if not isinstance(parameter, nn.Parameter):
             raise BendingCallbackException("tried to register a parameter, but got type %s"%type(parameter))
+        #TODO do not make this automatic? make "cache_parameter" function using weakrefs? 
         self._cache.append(parameter.data.clone())
         self._bending_targets.append(parameter)
+
+    def update_parameter(self, parameter, new_parameter):
+        """is used to replace reference from a parameter to another"""
+        try:
+            parameter_idx = list(map(id, self._bending_targets)).index(id(parameter))
+        except IndexError:
+            raise BendingCallbackException('parameter with id %s not found in callback %s'%(parameter, self))
+        self._bending_targets[parameter_idx] = new_parameter
 
     def _generate_parameter_name(self):
         name = "parameter_%d"%self._parameter_idx 
@@ -79,13 +90,6 @@ class BendingCallback(nn.Module):
     def update(self):
         """updates internal state from controllables."""
         raise NotImplementedError()
-        # has_set = False
-        # for k, v in self._controllables.items():
-        #     if v.name == name:
-        #         self._controllables[k].set_value(torch.tensor(value))
-        #         has_set = True
-        # if not has_set:
-        #     raise BendingCallbackException('attribute %s not found in Controllable %s'%(name, self))
 
     def forward(self, *args, **kwargs):
         """applies transformation to an input (typically activations)"""
@@ -102,8 +106,8 @@ class CallbackChain(nn.Module):
         super().__init__()
         self.callbacks = nn.ModuleList(*args)
 
-    def forward(self, x, name=None, **kwargs):
+    def forward(self, x, name: Optional[str] = None):
         for i, m in enumerate(self.callbacks):
-            x = m(x, name=name, **kwargs)
+            x = m(x, name=name)
         return x 
 

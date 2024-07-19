@@ -5,6 +5,7 @@
 - [✔︎] extend the tracing abilities of `torch.fx` with augmented parsers and proxies
     - dynamic parsing (wrapping un-traceable functions, shape propagation)
     - tracing torch distributions (currently implemented : `Bernoulli`, `Normal`, `Categorical`)
+    - item assigneme
 - [✔︎] easily parse and analyze model's graphs 
 - [︎✔︎] bend model's weights and activations
 - [✕︎] adapt the library to specific generative models, and provide handy interfaces for python notebooks

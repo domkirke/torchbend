@@ -18,7 +18,9 @@ class BendedRAVE(Interface):
     _imported_callbacks_ = []
 
     def __init__(self, model_path):
-        self.model = self.load_model(model_path)
+        model = self.load_model(model_path)
+        model(torch.zeros(1, 1, 8192))
+        self.model = model
 
     @staticmethod
     def load_model(model_path):
@@ -51,7 +53,7 @@ class BendedRAVE(Interface):
     def _bend_model(self, model):
         self._model = BendedModule(model)
         self._import_methods(self._model)
-        self._model.trace("forward", x=torch.zeros(1, 1, 48000))
+        self._model.trace("forward", x=torch.zeros(1, 1, 48000),  _proxied_buffers=['.*cache.pad'])
         _, (decoder_out,) = self._model.trace("encode", x=torch.zeros(1, 1, 48000), _return_out=True)
         latent_out = self._model.encoder.reparametrize(decoder_out)[:2][0]
         self._model.trace("decode", z=latent_out)
@@ -104,7 +106,11 @@ class BendedRAVE(Interface):
         for m in pretrained.modules():
             if hasattr(m, "weight_g"):
                 nn.utils.remove_weight_norm(m)
-        return BendedModule(scripted_model)
+        module = BendedModule(scripted_model)
+        module.trace("encode", x=torch.randn(1, 1, 8192), _proxied_buffers=['latent_mean', 'latent_pca'])#, ".*cache.pad"])
+        module.trace("decode", z=torch.randn(1, scripted_model.latent_size, 8), _proxied_buffers=['latent_mean', 'latent_pca'])#, 'decode_params', ".*cache.pad"])
+        module.trace("forward", x=torch.randn(1, 1, 8192), _proxied_buffers=['latent_mean', 'latent_pca', 'decode_params'])#, ".*cache.pad"])
+        return module
 
 
 
