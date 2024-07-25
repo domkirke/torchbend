@@ -62,6 +62,7 @@ class Mask(BendingCallback):
         self._add_mask(name, mask)
 
     def _register_parameter(self, parameter: List[Parameter], name=None):
+        #TODO make an abstract for base.py
         super()._register_parameter(parameter)
         mask = self._init_mask(parameter.shape)
         if name is None:
