@@ -3,7 +3,7 @@
 `torchbend` is a library grounded on `torch.fx` focused on generative neural networks analysis and creative bending. This library allows you to:
 
 - [✔︎] extend the tracing abilities of `torch.fx` with augmented parsers and proxies
-    - dynamic parsing (wrapping un-traceable functions, shape propagation)
+    - dynamic parsing (wrapping un-traceable functions, shape propagation (warning : wrap shape with tuple! or find a solution?))
     - tracing torch distributions (currently implemented : `Bernoulli`, `Normal`, `Categorical`)
     - item assigneme
 - [✔︎] easily parse and analyze model's graphs 

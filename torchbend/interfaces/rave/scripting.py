@@ -210,8 +210,6 @@ class ScriptedRAVE(nn_tilde.Module):
         z = self.post_process_latent(z)
         return z
 
-    @torch.jit.export
-
 
     @torch.jit.export
     def decode(self, z, from_forward: bool = False):

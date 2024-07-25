@@ -102,6 +102,11 @@ class BendedModule(object):
     def _register_forward_call(self, func):
         setattr(self, func, types.MethodType(_get_wrapped_module_forward_call(func), self))
 
+    @_import_to_interface
+    def graph(self, fn="forward"):
+        if not fn in self._graphs: raise BendingError('function %s is not graphed'%fn)
+        return self._graphs[fn]
+
     def update(self, param_name, value):
         if param_name not in self._controllables:
             raise BendingError("parameter %s not present in BendingModule"%param_name)
@@ -109,10 +114,11 @@ class BendedModule(object):
         for i in self._controllable_hash[param_name]:
             self._bending_callbacks[i].update()
     
-    def trace(self, func="forward", *args, _return_out=False, _proxied_buffers=[], **kwargs):
+    def trace(self, func="forward", *args, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
         """Updates inner graph with the target method and inputs"""
+        #TODO general split between kwargs with _ at the beginning for tracer
         inputs = Inputs(*args, **kwargs)
-        tracer = BendingTracer(func=func)
+        tracer = BendingTracer(func=func, _no_tensor_for_args=_no_tensor_for_args)
         tracer_out = tracer.trace(self.module, inputs, return_out=_return_out, proxied_buffers=_proxied_buffers)
         graph = tracer_out[0] if _return_out else tracer_out
         self._graphs[func] = graph
@@ -166,7 +172,7 @@ class BendedModule(object):
         return self.activations(fn)[param].shape
 
     # activations
-    def activations(self, fn, op=None, flt=r".*"):
+    def activations(self, fn="forward", op=None, flt=r".*"):
         activations = self._activations[fn] 
         if op is not None:
             op = checklist(op)

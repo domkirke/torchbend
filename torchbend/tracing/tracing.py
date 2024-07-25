@@ -11,13 +11,12 @@ from torch.fx._symbolic_trace import _proxyable_classes, Tracer, _Patcher, _auto
 from torch.fx.proxy import Proxy, TraceError, TracerBase, ParameterProxy
 from torch.fx.node import Argument, Node
 from torch.fx.graph import Graph
-from .. import distributions as dist
-from .proxy import BendingProxy, ShapeAttribute
+from .. import distributions as dist, DEBUG
+from .proxy import BendingProxy, ShapeAttribute, TracingState
 from .input import Inputs
 from ..utils import checklist
 from .utils import dist_to_tensor
 
-DEBUG = False
 _orig_module_call: Callable = torch.nn.Module.__call__
 _orig_module_getattr: Callable = torch.nn.Module.__getattr__
 _is_fx_tracing_flag = False
@@ -68,9 +67,6 @@ class ActivationProperties():
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-class TracingState(Enum):
-    TRACING = 0
-    RUNNING = 1
 
 class TracingContext():
     
@@ -100,9 +96,11 @@ class BendingTracer(torch.fx.Tracer):
     _dist_count_hash = {}
     # TODO better handling of this
     proxy_buffer_attributes = False 
+    _no_tensor_for_args = False
 
-    def __init__(self, *args, func="forward", **kwargs):
+    def __init__(self, *args, func="forward", _no_tensor_for_args=None, **kwargs):
         super(BendingTracer, self).__init__(*args, **kwargs)
+        self._no_tensor_for_args = _no_tensor_for_args if _no_tensor_for_args is not None else self._no_tensor_for_args
         self.traced_func_name = func 
         self._active_contexts = []
         self._current_context = None
@@ -122,6 +120,7 @@ class BendingTracer(torch.fx.Tracer):
                 print('[Warning] found value for input %s, but not in signature for function %s'%(i, self.traced_func_name))
         return inputs
 
+
     def trace(
         self,
         root: Union[torch.nn.Module, Callable[..., Any]],
@@ -131,9 +130,6 @@ class BendingTracer(torch.fx.Tracer):
         return_out: bool = False, 
         **kwargs
     ):
-        # how could we prevent model recursion when shape cannot be fetched? making a special object that
-        # could be put in _input_args? 
-        # kwargs = {}
         inputs.update_(**concrete_args)
         inputs = self._check_input_values(root, inputs)
 
@@ -142,25 +138,33 @@ class BendingTracer(torch.fx.Tracer):
         
         self._input_args = inputs.update_(**concrete_args)
 
-        self._values = {k.replace('.', '_'): v.data for k, v in root.named_parameters()}
 
-        # concrete_flow_steps is used for boolean control flow that stay fixed during tracing.
-        self._concrete_flow_steps = []
 
         self._model = root
         self._activations = {}
         self._proxied_buffers = []
+        self._values = {k.replace('.', '_'): v.data for k, v in root.named_parameters()}
+        # concrete_flow_steps is used for boolean control flow that stay fixed during tracing.
+        self._concrete_flow_steps = []
+
         buffers = dict(root.named_buffers())
         for p in proxied_buffers:
-            buffers_to_proxy = list(filter(lambda x: re.match(p, x), buffers.keys()))
+            buffers_to_proxy = list(filter(lambda x, u=p: re.match(u, x), buffers.keys()))
             self._proxied_buffers.extend(buffers_to_proxy)
+            for proxied_buffer in buffers_to_proxy:
+                self._values[proxied_buffer.replace('.', '_')] = root.get_buffer(proxied_buffer)
 
         graph = self._trace(root, concrete_args)
         if return_out:
             out_node = list(filter(lambda x: x.op == "output", self.graph.nodes))[0]
-            outs = tuple([self._values[o.name] for o in out_node.args])
+            outs = []
+            for o in out_node.args:
+                if isinstance(o, (Node)):
+                    outs.append(self._values[o.name])
+                else:
+                    outs.append(None)
             del self._values, self._input_args
-            return graph, outs
+            return graph, tuple(outs)
         else:
             del self._values, self._input_args
             return graph
@@ -190,6 +194,18 @@ class BendingTracer(torch.fx.Tracer):
         - nothing hehehe
 
     """
+
+    def _tensor_to_scalar(self, arg): 
+        if not torch.is_tensor(arg):
+            raise TraceError('Got type %s for _tensor_to_scalar, but torch.tensor needed'%(type(arg)))
+        if arg.dtype in (torch.float16, torch.float32, torch.float64, torch.float):
+            return float(arg)
+        elif arg.dtype in (torch.int16, torch.int8, torch.int64, torch.int32, torch.int):
+            return int(arg)
+        elif arg.dtype in (torch.complex, torch.complex32, torch.complex64, torch.complex128):
+            return float(arg.real) + float(arg.imag) * 1j
+        else:
+            raise TraceError('Cannot transform type %s to python scalar'%(type(arg)))
 
 
     def create_arg(self, a: Any) -> "Argument":
@@ -246,7 +262,14 @@ class BendingTracer(torch.fx.Tracer):
             setattr(self.root, qualname, a)
 
             return self.create_node("get_attr", qualname, (), {})
-        return TracerBase.create_arg(self, a)
+
+        arg = TracerBase.create_arg(self, a)
+        if self._no_tensor_for_args and torch.is_tensor(arg):
+            if len(arg.shape) == 0:
+                arg = self._tensor_to_scalar(arg)
+            else:
+                raise TraceError('tracer with _no_tensor_for_args=True encoutered a non scalar argument value, that is not handled yet.')
+        return arg
  
 
     ## ____________________________________________________________________________________________________________________
@@ -257,6 +280,15 @@ class BendingTracer(torch.fx.Tracer):
     Below are implemented executions corresponding to graph tracing. This way, each time a node is created,
     it also executed using the callbacks below to allow shape propagation at tracing. 
     """
+
+    def _replace_with_value(self, val):
+        if isinstance(val, Node):
+            if val.name in self._values:
+                return self._values[val.name]
+            else:
+                raise TraceError("bending proxy %s has no value"%val)
+        else:
+            return val
           
     def _replace_args(self, args):
         """replaces proxy and nodes with actual values."""
@@ -265,11 +297,19 @@ class BendingTracer(torch.fx.Tracer):
             if isinstance(n, (tuple, list)):
                 new_args[i] = self._replace_args(n)
             elif isinstance(n, (Proxy, Node)):
+                if isinstance(n, ShapeAttribute):
+                    print('coucuo')
                 if n.name in self._values:
                     new_args[i] = self._values[n.name]
                 elif hasattr(n, "concrete_value"):
                     if n.concrete_value:
                         new_args[i] = n.concrete_value
+            elif isinstance(n, slice):
+                new_args[i] = slice(
+                    self._replace_with_value(n.start),
+                    self._replace_with_value(n.stop),
+                    self._replace_with_value(n.step)
+                )
         return type(args)(new_args)
     
     def _replace_kwargs(self, kwargs):
@@ -425,6 +465,19 @@ class BendingTracer(torch.fx.Tracer):
         proxy = BendingProxy(node, self, value=out)
         return proxy
 
+    def dynamic_shape_proxy(self, node: Node) -> 'ShapeAttribute':
+        if DEBUG: print("creating dynamic shape attribute for node : ", node)
+        # proxys are "empty values" that are populated among tracing.
+        if node.concrete_value is not None:
+            out = node.concrete_value
+        else: 
+            out = self.run_node(node)
+
+        self._values[node.name] = out
+        shape = self._get_shape(out)
+        self._activations[node.name] = ActivationProperties(op=node.op, shape=shape)
+        proxy = ShapeAttribute(node, self, value=out)
+        return proxy
 
     def getattr(self, attr: str, attr_val: Any, parameter_proxy_cache: Dict[str, Any]):
         """
@@ -479,7 +532,11 @@ class BendingTracer(torch.fx.Tracer):
             if maybe_parameter_proxy is not None:
                 return maybe_parameter_proxy
 
-        if (self.proxy_buffer_attributes and isinstance(attr_val, torch.Tensor)) or (attr in self._proxied_buffers):
+        if len(self.module_stack) > 0:
+            full_attr_name = f"{list(self.module_stack)[-1]}.{attr}"
+        else:
+            full_attr_name = attr
+        if (self.proxy_buffer_attributes and isinstance(attr_val, torch.Tensor)) or (full_attr_name in self._proxied_buffers):
             if attr in self._proxied_buffers and self.get_current_context_state() == TracingState.RUNNING:
                 return attr_val
             else:
