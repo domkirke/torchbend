@@ -4,10 +4,12 @@ from ...bending.parameter import BendingParameter
 from ...tracing.nntilde import BendableNNTildeModule
 import torch
 import torch.nn as nn
-import nn_tilde
-from .interface import _zero_cache
 
 
+def _zero_cache(module, filters=[r".*cache", r".*pad"]):
+    for k, v in module.named_buffers():
+        if True in [re.match(f, k) is not None for f in filters]:
+            v.data.zero_()
 
 class ScriptableRAVE(BendableNNTildeModule):
 

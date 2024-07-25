@@ -1,4 +1,5 @@
 import torch
+from types import MethodType
 import copy
 import os
 import torchaudio
@@ -8,6 +9,7 @@ import rave as ravelib
 from ..base import Interface
 from ...tracing import BendedModule
 from .scripting import *
+from .nntilde import ScriptableRAVE, _zero_cache
 import cached_conv as cc
 import gin
 
@@ -33,11 +35,9 @@ def script_rave_model(pretrained, **kwargs):
             nn.utils.remove_weight_norm(m)
     return scripted_model
 
+def _scripted_model_to_nntilde(self):
+    return ScriptableRAVE(self)
 
-def _zero_cache(module, filters=[r".*cache", r".*pad"]):
-    for k, v in module.named_buffers():
-        if True in [re.match(f, k) is not None for f in filters]:
-            v.data.zero_()
 
 class BendedRAVE(Interface):
     _imported_callbacks_ = []
@@ -124,6 +124,7 @@ class BendedRAVE(Interface):
         module.trace("decode", z=torch.randn(self.batch_size, scripted_model.latent_size, 8), _proxied_buffers=self._proxied_buffers, _no_tensor_for_args=True)#, 'decode_params', ".*cache.pad"])
         module.trace("forward", x=torch.randn(self.batch_size, 1, 8192), _proxied_buffers=self._proxied_buffers, _no_tensor_for_args=True)#, ".*cache.pad"])
         _zero_cache(module)
+        setattr(module, "nntilde", MethodType(_scripted_model_to_nntilde, module))
         return module
 
 

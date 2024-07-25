@@ -1,13 +1,63 @@
-from typing import List, Dict
+from typing import List, Dict, Callable
+import re
+from types import MethodType, FunctionType
+from functools import partialmethod, partial
 import abc
 import torch
 import torch.fx as fx
 from torch import nn
+from ..bending.parameter import BendingParameter, parameter_setter, parameter_getter, get_param_type
 from .module import BendedModule
 import nn_tilde
 
+
 class BendingNNTildeException(Exception):
     pass
+
+
+# def get_mask(self) -> float:
+#     return float(self._get_bending_control("mask")) 
+
+
+attribute_template = """
+def get_{{NAME}}(self) -> {{TYPE_EXPR}}:
+    return float(self._get_bending_control(\"{{NAME}}\")) 
+
+def set_{{NAME}}(self, value: {{TYPE_EXPR}}) -> int:
+    try: 
+        self._set_bending_control(\"{{NAME}}\", torch.tensor(value, dtype={{DTYPE}}))
+        return 0
+    except BendingParameterException:
+        return -1
+"""
+
+
+def _defs_from_template(template, **kwargs):
+    code = template
+    local_namespace = {}
+    for k, v in kwargs.items():
+        pattern = re.compile(r'\{\{%s\}\}'%(k.upper()))
+        iterations = list(pattern.finditer(code))
+        while len(iterations) > 0:
+            start, end = iterations[0].start(), iterations[0].end()
+            code = code[:start] + str(v) + code[end:]
+            iterations = list(pattern.finditer(code))
+    #TODO check if no {{}} left
+    exec(code, {}, local_namespace)
+    return local_namespace
+
+
+
+def _template_from_param(param: BendingParameter, **kwargs):
+    kwargs['name'] = kwargs.get('name', param.name)
+    if param.param_type == get_param_type("float"):
+        kwargs['dtype'] = kwargs.get('dtype', torch.float32)
+        kwargs['type_expr'] = kwargs.get('type_expr', "float")
+        return _defs_from_template(attribute_template, **kwargs)
+    elif param.param_type == get_param_type("int"):
+        kwargs['dtype'] = kwargs.get('dtype', torch.int64)
+        kwargs['type_expr'] = kwargs.get('type_expr', "int")
+        return _defs_from_template(attribute_template, **kwargs)
 
 
 class BendableNNTildeModule(nn_tilde.Module):
@@ -48,6 +98,11 @@ class BendableNNTildeModule(nn_tilde.Module):
                     param_dict[k] = v
         return param_dict
 
+    def _set_attribute_callbacks(self, param: BendingParameter) -> Dict[str, Callable]:
+        funcs = _template_from_param(param)
+        for name, func in funcs.items():
+            setattr(self, name, MethodType(func, self))
+
     def _import_bending_ops(self, model):
         self._controllables = nn.ModuleList(model.controllables.values())
         self._bending_callbacks = nn.ModuleList(model._bending_callbacks)
@@ -56,7 +111,8 @@ class BendableNNTildeModule(nn_tilde.Module):
             for i, b in enumerate(self._bending_callbacks):
                 if v in b:
                     self._controllables_hash.value[v.name] = self._controllables_hash.value.get(v.name, []) + [i]
-            self.register_attribute(v.name, float(v.value))
+            self._set_attribute_callbacks(v)
+            self.register_attribute(v.name, v.get_python_value())
                 
     def _update_bended_weights(self, model):
         param_dict = self._full_param_dict()

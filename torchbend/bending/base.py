@@ -9,8 +9,6 @@ class BendingCallbackException(Exception):
     pass
 
 
-
-
 class BendingCallback(nn.Module):
     weight_compatible = False
     activation_compatible = False
