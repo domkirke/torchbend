@@ -1,10 +1,13 @@
-import copy
+import copy, re, os
+from typing import Any
+import random
 from enum import Enum
 from typing import Literal
 import weakref
 from collections import OrderedDict
 import torch
 from .. import distributions as dist
+from ..bending.parameter import BendingParameter, get_param_type
 
 
 ## Utils
@@ -112,7 +115,7 @@ def bend_graph(graph, callbacks, verbose=False):
             #     idx = name_hash[hack_obj_name]
             #     name_hash[hack_obj_name] += 1
             #     hack_obj_name += f"_{idx}"
-            bended_node = new_graph.create_node("call_module", hack_obj_name, args=(new_node,), kwargs={}, name=bended_node_name)
+            bended_node = new_graph.create_node("call_module", hack_obj_name, args=(new_node,), kwargs={'name': node.name}, name=bended_node_name)
             env[bended_node_name] = bended_node 
             bended_lookup[node.name] = bended_node 
     return new_graph
@@ -187,8 +190,9 @@ class ComparisonResult(Enum):
     DifferentTypes = 1
     DifferentLength = 2
     DifferentKeys = 3
+    SimilarTypes = 4
     def __bool__(self) -> Literal[True]:
-        return self == ComparisonResult.Equal
+        return self in [ComparisonResult.Equal, ComparisonResult.SimilarTypes]
 
 def compare_outs(out1, out2, allow_subclasses=False):
     if isinstance(out1, (list, tuple)):
@@ -201,9 +205,13 @@ def compare_outs(out1, out2, allow_subclasses=False):
         if len(keys1.difference(keys2)) + len(keys2.difference(keys1)) != 0: return ComparisonResult.DifferentKeys
         return False not in [compare_outs(out1[k], out2[k]) for k in keys1]
     elif isinstance(out1, (dist.Distribution, torch.distributions.Distribution)):
-        if not isinstance(out2, type(out1)): return ComparisonResult.DifferentTypes
-        return compare_outs(dist.utils.convert_from_torch(out1).as_tuple(), 
-                            dist.utils.convert_from_torch(out2).as_tuple())
+        if not isinstance(out2, type(out1)): 
+            out1 = dist.convert_to_torch(out1)
+            out2 = dist.convert_to_torch(out2)
+            return ComparisonResult.SimilarTypes
+        else:
+            return compare_outs(dist.utils.convert_from_torch(out1).as_tuple(), 
+                                dist.utils.convert_from_torch(out2).as_tuple())
     else:
         if allow_subclasses:
             if not isinstance(out1, type(out2)): return ComparisonResult.DifferentTypes
@@ -223,3 +231,73 @@ def compare_state_dict_tensors(dict1, dict2):
         result = result and bool(compare_outs(v, dict2[k]))
     return result
 
+def _resolve_code(code, **kwargs):
+    pattern = str(code)
+    for k, v in kwargs.items():
+        pattern = re.compile(r'\{\{%s\}\}'%(k.upper()))
+        iterations = list(pattern.finditer(code))
+        while len(iterations) > 0:
+            start, end = iterations[0].start(), iterations[0].end()
+            code = code[:start] + str(v) + code[end:]
+            iterations = list(pattern.finditer(code))
+    #TODO check if no {{}} left
+    return code
+
+def _defs_from_template(template,  **kwargs):
+    code = template
+    local_namespace = {}
+    for k, v in kwargs.items():
+        pattern = re.compile(r'\{\{%s\}\}'%(k.upper()))
+        iterations = list(pattern.finditer(code))
+        while len(iterations) > 0:
+            start, end = iterations[0].start(), iterations[0].end()
+            code = code[:start] + str(v) + code[end:]
+            iterations = list(pattern.finditer(code))
+    
+    code_compiled = compile(code, __file__, 'exec')
+    exec(code_compiled, {}, local_namespace)
+    return local_namespace
+
+
+def get_random_hash(n=8):
+    return "".join([chr(random.randrange(97,122)) for i in range(n)])
+
+def _import_defs_from_tmpfile(code, gl=None, tmpdir="/tmp/torchbend/jit"):
+    gl = gl or globals() 
+    os.makedirs(tmpdir, exist_ok=True)
+    file = os.path.join(tmpdir, get_random_hash()+".py")
+    with open(file, 'w+') as f:
+        f.write(code)
+    local_namespace = {}
+    code_compiled = compile(code, file, 'exec')
+    exec(code_compiled, gl, local_namespace)
+    return local_namespace
+    
+
+
+def _template_from_param(template: str, param: BendingParameter, **kwargs):
+    kwargs['name'] = kwargs.get('name', param.name)
+    if param.param_type == get_param_type("float"):
+        kwargs['dtype'] = kwargs.get('dtype', torch.float32)
+        kwargs['type_expr'] = kwargs.get('type_expr', "float")
+        return _defs_from_template(template, **kwargs)
+    elif param.param_type == get_param_type("int"):
+        kwargs['dtype'] = kwargs.get('dtype', torch.int64)
+        kwargs['type_expr'] = kwargs.get('type_expr', "int")
+        return _defs_from_template(template, **kwargs)
+
+
+def identity(x: Any) -> Any:
+    return x
+
+    
+def make_graph_jit_compatible(graph: torch.fx.Graph):
+    #TODO
+    nodes = {}
+    # new_graph = torch.fx.Graph()
+    # _, out = new_graph.graph_copy(graph, nodes, return_output_node=True)
+    # new_graph.output(out)
+    for n in graph.nodes:
+        if n.op == "call_function" and n.target == dist.convert_to_torch:
+            n.target = identity
+    return graph 

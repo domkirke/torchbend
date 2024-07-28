@@ -1,6 +1,6 @@
 from .parameter import BendingParameter
 from .base import BendingCallback, CallbackChain
-from .mask import Mask
+from .mask import Mask, OrderedMask
 from .affine import *
 from .random import *
 from .permute import Permute

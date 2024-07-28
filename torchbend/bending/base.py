@@ -2,17 +2,22 @@ import torch
 import torch.nn as nn
 from collections import OrderedDict
 from typing import Union, List, Optional
-from .parameter import BendingParameter
+from .parameter import BendingParameter, _VALID_PARAM_TYPES
 
 
 class BendingCallbackException(Exception):
+    pass
+
+class BendingCallbackAttributeException(Exception):
     pass
 
 
 class BendingCallback(nn.Module):
     weight_compatible = False
     activation_compatible = False
+    jit_compatible = False
     nntilde_compatible = False
+    controllable_params = []
 
     def __init__(self):
         super().__init__()
@@ -30,17 +35,33 @@ class BendingCallback(nn.Module):
         """checks if a parameter is used by the callback instance"""
         return i in list(self._controllables.values())
 
-    def _register_controllable_param(self, name, value):
+    def __setattr__(self, name, value):
         if isinstance(value, BendingParameter):
-            self._controllables[name] = value
-        setattr(self, name, value)
+            self.register_controllable(name, value)
+        else:
+            super().__setattr__(name, value)
 
-    def _register_parameter(self, parameter: List[nn.Parameter], name=None) :
+    def register_controllable(self, name, value):
+        assert name in self.controllable_params, "tried to register controllable value %s, but not compatible with %s"%(name, type(self))
+        if isinstance(value, BendingParameter):
+            setattr(super().__getattr__('_controllables'), name, value)
+            value._register_callback(self, name)
+        else:
+            value = torch.tensor(value)
+            self.register_buffer(name, value)
+        super().__setattr__(name, value)
+
+    def _register_parameter(self, parameter: List[nn.Parameter], name=None, cache=True) -> str:
         if not isinstance(parameter, nn.Parameter):
             raise BendingCallbackException("tried to register a parameter, but got type %s"%type(parameter))
         #TODO do not make this automatic? make "cache_parameter" function using weakrefs? 
-        self._cache.append(parameter.data.clone())
+        if cache:
+            self._cache.append(parameter.data.clone())
+        else:
+            self._cache.append(None)
         self._bending_targets.append(parameter)
+        name = self._generate_parameter_name() if name is None else name.replace(".", "_")
+        return name
 
     def update_parameter(self, parameter, new_parameter):
         """is used to replace reference from a parameter to another"""
@@ -58,16 +79,26 @@ class BendingCallback(nn.Module):
     def _register_shape(self, name, shape):
         self._bending_shapes[name] = shape
 
-    def add_bending_target(self, name, parameter=None, shape=None):
+    def add_bending_target(self, name, parameter=None, shape=None, cache=True):
         if (parameter is None) and (shape is None):
             raise BendingCallbackException("add_bending_target must be given a parameter or shape attribute")
         if shape is not None:
             self._register_shape(name, shape)
         if parameter is not None:
-            self._register_parameter(parameter, name)
+            self._register_parameter(parameter, name, cache=cache)
 
-    def register_controllable(self, control):
-        self._controllables[control.name] = control
+    # def register_controllable(self, control):
+    #     self._controllables[control.name] = control
+
+    def get(self, name: str):
+        # assert name in self.controllable_params, "%s has no controllable value %s"%(type(self), name)
+        for i, v in self._controllables.items():
+            if i==name:
+                return v.get_value()
+        for i, b in dict(self.named_buffers()).items():
+            if i == name:
+                return b
+        raise BendingCallbackAttributeException(name)
 
     def parse_bending_parameter(self, param, name=None):
         if isinstance(param, (int, float)):
@@ -77,7 +108,7 @@ class BendingCallback(nn.Module):
             assert name is not None, "BendingParameter must have a name"
             return BendingParameter(name="prob", value=param)
         elif isinstance(param, BendingParameter):
-            self.register_controllable(param)
+            self.register_controllable(param.name, param)
             return param
         else:
             raise TypeError('received invalid prod argument of type %s'%type(param))
@@ -87,15 +118,32 @@ class BendingCallback(nn.Module):
 
     def update(self):
         """updates internal state from controllables."""
-        raise NotImplementedError()
+        pass
 
     def forward(self, *args, **kwargs):
         """applies transformation to an input (typically activations)"""
         raise NotImplementedError()
+    
+    def cache_from_id(self, idx: int) -> torch.nn.Parameter:
+        #grrrr
+        for i, v in enumerate(self._cache):
+            if i == idx:
+                if v is None:
+                    raise BendingCallbackException('cache with idx %s has not been cached.'%idx)
+                else:
+                    return v
+        raise BendingCallbackException('%s not present in masks'%idx)
 
-    def apply(self, *args, **kwargs):
-        """applies in place a transformation to a parameter."""
-        raise NotImplementedError()
+    def _apply_to_param(self, idx: int, param: nn.Parameter, cache: Optional[torch.Tensor]):
+        pass
+
+    def apply(self, update: bool = True):
+        """applies in place a transformation to cached parameters."""
+        if update:
+            self.update()
+        for i, v in enumerate(self._bending_targets):
+            v_cached = self.cache_from_id(i).data
+            self._apply_to_param(i, v, v_cached)
 
 
 
@@ -108,4 +156,8 @@ class CallbackChain(nn.Module):
         for i, m in enumerate(self.callbacks):
             x = m(x, name=name)
         return x 
+
+    def apply(self, update: bool = True):
+        #TODO
+        return NotImplemented
 

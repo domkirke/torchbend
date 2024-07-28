@@ -74,35 +74,6 @@ def get_param_type(param_type: str):
         raise BendingParameterException('param_type %s not handled'%param_type)
     return _param_types[param_type]
 
-"""
-def _param_type_from_obj(obj):
-    #damn torchscipt, don't judge me
-    _param_types = {'float': 1, 'int': 2}
-    if torch.is_tensor(obj):
-        assert obj.numel() == 1, "Got non-scalar tensor for BendingParameter value"
-        if obj.dtype in [torch.float, torch.float16, torch.float32, torch.float64]:
-            return _param_types['float']
-        elif obj.dtype in [torch.int, torch.int8, torch.int16, torch.int32, torch.int64]:
-            return _param_types['int']
-        else:
-            raise BendingParameterException("tensor dtype not handled : %s"%obj.dtype)
-    elif isinstance(obj, Integral):
-        return _param_types['int']
-    elif isinstance(obj, Real):
-        return _param_types['float']
-    else:
-        raise BendingParameterException('cannot retrieve param type from type : %s'%(type(obj)))
-
-def _dtype_from_param_type(param_type):
-    #TODO handle general float types
-    if (param_type == param_types['float']):
-        return torch.float32
-    elif (param_type == param_types['int']):
-        return torch.int64
-    else:
-        raise BendingParameterException('Wrong ParamType: %s'%param_type)
-    
-"""
 
 class BendingParameter(nn.Module):
     def __init__(self, 
@@ -124,6 +95,7 @@ class BendingParameter(nn.Module):
         self.clamp = clamp
         self._nodes = {}
         self._kwargs = kwargs
+        self._callbacks = {}
 
     def as_node(self, graph=None):
         if hash(graph) not in self._nodes:
@@ -136,6 +108,9 @@ class BendingParameter(nn.Module):
             return str(self._name)
         else:
             return str(self._name.value)
+
+    def _register_callback(self, cb, name):
+        self._callbacks[cb] = name
 
     # def slider(self, **add_kwargs):
     #     kwargs = self._kwargs
@@ -161,7 +136,7 @@ class BendingParameter(nn.Module):
         else:
             raise TypeError('cannot parse tensor %s as a native python value'%self.get_value())
 
-    def set_value(self, value: _VALID_PARAM_TYPES) -> None:
+    def set_value(self, value: _VALID_PARAM_TYPES, update: bool = True) -> None:
         if not isinstance(value, torch.Tensor):
             value = self._to_tensor(value)
         if self.clamp:
@@ -178,6 +153,13 @@ class BendingParameter(nn.Module):
             self.value.set_(value)
         else:
             self.value.data = value
+        if not torch.jit.is_scripting():
+            #TODO not compatible with scripting yet. Find a solution?
+            self._update_callbacks()
+
+    def _update_callbacks(self):
+        for cb, name in self._callbacks.items():
+            cb.update()
 
     def _clamp(self, value: torch.Tensor):
         if self.min_clamp is None and self.max_clamp is None:
@@ -227,77 +209,3 @@ class BendingParameter(nn.Module):
 
     def __call__(self):
         return self.get_value()
-
-# ___________________________________________________________________________________________
-# parameter setter
-
-
-def float_parameter_setter(parameter: BendingParameter, name: Optional[str] = None) -> Callable:
-    if name is None:
-        parameter_name = parameter.name
-    else:
-        parameter_name = str(name)
-
-    def float_parameter_clamped(self, value: float, parameter_name: str) -> int:
-        if parameter.min_clamp is not None:
-            if value < parameter.min_clamp:
-                return -1
-        if parameter.max_clamp is not None:
-            if value > parameter.min_clamp:
-                return -1
-        self._set_bending_control(parameter_name, torch.tensor(value))
-        return 0
-
-    def float_parameter_unclamped(self, value: float, parameter_name: str) -> int:
-        self._set_bending_control(parameter_name, torch.tensor(value))
-        return 0
-
-    if parameter.clamp:
-        return float_parameter_clamped
-    else:
-        return float_parameter_unclamped
-
-
-def int_parameter_setter(parameter: BendingParameter, name: Optional[str] = None) -> Callable:
-    if name is None:
-        parameter_name = parameter.name
-    else:
-        parameter_name = str(name)
-
-    def int_parameter_clamped(self, value: int, parameter_name: str) -> int:
-        if parameter.min_clamp is not None:
-            if value < parameter.min_clamp:
-                return -1
-        if parameter.max_clamp is not None:
-            if value > parameter.min_clamp:
-                return -1
-        self._set_bending_control(parameter_name, torch.tensor(value, dtype=torch.int))
-        return 0
-
-    def int_parameter_unclamped(self, value: int, paramater_name: str) -> int:
-        self._set_bending_control(parameter_name, torch.tensor(value, dtype=torch.int))
-        return 0
-
-    if parameter.clamp:
-        return int_parameter_clamped
-    else:
-        return int_parameter_unclamped
-
-
-def parameter_setter(parameter: BendingParameter, name: Optional[str] = None)  -> Callable:
-    return float_parameter_setter(parameter, name=name)
-
-# ___________________________________________________________________________________________
-# parameter getter
-
-def float_parameter_getter(parameter: BendingParameter, name: Optional[str] = None) -> Callable:
-    parameter_name = parameter.name if name is None else name
-    def float_getter(self, parameter_name: str) -> float:
-        return float(self._get_bending_control(parameter_name)) 
-    return float_getter
-
-
-def parameter_getter(parameter: BendingParameter, name: Optional[str] = None) -> Callable:
-    func = float_parameter_getter(parameter, name=name)
-    func.__globals__ = globals()
-    return func

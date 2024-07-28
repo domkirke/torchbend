@@ -1,7 +1,12 @@
 import torch
 import torchbend as tb
 import pytest
-from conftest import *
+import sys, os
+
+testpath = os.path.abspath((os.path.join(os.path.dirname(__file__), "..")))
+if testpath not in sys.path:
+    sys.path.append(testpath)
+from conftest import modules_to_test, ModuleTestConfig
 
 # def get_module(module_config):
 #     module_type, module_args, module_kwargs = module_config
@@ -52,9 +57,10 @@ def test_weight_bending(module_config):
         assert len(bended_module.bended_params) != 0
         unbended_dict = bended_module.state_dict()
         bended_dict = bended_module.bended_state_dict()
-        for k, v in module.state_dict().items():
-            if v.eq(0).all():
-                continue
+        for k in bended_module.bended_params.keys():
+            # v = bended_module.get_parameter(k)
+            # if v.eq(0).all():
+            #     continue
             assert torch.allclose(bended_dict[k], torch.zeros_like(bended_dict[k]))
             assert not bended_dict[k].eq(unbended_dict[k]).any()
 
@@ -90,9 +96,7 @@ def test_weight_bending_inplace(module_config):
     bended_module.bend_(zero_callback, *module_config.weight_targets(), verbose=True)
 
     # compare parameters
-    for k, v in module.state_dict().items():
-        # if v.eq(0).all():
-        #    continue 
+    for k in bended_module.bended_params.keys():
         # bended module's state dict is not changed ; inner module is modified in place
         assert torch.allclose(v, bended_module.state_dict()[k])
         assert not torch.allclose(v, bended_module.module.state_dict()[k])

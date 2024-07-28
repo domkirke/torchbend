@@ -11,7 +11,7 @@ from torch.fx.proxy import TraceError
 from typing import Union , NoReturn
 from .input import Inputs
 from .tracing import BendingTracer
-from .utils import BendingError, get_model_copy, bend_graph, _get_weight_properties, _import_to_interface
+from .utils import BendingError, get_model_copy, bend_graph, _get_weight_properties, _import_to_interface, make_graph_jit_compatible
 from ..utils import checklist
 from ..bending import BendingCallback, CallbackChain
 
@@ -278,10 +278,12 @@ class BendedModule(object):
                     setattr(module, k+'_callback', CallbackChain(v))
             return module
 
-    def graph_module(self, fn="forward", module=None):
+    def graph_module(self, fn="forward", module=None, make_jit_compatible: bool = False):
         if module is None:
             module = self.bend_module(fn=fn)
         graph = self.bend_graph(fn=fn)
+        if make_jit_compatible:
+            graph = make_graph_jit_compatible(graph)
         return torch.fx.GraphModule(module, graph)
 
     def bend_graph(self, fn="forward"):
@@ -314,23 +316,29 @@ class BendedModule(object):
                 self._controllable_hash[v.name] = self._controllable_hash.get(v.name, []) + [self._bending_callbacks.index(callback)]
 
     @_import_to_interface
-    def bend(self, callback, *params, fn="forward", verbose=False):
+    def bend(self, callback, *params, fn=None, verbose=False):
         assert isinstance(callback, BendingCallback), "callback must be a BendingCallback instance"
+        if fn is None:
+            fn = list(self._graphs.keys())
+        else:
+            fn = checklist(fn)
+
+        # bend weights
         target_params = self._resolve_parameters(*params)
-        target_activations = []
-        if self._graphs.get(fn) is not None:
-            target_activations = self._resolve_activations(*params, fn=fn)
-        if len(target_params) + len(target_activations) == 0:
+        target_activations = {method: self._resolve_activations(*params, fn=method) for method in fn}
+        if len(target_params) + sum(map(len, target_activations.values())) == 0:
             raise BendingError('Could not find bendable elements with specification %s'%params)
-        # register bending
         for param in target_params:
             if verbose: 
                 print('bending parameter %s with %s...'%(param, callback))
             self._bend_parameter(param, callback)
-        for activation in target_activations:
-            self._bend_activation(activation, callback, fn=fn)
-            if verbose: 
-                print('bending activation %s with %s...'%(activation, callback))
+
+        # bend activations
+        for method in fn:
+            for activation in target_activations[method]:
+                self._bend_activation(activation, callback, fn=method)
+                if verbose: 
+                    print('bending activation %s with %s...'%(activation, callback))
         # extract controllables in case
         self._register_controllables(callback)
 

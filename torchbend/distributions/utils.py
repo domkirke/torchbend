@@ -1,9 +1,12 @@
+import torch
 import torch.distributions as tdist
 from .base import Distribution
 from .bernoulli import Bernoulli
 from .categorical import Categorical
 from .uniform import Uniform
 from .normal import Normal
+
+
 
 def convert_to_torch(distribution):
     if isinstance(distribution, tdist.Distribution):
