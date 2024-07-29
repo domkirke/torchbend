@@ -186,11 +186,12 @@ def tensor_allclose(t1, t2):
 
 
 class ComparisonResult(Enum):
-    Equal = 0
-    DifferentTypes = 1
-    DifferentLength = 2
-    DifferentKeys = 3
-    SimilarTypes = 4
+    NotEqual = 0
+    Equal = 1
+    DifferentTypes = 10
+    DifferentLength = 11
+    DifferentKeys = 12
+    SimilarTypes = 21
     def __bool__(self) -> Literal[True]:
         return self in [ComparisonResult.Equal, ComparisonResult.SimilarTypes]
 
@@ -198,17 +199,28 @@ def compare_outs(out1, out2, allow_subclasses=False):
     if isinstance(out1, (list, tuple)):
         if not isinstance(out2, type(out1)): return ComparisonResult.DifferentTypes
         if len(out1) != len(out2): return ComparisonResult.DifferentLength
-        return False not in [compare_outs(out1[i], out2[i]) for i in range(len(out1))]
+        if ComparisonResult.NotEqual in [compare_outs(out1[i], out2[i]) for i in range(len(out1))]:
+            return ComparisonResult.NotEqual
+        else:
+            return ComparisonResult.Equal
     elif isinstance(out1, dict):
         if not isinstance(out2, dict): return ComparisonResult.DifferentTypes
         keys1, keys2 = set(out1.keys()), set(out2.keys())
         if len(keys1.difference(keys2)) + len(keys2.difference(keys1)) != 0: return ComparisonResult.DifferentKeys
-        return False not in [compare_outs(out1[k], out2[k]) for k in keys1]
+        if ComparisonResult.NotEqual in [compare_outs(out1[k], out2[k]) for k in keys1]:
+            return ComparisonResult.NotEqual
+        else:
+            return ComparisonResult.Equal
     elif isinstance(out1, (dist.Distribution, torch.distributions.Distribution)):
         if not isinstance(out2, type(out1)): 
             out1 = dist.convert_to_torch(out1)
             out2 = dist.convert_to_torch(out2)
-            return ComparisonResult.SimilarTypes
+            res = compare_outs(dist.utils.convert_from_torch(out1).as_tuple(), 
+                                dist.utils.convert_from_torch(out2).as_tuple())
+            if bool(res):
+                return ComparisonResult.SimilarTypes
+            else:
+                return ComparisonResult.NotEqual
         else:
             return compare_outs(dist.utils.convert_from_torch(out1).as_tuple(), 
                                 dist.utils.convert_from_torch(out2).as_tuple())
@@ -219,9 +231,15 @@ def compare_outs(out1, out2, allow_subclasses=False):
             if (type(out1) != type(out2)):return ComparisonResult.DifferentTypes
         
         if torch.is_tensor(out1):
-            return tensor_allclose(out1, out2)
+            if tensor_allclose(out1, out2):
+                return ComparisonResult.Equal
+            else:
+                return ComparisonResult.NotEqual
         elif isinstance(out1, (float, int, str, complex, bool, bytes, bytearray)):
-            return out1 == out2
+            if out1 == out2:
+                return ComparisonResult.Equal
+            else:
+                return ComparisonResult.NotEqual
         
 def compare_state_dict_tensors(dict1, dict2):
     keys1, keys2 = set(dict1.keys()), set(dict2.keys())
@@ -262,16 +280,16 @@ def _defs_from_template(template,  **kwargs):
 def get_random_hash(n=8):
     return "".join([chr(random.randrange(97,122)) for i in range(n)])
 
-def _import_defs_from_tmpfile(code, gl=None, tmpdir="/tmp/torchbend/jit"):
+def _import_defs_from_tmpfile(code, gl=None, lo=None, tmpdir="/tmp/torchbend/jit"):
     gl = gl or globals() 
     os.makedirs(tmpdir, exist_ok=True)
     file = os.path.join(tmpdir, get_random_hash()+".py")
     with open(file, 'w+') as f:
         f.write(code)
-    local_namespace = {}
+    lo = lo or {}
     code_compiled = compile(code, file, 'exec')
-    exec(code_compiled, gl, local_namespace)
-    return local_namespace
+    exec(code_compiled, gl, lo)
+    return lo 
     
 
 

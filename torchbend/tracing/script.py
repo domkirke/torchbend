@@ -1,8 +1,10 @@
 import inspect
-from typing import List, Dict
+from typing import List, Dict, Callable
 from types import MethodType
 import torch, torch.nn as nn
+from ..bending import BendingParameter, get_param_type
 from .utils import _defs_from_template, _resolve_code, _import_defs_from_tmpfile
+import nn_tilde
 
 class ScriptedBendedException(Exception):
     pass
@@ -13,11 +15,56 @@ def {{NAME}}{{SIGNATURE}}:
     return self._{{NAME}}{{OUTS}}
 """
 
-class ScriptedBendedModule(nn.Module):
-    def __init__(self, model):
-        super().__init__()
+attribute_template = """
+@torch.jit.export
+def get_{{NAME}}(self) -> {{TYPE_EXPR}}:
+    return float(self._get_bending_control(\"{{NAME}}\")) 
+
+@torch.jit.export
+def set_{{NAME}}(self, value: {{TYPE_EXPR}}) -> int:
+    return self._set_bending_control(\"{{NAME}}\", torch.tensor(value, dtype={{DTYPE}}))
+"""
+
+class ListAttribute(torch.jit.Attribute):
+
+    def __getitem__(self, item):
+        self.value.__getitem__(item)
+
+    def append(self, x): 
+        self.value.append(x)
+
+
+def _template_from_param(param: BendingParameter, **kwargs):
+    kwargs['name'] = kwargs.get('name', param.name)
+    if param.param_type == get_param_type("float"):
+        kwargs['dtype'] = kwargs.get('dtype', torch.float32)
+        kwargs['type_expr'] = kwargs.get('type_expr', "float")
+        return _resolve_code(attribute_template, **kwargs)
+    elif param.param_type == get_param_type("int"):
+        kwargs['dtype'] = kwargs.get('dtype', torch.int64)
+        kwargs['type_expr'] = kwargs.get('type_expr', "int")
+        return _resolve_code(attribute_template, **kwargs)
+
+class ScriptedBendedModule(nn_tilde.Module):
+
+    def __init__(self, model, for_nntilde: bool = False):
+        nn.Module.__init__(self)
+        self._methods = ListAttribute([], List[str])
+        self._attributes = ListAttribute([], List[str])
+
+        self._nntilde = for_nntilde
         self._import_model(model)
         self._import_bending(model) 
+        if for_nntilde:
+            if getattr(getattr(self, "_register_methods"), "__isabstractmethod__", False):
+                raise ScriptedBendedException('_register_methods is not defined for class %s'%type(self))
+            self._register_methods(model)
+
+    def _set_attribute_callbacks(self, param: BendingParameter) -> Dict[str, Callable]:
+        codes = _template_from_param(param, cls_self=type(self).__name__)
+        funcs = _import_defs_from_tmpfile(codes, gl=globals(), lo=locals())
+        setattr(self, "set_"+param.name, MethodType(funcs["set_"+param.name], self))
+        setattr(self, "get_"+param.name, MethodType(funcs["get_"+param.name], self))
 
     def _register_imported_methods(self, methods: List[str]):
         codes = []
@@ -59,8 +106,9 @@ class ScriptedBendedModule(nn.Module):
             for i, b in enumerate(self._bending_callbacks):
                 if v in b:
                     self._controllables_hash.value[v.name] = self._controllables_hash.value.get(v.name, []) + [i]
-            # self._set_attribute_callbacks(v)
-            # self.register_attribute(v.name, v.get_python_value())
+            if self._nntilde:
+                self._set_attribute_callbacks(v)
+                self.register_attribute(v.name, v.get_python_value())
                 
     def _update_bended_weights(self, model):
         param_dict = self._full_param_dict()
@@ -86,7 +134,10 @@ class ScriptedBendedModule(nn.Module):
 
     def _update_weights(self, name: str):
         with torch.no_grad():
-            callbacks = self._controllables_hash[name]
+            if torch.jit.is_scripting():
+                callbacks = self._controllables_hash[name]
+            else:
+                callbacks = self._controllables_hash.value[name]
             for i, c in enumerate(self._bending_callbacks):
                 for j in callbacks:
                     if i == j: c.apply()
@@ -101,9 +152,10 @@ class ScriptedBendedModule(nn.Module):
         raise ModuleNotFoundError("No bending control named %s in model %s"%(name, self))
 
     @torch.jit.export
-    def _set_bending_control(self, name: str, value: torch.Tensor) -> None:
+    def _set_bending_control(self, name: str, value: torch.Tensor) -> int:
         """set a bending control with name and value"""
         for v in self._controllables:
             if v.name == name:
                 v.set_value(value)
         self._update_weights(name)
+        return 0

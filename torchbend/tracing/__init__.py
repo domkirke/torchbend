@@ -4,8 +4,8 @@ from .tracing import *
 from .module import *
 
 from .script import *
-def script_method(self, script=True, methods=[]):
-    mod = ScriptedBendedModule(self)
+def script_method(self, script=True, export_for_nn: bool = False):
+    mod = ScriptedBendedModule(self, for_nntilde=export_for_nn)
     # for m in checklist(methods):
     #     setattr(mod, m, torch.jit.export(getattr(mod, m)))
     if script: 

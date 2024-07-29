@@ -119,10 +119,6 @@ class Mask(BendingCallback):
         
                   
 class OrderedMask(Mask): 
-    weight_compatible = True
-    activation_compatible = True
-    jit_compatible = True
-    nntilde_compatible = True
 
     def __repr__(self): 
         return f"Mask(prob={float(self.prob):.3f})"
@@ -164,8 +160,6 @@ class OrderedMask(Mask):
     def get_mask(self, param, name: Optional[str]) -> torch.Tensor:
         if name is not None:
             mask_idx = self._mask_from_name(name)
-            # if mask_idx.numel() != param.numel():
-            #     mask_idx = self._update_mask(name, param.shape)
             mask = self._mask_from_randperm(mask_idx, self.prob.get_value(), param.shape).to(param)
         else:
             mask = torch.bernoulli(torch.full_like(param, fill_value=float(self.prob))).to(param)

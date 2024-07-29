@@ -75,7 +75,12 @@ def test_mask_script(cb_class, module_config):
         prob = tb.bending.BendingParameter('mask', 1.)
         mask_callback = cb_class(prob=prob)
 
-        mod.bend(mask_callback, *activation_targets)
-        mod_scripted = mod.script()
+        mod.bend(mask_callback, *weight_targets, *activation_targets)
+        mod_scripted = mod.script(script=False)
+        mod_scripted._set_bending_control('mask', 1.)
         out_scripted = getattr(mod_scripted, method)(*args, **kwargs)
         assert bool(tb.compare_outs(out_orig, out_scripted))
+
+        mod_scripted._set_bending_control('mask', 0.)
+        out_scripted = getattr(mod_scripted, method)(*args, **kwargs)
+        assert not bool(tb.compare_outs(out_orig, out_scripted))

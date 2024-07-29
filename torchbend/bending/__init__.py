@@ -1,4 +1,4 @@
-from .parameter import BendingParameter
+from .parameter import BendingParameter, get_param_type
 from .base import BendingCallback, CallbackChain
 from .mask import Mask, OrderedMask
 from .affine import *

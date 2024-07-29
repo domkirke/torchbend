@@ -1,7 +1,7 @@
 from typing import Dict, List
 import re
 from ...bending.parameter import BendingParameter
-from ...tracing.nntilde import BendableNNTildeModule
+from ...tracing.script import ScriptedBendedModule
 import torch
 import torch.nn as nn
 
@@ -11,9 +11,12 @@ def _zero_cache(module, filters=[r".*cache", r".*pad"]):
         if True in [re.match(f, k) is not None for f in filters]:
             v.data.zero_()
 
-class ScriptableRAVE(BendableNNTildeModule):
+class ScriptableRAVE(ScriptedBendedModule):
 
     scripted_methods = ['encode', 'decode', 'forward']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, for_nntilde=True, **kwargs)
 
     def _import_model(self, model):
         super()._import_model(model)
