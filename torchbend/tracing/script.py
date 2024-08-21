@@ -1,8 +1,9 @@
 import inspect
+
 from typing import List, Dict, Callable
 from types import MethodType
 import torch, torch.nn as nn
-from ..bending import BendingParameter, get_param_type
+from ..bending import BendingParameter, get_param_type, BendingCallback, CallbackChain
 from .utils import _defs_from_template, _resolve_code, _import_defs_from_tmpfile
 import nn_tilde
 
@@ -100,7 +101,7 @@ class ScriptedBendedModule(nn_tilde.Module):
 
     def _import_bending_ops(self, model):
         self._controllables = nn.ModuleList(model.controllables.values())
-        self._bending_callbacks = nn.ModuleList(model._bending_callbacks)
+        self._bending_callbacks = nn.ModuleList([m.script() for m in model._bending_callbacks])
         self._controllables_hash = torch.jit.Attribute({}, Dict[str, List[int]])
         for v in self._controllables:
             for i, b in enumerate(self._bending_callbacks):
@@ -122,7 +123,10 @@ class ScriptedBendedModule(nn_tilde.Module):
                 cb.update_parameter(model_param_dict[param], param_dict[param])
 
     def _update_bended_activations(self, model):
-        pass
+        for s in self.scripted_methods:
+            for k, v in getattr(self, f"_{s}")._modules.items():
+                if isinstance(v, (CallbackChain, BendingCallback)):
+                    setattr(getattr(self, f"_{s}")._modules, k, v.script())
 
     def _import_bending(self, model):
         self._import_bending_ops(model)

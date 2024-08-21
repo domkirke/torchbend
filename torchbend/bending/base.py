@@ -1,4 +1,5 @@
 import torch
+import copy
 import torch.nn as nn
 from collections import OrderedDict
 from typing import Union, List, Optional
@@ -40,6 +41,9 @@ class BendingCallback(nn.Module):
             self.register_controllable(name, value)
         else:
             super().__setattr__(name, value)
+
+    def script(self):
+        return self
 
     def register_controllable(self, name, value):
         assert name in self.controllable_params, "tried to register controllable value %s, but not compatible with %s"%(name, type(self))
@@ -151,6 +155,11 @@ class CallbackChain(nn.Module):
     def __init__(self, *args):
         super().__init__()
         self.callbacks = nn.ModuleList(*args)
+
+    def script(self):
+        scripted = copy.copy(self)
+        scripted.callbacks = nn.ModuleList([s.script() for s in scripted.callbacks])
+        return scripted
 
     def forward(self, x, name: Optional[str] = None):
         for i, m in enumerate(self.callbacks):

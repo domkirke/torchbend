@@ -100,7 +100,7 @@ class BendableNNTildeModule(nn_tilde.Module):
 
     def _import_bending_ops(self, model):
         self._controllables = nn.ModuleList(model.controllables.values())
-        self._bending_callbacks = nn.ModuleList(model._bending_callbacks)
+        self._bending_callbacks = nn.ModuleList([m.script() for m in model._bending_callbacks])
         self._controllables_hash = torch.jit.Attribute({}, Dict[str, List[int]])
         for v in self._controllables:
             for i, b in enumerate(self._bending_callbacks):

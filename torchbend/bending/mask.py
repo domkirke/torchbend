@@ -1,4 +1,5 @@
 import torch
+import copy
 from operator import mul
 from functools import reduce
 from typing import Optional, List, Tuple, Iterable, Union
@@ -35,7 +36,8 @@ class Mask(BendingCallback):
 
     def __getstate__(self):
         out_dict = dict(self.__dict__)
-        del out_dict["generator"]
+        if "generator" in out_dict:
+            del out_dict["generator"]
         return out_dict
 
     def __setstate__(self, obj):
@@ -43,6 +45,11 @@ class Mask(BendingCallback):
         self.generator = torch.Generator()
         if obj.get('seed'):
             self.generator.manual_seed(obj.get('seed'))
+
+    def script(self):
+        mod = copy.copy(self)
+        del mod.generator
+        return mod
 
     def __repr__(self):
         return f"Mask(prob={float(self.prob):.3f})"
