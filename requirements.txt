@@ -1,2 +1,3 @@
-torch > 1.8
 tabulate
+torch > 1.8
+git+https://github.com/acids-ircam/nn_tilde

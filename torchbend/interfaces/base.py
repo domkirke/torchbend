@@ -27,6 +27,10 @@ class Interface(object):
         raise BendingInterfaceException('cannot delete model of interface')
     model = property(_getmodel_, _setmodel_, _delmodel_)
 
+    def to(self, device):
+        #TODO better
+        self._model = self._model.to(device)
+
     def _import_callbacks_(self):
         for cb in self._imported_callbacks_:
             if not cb in dir(self._model):

@@ -1,7 +1,9 @@
 import numpy as np, os, torch, torch.nn as nn, sys, copy, bisect, random
-from . import distributions as dist
 from collections import OrderedDict
 from typing import List, Union, Tuple
+
+
+
 
 
 class TestModule(nn.Module):
@@ -28,20 +30,11 @@ def parse_slice(item, length):
     stop = start if stop >= 0 else length + stop
     return start, stop, item.step
 
+
 def parse_files_in_folder(dirpath, ext):
     ext = checklist(ext)
     listfiles = os.listdir(dirpath)
     return list(filter(lambda x: os.path.splitext(x)[1] in ext, listfiles))
-
-def checkdist(obj):
-    if obj is None:
-        return obj
-    elif isinstance(obj, str):
-        return getattr(dist, obj)
-    elif issubclass(obj, dist.Distribution):
-        return obj
-    else:
-        raise TypeError('obj %s does not seem to be a distribution')
 
 def check_shape(shape, fill_value: int = 1):
     shape = list(shape)
@@ -160,23 +153,6 @@ def print_module_grads(module):
             print(f'{k}: None')
         else:
             print_stats(k, v.grad)
-
-def trace_distribution(distribution, name="", scatter_dim=False):
-    if name != "":
-        name = name + "_"
-    if isinstance(distribution, dist.Normal):
-        if scatter_dim:
-            return {**{f'{name}mean/dim_{i}': distribution.mean[..., i] for i in range(distribution.mean.shape[-1])},
-                    **{f'{name}std/dim_{i}': distribution.stddev[..., i] for i in range(distribution.stddev.shape[-1])}}
-        else:
-            return {f"{name}mean": distribution.mean, f"{name}std": distribution.stddev}
-    elif isinstance(distribution, (dist.Bernoulli, dist.Categorical)):
-        if scatter_dim:
-            return {**{f'{name}probs/dim_{i}': distribution.probs[..., i] for i in range(distribution.probs.shape[-1])}}
-        else:
-            return {f"{name}probs": distribution.probs}
-    elif torch.is_tensor(distribution):
-        return {f"{name}": distribution}
 
 
 def get_shape_from_ratio(n_item, target_ratio):

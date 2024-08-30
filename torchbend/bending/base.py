@@ -95,14 +95,24 @@ class BendingCallback(nn.Module):
     #     self._controllables[control.name] = control
 
     def get(self, name: str):
-        # assert name in self.controllable_params, "%s has no controllable value %s"%(type(self), name)
-        for i, v in self._controllables.items():
-            if i==name:
-                return v.get_value()
-        for i, b in dict(self.named_buffers()).items():
-            if i == name:
-                return b
-        raise BendingCallbackAttributeException(name)
+        if torch.jit.is_scripting():
+            # assert name in self.controllable_params, "%s has no controllable value %s"%(type(self), name)
+            for i, v in self._controllables.items():
+                if i==name:
+                    return v.get_value()
+            for i, b in dict(self.named_buffers()).items():
+                if i == name:
+                    return b
+            else:
+                raise BendingCallbackAttributeException(name)
+        else:
+            if name in self._controllables: 
+                return self._controllables[name]
+            elif name in self.named_buffers().keys():
+                return self.named_buffers()[name]
+            else:
+                return getattr(self, name)
+        
 
     def parse_bending_parameter(self, param, name=None):
         if isinstance(param, (int, float)):
