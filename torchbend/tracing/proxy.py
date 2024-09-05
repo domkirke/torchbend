@@ -88,6 +88,9 @@ class BendingProxy(torch.fx.Proxy):
     def value(self):
         return self._value
 
+    def __int__(self):
+        return int(self._value)
+
     def __iter__(self):
         tracer = self.tracer
         if self.tracer.get_current_context_state() == TracingState.TRACING:
