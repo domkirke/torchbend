@@ -4,8 +4,6 @@ from typing import List, Union, Tuple
 
 
 
-
-
 class TestModule(nn.Module):
     def __init__(self, nlayers=3):
         super().__init__()
@@ -29,7 +27,6 @@ def parse_slice(item, length):
     start = start if start >= 0 else length + start
     stop = start if stop >= 0 else length + stop
     return start, stop, item.step
-
 
 def parse_files_in_folder(dirpath, ext):
     ext = checklist(ext)

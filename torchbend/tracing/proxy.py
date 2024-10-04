@@ -6,6 +6,27 @@ from enum import Enum
 from torch.fx.node import Argument, Node
 
 
+
+class CodePosition():
+    def __init__(self, frame):
+        self.frame = frame
+
+    @property
+    def code(self):
+        return self.frame.f_code
+
+    @property
+    def description(self):
+        code = self.code
+        desc = f"{code.co_filename}:"
+        desc += f"{code.co_name}"
+        desc += f".{code.co_firstlineno})"
+        return desc
+
+def get_code_pos_from_frame(frame):
+    return CodePosition(frame).description
+
+
 class TracingState(Enum):
     TRACING = 0
     RUNNING = 1
@@ -69,6 +90,7 @@ class ShapeAttribute(Attribute):
 class BendingProxy(torch.fx.Proxy):
     def __init__(self, node: Node, tracer = None, value: Optional[Any] = None):
         super(BendingProxy, self).__init__(node, tracer)
+        self._code_pos = CodePosition(self.tracer._find_user_frame())
         self._value = value
 
     def __len__(self):
@@ -88,6 +110,10 @@ class BendingProxy(torch.fx.Proxy):
     def value(self):
         return self._value
 
+    @property
+    def code(self):
+        return self._code_pos.get_code()
+
     def __int__(self):
         return int(self._value)
 
@@ -105,6 +131,10 @@ class BendingProxy(torch.fx.Proxy):
             return ShapeAttribute(self, k)
         if k == "device":
            return None
+
+        #TODO GENERAL BEHAVIOR
+        if k == "is_cuda":
+            return self._value.is_cuda
         else:
             return Attribute(self, k)
 

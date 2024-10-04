@@ -7,7 +7,6 @@ from .uniform import Uniform
 from .normal import Normal
 
 
-
 def convert_to_torch(distribution):
     if isinstance(distribution, tdist.Distribution):
         return distribution

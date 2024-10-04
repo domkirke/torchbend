@@ -103,11 +103,10 @@ class BendingCallback(nn.Module):
             for i, b in dict(self.named_buffers()).items():
                 if i == name:
                     return b
-            else:
-                raise BendingCallbackAttributeException(name)
+            raise BendingCallbackAttributeException(name)
         else:
             if name in self._controllables: 
-                return self._controllables[name]
+                return self._controllables[name].get_value()
             elif name in self.named_buffers().keys():
                 return self.named_buffers()[name]
             else:

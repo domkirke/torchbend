@@ -12,7 +12,7 @@ from torch.fx.proxy import Proxy, TraceError, TracerBase, ParameterProxy
 from torch.fx.node import Argument, Node
 from torch.fx.graph import Graph
 from .. import distributions as dist, DEBUG
-from .proxy import BendingProxy, ShapeAttribute, TracingState
+from .proxy import BendingProxy, ShapeAttribute, TracingState, get_code_pos_from_frame
 from .input import Inputs
 from ..utils import checklist
 from .utils import dist_to_tensor
@@ -60,6 +60,19 @@ a given and fixed set of args.
 """
 
 
+class LogicalFlowStep():
+    def __init__(self, obj):
+        if isinstance(obj, (Proxy, BendingProxy)):
+            # recording proxy
+            self.obj = obj
+            self.frame = obj.tracer._find_user_frame()
+        elif isinstance(obj, Node):
+            raise NotImplementedError()
+        else:
+            raise TypeError(f'{self.__class__.__name__} only takes BendingProxy or Nodes as arguments')
+
+    def __repr__(self):
+        return f"LogicalFlowStep(name={self.obj.node.name}, value={self.obj.value}, file={get_code_pos_from_frame(self.frame)})"
 
 
 class ActivationProperties():
@@ -155,6 +168,8 @@ class BendingTracer(torch.fx.Tracer):
                 self._values[proxied_buffer.replace('.', '_')] = root.get_buffer(proxied_buffer)
 
         graph = self._trace(root, concrete_args)
+        graph.logical_steps = self._concrete_flow_steps
+
         if return_out:
             out_node = list(filter(lambda x: x.op == "output", self.graph.nodes))[0]
             outs = []
@@ -630,15 +645,49 @@ class BendingTracer(torch.fx.Tracer):
         return a
 
     def to_bool(self, obj: 'BendingProxy') -> bool:
-        if obj._value is not None:
+        if getattr(obj, "_value", None) is not None:
             # trace steps where control flow was made concrete
-            self._concrete_flow_steps.append(obj)
+            self._concrete_flow_steps.append(LogicalFlowStep(obj))
             return bool(obj._value)
         else:
             raise TraceError('symbolically traced variables cannot be used as inputs to control flow')
 
     ## ____________________________________________________________________________________________________________________
     ##  overriden trace function
+
+    def _find_user_frame(self):
+        """
+        Find the Python stack frame executing the user code during
+        symbolic tracing.
+        """
+        # We have to do a little dance here. Basically, walk up the callstack and
+        # record the first frame not in the pytorch source. This is the frame executing
+        # the user code during tracing.
+        frame = inspect.currentframe()
+
+        pt_files = ['torch/fx/proxy.py',
+                    'torch/fx/_symbolic_trace.py',
+                    'torch/fx/experimental/proxy_tensor.py',
+                    'torch/_ops.py',
+                    'torch/_tensor.py',
+                    'torch/utils/_python_dispatch.py',
+                    'torch/_prims_common/wrappers.py',
+                    'torch/_refs/__init__.py',
+                    'torch/_refs/nn/functional/__init__.py',
+                    'torch/utils/_stats.py',
+                    'torchbend/tracing/tracing.py',
+                    'torchbend/tracing/proxy.py',
+                    'torchbend/tracing/module.py',
+                    ]
+        while frame:
+            frame = frame.f_back
+            if frame and all(not frame.f_code.co_filename.endswith(file) for file in pt_files):
+                break
+
+        if not frame:
+            return None
+
+        return frame
 
     def set_current_context(self, context):
         self._active_contexts.append(context)
