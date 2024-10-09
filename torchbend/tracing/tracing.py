@@ -12,7 +12,7 @@ from torch.fx.proxy import Proxy, TraceError, TracerBase, ParameterProxy
 from torch.fx.node import Argument, Node
 from torch.fx.graph import Graph
 from .. import distributions as dist, DEBUG
-from .proxy import BendingProxy, ShapeAttribute, TracingState, get_code_pos_from_frame
+from .proxy import *
 from .input import Inputs
 from ..utils import checklist
 from .utils import dist_to_tensor
@@ -60,7 +60,29 @@ a given and fixed set of args.
 """
 
 
-class LogicalFlowStep():
+## TRACING / PATCHING ADDITIONAL DEFINITIONS
+
+def catch_value(obj: Any):
+    if isinstance(obj, BendingProxyInt):
+        return int(obj)
+    else:
+        return obj
+
+def wrapped_range(*args):
+    args = tuple(map(catch_value, args))
+    return range(*args)
+
+def wrapped_reversed(*args):
+    if len(args) > 1: raise TypeError("reversed expected 1 argument, got 2")
+    if not hasattr(args[0], "__iter__"): TypeError("'%s' object is not reversible"%(type(args[0])))
+    return reversed(list(iter(args[0])))
+
+def _patch_iterators(patcher: _Patcher, frame_dict: Dict[str, Any]):
+    patcher.patch(frame_dict, "range", wrapped_range)
+    patcher.patch(frame_dict, "reversed", wrapped_reversed)
+
+
+class FlowStep():
     def __init__(self, obj):
         if isinstance(obj, (Proxy, BendingProxy)):
             # recording proxy
@@ -74,6 +96,16 @@ class LogicalFlowStep():
     def __repr__(self):
         return f"LogicalFlowStep(name={self.obj.node.name}, value={self.obj.value}, file={get_code_pos_from_frame(self.frame)})"
 
+class LogicalFlowStep(FlowStep):
+    pass
+
+class LoopFlowStep(FlowStep):
+    def __init__(self, obj):
+        super(LoopFlowStep, self).__init__(obj)
+        self.frame = obj.tracer._find_user_frame()
+    def __repr__(self):
+        return f"LoopFlowStep(name={self.obj.node.name}, file={get_code_pos_from_frame(self.frame)})"
+        
 
 class ActivationProperties():
     def __init__(self, **kwargs):
@@ -103,6 +135,9 @@ class TracingContext():
 
     def __exit__(self, *args, **kwargs):
         self._tracer.remove_context(self)
+
+
+
 
 
 class BendingTracer(torch.fx.Tracer):
@@ -168,7 +203,7 @@ class BendingTracer(torch.fx.Tracer):
                 self._values[proxied_buffer.replace('.', '_')] = root.get_buffer(proxied_buffer)
 
         graph = self._trace(root, concrete_args)
-        graph.logical_steps = self._concrete_flow_steps
+        graph.flow_steps = self._concrete_flow_steps
 
         if return_out:
             out_node = list(filter(lambda x: x.op == "output", self.graph.nodes))[0]
@@ -456,9 +491,13 @@ class BendingTracer(torch.fx.Tracer):
             '''
         """
         if DEBUG: print("creating proxy : ", kind, target, args, kwargs, name)
+        if (type_expr == int) and (proxy_factory_fn is None):
+            proxy_factory_fn = functools.partial(self.proxy, proxy_type=BendingProxyInt, type_expr=int)
+        else:
+            proxy_factory_fn = functools.partial(self.proxy, proxy_type=BendingProxy, type_expr=type_expr)
         return super().create_proxy(kind, target, args, kwargs, name=name, type_expr=type_expr, proxy_factory_fn=proxy_factory_fn)
 
-    def proxy(self, node: Node) -> 'Proxy':
+    def proxy(self, node: Node, proxy_type=BendingProxy, type_expr=None) -> 'BendingProxy':
         """
         this is the default callback to call a proxy after the node creation, if not specified
         with node_factory when calling create_proxy.
@@ -477,7 +516,7 @@ class BendingTracer(torch.fx.Tracer):
         self._values[node.name] = out
         shape = self._get_shape(out)
         self._activations[node.name] = ActivationProperties(op=node.op, shape=shape)
-        proxy = BendingProxy(node, self, value=out)
+        proxy = proxy_type(node, self, value=out, type_expr=type_expr)
         return proxy
 
     def dynamic_shape_proxy(self, node: Node) -> 'ShapeAttribute':
@@ -566,6 +605,9 @@ class BendingTracer(torch.fx.Tracer):
 
     ## ____________________________________________________________________________________________________________________
     ## UTILS
+
+    def record_loop(self, obj):
+        self._concrete_flow_steps.append(LoopFlowStep(obj))
 
     def _get_dist_count(self, dist_name: str):
         if not dist_name in self._dist_count_hash:
@@ -803,7 +845,7 @@ class BendingTracer(torch.fx.Tracer):
                 )
             else:
                 assert TraceError('Cannot trace function %s'%fn)
-
+            
             parameter_proxy_cache: Dict[
                 str, Proxy
             ] = {}  # Reduce number of get_attr calls
@@ -842,6 +884,7 @@ class BendingTracer(torch.fx.Tracer):
                     torch.nn.Module, "__call__", module_call_wrapper, deduplicate=False
                 )
                 _patch_wrapped_functions(patcher)
+                _patch_iterators(patcher, fn_globals)
                 _autowrap_check(patcher, fn_globals, self._autowrap_function_ids)
                 for module in self._autowrap_search:
                     _autowrap_check(

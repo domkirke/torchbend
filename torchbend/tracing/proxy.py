@@ -70,7 +70,7 @@ class ShapeAttribute(Attribute):
     def __getitem__(self, *args):
         # static_shape = None if self._static_shape is None else self._static_shape.__getitem__(*args)
         return self.tracer.create_proxy('call_function', getitem, (self, *args), {},
-                                        name=self.tracer.graph._target_to_str(getitem))
+                                        name=self.tracer.graph._target_to_str(getitem), type_expr=int)
         #                                 proxy_factory_fn=self.tracer.dynamic_shape_proxy)
         # return ShapeAttribute(self.root, self.attr, static_shape=self._static_shape, _sub_idxs=args)
 
@@ -88,10 +88,11 @@ class ShapeAttribute(Attribute):
 
 
 class BendingProxy(torch.fx.Proxy):
-    def __init__(self, node: Node, tracer = None, value: Optional[Any] = None):
+    def __init__(self, node: Node, tracer = None, value: Optional[Any] = None, type_expr=None):
         super(BendingProxy, self).__init__(node, tracer)
         self._code_pos = CodePosition(self.tracer._find_user_frame())
         self._value = value
+        self._type_expr = type_expr
 
     def __len__(self):
         if self.tracer.get_current_context_state() == TracingState.TRACING:
@@ -107,6 +108,10 @@ class BendingProxy(torch.fx.Proxy):
         return "BendingProxy(%s)"%self.node#, value=%s)"%(self.node, self._value if self._value is None else self._value.shape)
 
     @property
+    def type_expr(self):
+        return self._type_expr
+
+    @property
     def value(self):
         return self._value
 
@@ -114,14 +119,14 @@ class BendingProxy(torch.fx.Proxy):
     def code(self):
         return self._code_pos.get_code()
 
-    def __int__(self):
-        return int(self._value)
-
     def __iter__(self):
         tracer = self.tracer
+        if not hasattr(self.value, "__iter__"):
+            raise TraceError('Tried to iterate over BendyProxy with non-iterable value of type %s'%type(self.value))
         if self.tracer.get_current_context_state() == TracingState.TRACING:
             out = [tracer.create_proxy('call_function', getitem, (self, i,), {},
                                         name=tracer.graph._target_to_str(getitem)) for i in range(len(self.value))]
+            tracer.record_loop(self)
             return iter(out)
         elif self.tracer.get_current_context_state() == TracingState.RUNNING:
             return iter(self.value)
@@ -144,4 +149,12 @@ class BendingProxy(torch.fx.Proxy):
                                     name=tracer.graph._target_to_str(setitem))
 
 
-__all__  = ['ShapeAttribute', 'BendingProxy']
+class BendingProxyInt(BendingProxy):
+
+    def __repr__(self):
+        return "BendingProxyInt(%s)"%self.node#, value=%s)"%(self.node, self._value if self._value is None else self._value.shape)
+
+    def __int__(self):
+        return int(self._value)
+
+__all__  = ["BendingProxy", "BendingProxyInt", "ShapeAttribute", "TracingState", "get_code_pos_from_frame"]
