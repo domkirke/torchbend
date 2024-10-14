@@ -107,8 +107,8 @@ class BendingCallback(nn.Module):
         else:
             if name in self._controllables: 
                 return self._controllables[name].get_value()
-            elif name in self.named_buffers().keys():
-                return self.named_buffers()[name]
+            elif name in dict(self.named_buffers()).keys():
+                return dict(self.named_buffers())[name]
             else:
                 return getattr(self, name)
         

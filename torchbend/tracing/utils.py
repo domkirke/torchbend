@@ -1,5 +1,5 @@
 import copy, re, os
-from typing import Any
+from typing import Any, Union, Dict, List
 import random
 from enum import Enum
 from typing import Literal
@@ -8,6 +8,8 @@ from collections import OrderedDict
 import torch
 from .. import distributions as dist
 from ..bending.parameter import BendingParameter, get_param_type
+from ..bending.config import BendingConfig
+from ..utils import get_parameter
 
 
 ## Utils
@@ -290,8 +292,6 @@ def _import_defs_from_tmpfile(code, gl=None, lo=None, tmpdir="/tmp/torchbend/jit
     code_compiled = compile(code, file, 'exec')
     exec(code_compiled, gl, lo)
     return lo 
-    
-
 
 def _template_from_param(template: str, param: BendingParameter, **kwargs):
     kwargs['name'] = kwargs.get('name', param.name)
@@ -316,6 +316,29 @@ def make_graph_jit_compatible(graph: torch.fx.Graph):
     # _, out = new_graph.graph_copy(graph, nodes, return_output_node=True)
     # new_graph.output(out)
     for n in graph.nodes:
-        if n.op == "call_function" and n.target == dist.convert_to_torch:
+        if n.op == "call_function" and n.target == dist.onvert_to_torch:
             n.target = identity
     return graph 
+
+def _bending_config_from_dicts(*dicts, module=None):
+    bending_config = BendingConfig(module=module)
+    for d in dicts:
+        for key, cbs in d.items():
+            for cb in cbs:
+                bending_config.append((cb, key))
+    return bending_config
+
+def clone_parameters(module_or_dict: Union[Dict, torch.nn.Module], params: List[str]):
+    if isinstance(module_or_dict, torch.nn.Module):
+        for p in params:
+            get_parameter(module_or_dict, p).set_(get_parameter(module_or_dict, p).data.clone())
+    elif isinstance(module_or_dict, dict):
+        for p in params:
+            module_or_dict[p] = module_or_dict[p].clone()
+    else:
+        raise BendingError('clone_parameters only takes module or dictionaries as inputs, got : %s'%(type(module_or_dict)))
+
+
+    
+                
+

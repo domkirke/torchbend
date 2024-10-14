@@ -1,4 +1,5 @@
 from tabulate import tabulate
+from io import TextIOWrapper
 import types
 import pathlib, os
 import re
@@ -9,11 +10,13 @@ from torch import nn
 from torch.fx import Graph
 from torch.fx.proxy import TraceError
 from typing import Union , NoReturn
+from . import interp
 from .input import Inputs
 from .tracing import BendingTracer
-from .utils import BendingError, get_model_copy, bend_graph, _get_weight_properties, _import_to_interface, make_graph_jit_compatible
-from ..utils import checklist
-from ..bending import BendingCallback, CallbackChain
+from .utils import BendingError, get_model_copy, bend_graph, _get_weight_properties
+from .utils import _import_to_interface, make_graph_jit_compatible, clone_parameters, _bending_config_from_dicts
+from ..utils import checklist, get_parameter
+from ..bending import BendingCallback, CallbackChain, BendingConfig
 
 
 def _get_activations_properties(args):
@@ -34,6 +37,34 @@ def _get_wrapped_module_forward_call(fn):
     return _wrapped_module_forward_call
 
 
+class BendedModuleVersionEnv(object):
+    def __init__(self, *args, version=None):
+        self._modules = args
+        self._init_versions = [mod.version for mod in args]
+        self.version = version
+
+    def __enter__(self):
+        for mod in self._modules: 
+            mod.version = self.version
+
+    def __exit__(self, *args):
+        for i, mod in enumerate(self._modules): 
+            self._modules[i].version = self._init_versions[i]
+
+
+class BendedModuleInterpolationEnv(object):
+    def __init__(self, module, interp_dict=None, interp_func=interp.linear):
+        self._module = module 
+        self._interp_dict = interp_dict
+        self._interp_func = interp_func
+
+    def __enter__(self):
+        self._module.set_interpolation_weights(self._interp_dict, self._interp_func)
+
+    def __exit__(self, *args):
+        self._module.remove_interpolation_weights()
+
+
 class BendedModule(object):
     _default_version_key = "_default"
 
@@ -52,7 +83,7 @@ class BendedModule(object):
     # -- Version property --
     def _setversion_(self, version) -> NoReturn:
         if version is None: version = self._default_version_key
-        if version not in self.state_dict(True): raise BendingError('BendedModule has no version %s'%version)
+        if version not in self.state_dict(with_versions=True): raise BendingError('BendedModule has no version %s'%version)
         self._version = version
     def _getversion_(self) -> Union[torch.fx.Graph, None]:
         return self._version
@@ -65,8 +96,12 @@ class BendedModule(object):
         self._activations = {}
         # callback, parameters and activations
         self._bending_callbacks = []
-        self._bended_params = {}
+        self._bended_params = {self._default_version_key: {}}
+        self._bended_params_history = {self._default_version_key: []}
         self._bended_activations = {}
+        # interpolation parameters
+        self._interp_dict = None
+        self._interp_func = None
         # controllables parameters
         self._controllables = {}
         self._controllable_hash = {}
@@ -96,16 +131,11 @@ class BendedModule(object):
             else:
                 self._param_dict[self._default_version_key][k] = v
 
-    def get_module(self):
-        return self._module
-
     def _register_forward_call(self, func):
         setattr(self, func, types.MethodType(_get_wrapped_module_forward_call(func), self))
 
-    @_import_to_interface
-    def graph(self, fn="forward"):
-        if not fn in self._graphs: raise BendingError('function %s is not graphed'%fn)
-        return self._graphs[fn]
+    def get_module(self):
+        return self._module
 
     def update(self, param_name, value):
         if param_name not in self._controllables:
@@ -141,35 +171,30 @@ class BendedModule(object):
 
     @property
     @_import_to_interface
-    def weights(self):
+    def weight_names(self):
         """returns weights names"""
         if self.module is None:
             raise TraceError('BendedGraph has no weights since module as not been initialized')
         return list(dict(self.module.named_parameters()).keys())
 
-    @property
-    @_import_to_interface
-    def controllables(self):
-        return copy.copy(self._controllables)
+    def weight_shape(self, param):
+        return self.module.state_dict()[param].shape
 
     @_import_to_interface
-    def print_weights(self, flt=r".*", out=None):
+    def print_weights(self, flt=r".*", out=None) -> str:
         """print / export weights"""
         parameters = dict(filter(lambda v: re.match(flt, v[0]), dict(self.named_parameters()).items()))
         pretty_weights = tabulate(map(_get_weight_properties, parameters.items()))
         if out is None:
             print(pretty_weights)
+        elif isinstance(out, TextIOWrapper):
+            out.write(pretty_weights)
         else:
             out = pathlib.Path(out)
             os.makedirs(out.parent, exist_ok=True)
             with open(out, 'w+') as f:
                 f.write(pretty_weights)
-
-    def param_shape(self, param):
-        return self.module.state_dict()[param].shape
-
-    def activation_shape(self, param, fn="forward"):
-        return self.activations(fn)[param].shape
+        return pretty_weights
 
     # activations
     def activations(self, fn="forward", op=None, flt=r".*"):
@@ -183,26 +208,43 @@ class BendedModule(object):
     def activation_names(self, fn="forward"):
         return list(self._activations[fn].keys())
 
-    def is_traced(self, fn):
-        return fn in self._graphs
+    def activation_shape(self, param, fn="forward"):
+        return self.activations(fn)[param].shape
 
     @_import_to_interface
-    def print_activations(self, fn="forward", op=None, flt=r".*", out=None):
+    def print_activations(self, fn="forward", op=None, flt=r".*", out=None) -> str:
         activations = self.activations(fn, op=op, flt=flt)
         act_txt = tabulate(map(_get_activations_properties, activations.items()))
         if out is None:
             print(act_txt)
+        elif isinstance(out, TextIOWrapper):
+            out.write(act_txt)
         else:
             out = pathlib.Path(out)
             os.makedirs(out.parent, exist_ok=True)
             with open(out, 'w+') as f:
                 f.write(act_txt)
+        return act_txt
 
+    @_import_to_interface
+    def graph(self, fn="forward"):
+        if not fn in self._graphs: raise BendingError('function %s is not graphed'%fn)
+        return self._graphs[fn]
+    
+    def is_traced(self, fn):
+        return fn in self._graphs
+    
+
+    # controllables
+    @property
+    @_import_to_interface
+    def controllables(self):
+        return copy.copy(self._controllables)
 
     def _resolve_parameters(self, *weights):
         """get valid weight names from a regexp"""
         valid_weights = []
-        for weight in self.weights:
+        for weight in self.weight_names:
             current_weight = []
             for w in weights:
                 if re.match(w, weight) is not None:
@@ -223,29 +265,41 @@ class BendedModule(object):
                 valid_acts.extend(current_act)
         return valid_acts
 
-    def state_dict(self, with_versions=False):
+    def state_dict(self, version=None, with_versions=False):
         if with_versions:
+            assert version is None, "either version or with_versions must be true."
             return dict(self._param_dict)
         else:
-            return self._param_dict[self._version]
-
-
-    def save(self, name):
-        """save bended dictionary with current wieght callbacks"""
-        #TODO
-        pass
-
+            version = version or self._version
+            return self._param_dict[version]
 
     # Bending callbacks
-    def bended_state_dict(self):
-        state_dict = copy.copy(self.module.state_dict())
+    def _bended_state_dict_from_version(self, version=None):
+        version = version or self.version
+        state_dict = copy.copy(self.state_dict(version=version))
         for k, v in self._param_dict[self._default_version_key].items():
             if k not in state_dict:
                 state_dict[k] = v
-            if k in self._bended_params:
-                for bc in self._bended_params[k]:
+            clone_parameters(state_dict, [k])
+            if k in self._bended_params[version]:
+                for bc in self._bended_params[version][k]:
                     state_dict[k] = bc(v, name=k.replace(".", "_"))
         return state_dict
+
+    def _bended_state_dict_from_interp(self):
+        dicts = {}
+        for version, weight in self._interp_dict.items():
+            bended_dict = self._bended_state_dict_from_version(version)
+            dicts[version] = (bended_dict, weight)
+        return self._interp_func(self, dicts)
+
+
+    def bended_state_dict(self, version=None):
+        if self._interp_dict is None:
+            return self._bended_state_dict_from_version(version)
+        else:
+            # assert version is not None, "cannot specify version when interpolation weights are defined. Call remove_interpolation_weights to remove"
+            return self._bended_state_dict_from_interp()
 
     @property
     def bending_callbacks(self):
@@ -253,23 +307,36 @@ class BendedModule(object):
 
     @property
     def bended_params(self):
-        return {k: list(v) for k, v in self._bended_params.items()}
+        return {k: list(v) for k, v in self._bended_params[self.version].items()}
 
     def bended_activations(self, fn):
         return {k: list(v) for k, v in self._bended_activations[fn].items()}
 
-    def _clone_bended_parameters(self, module, params):
-        """makes copy of internal parameter values of a module"""
-        for p in params:
-            module.get_parameter(p).set_(module.get_parameter(p).data.clone())
+    def bended_keys(self, fn=None, version=None):
+        version = version or self.version
+        bended_params = list({k: list(v) for k, v in self._bended_params[version].items()}.keys())
+        if (fn is None) and ('forward' in self._graphs): fn = "forward"
+        if (fn is not None) and fn in self._bended_activations:
+            return bended_params + list(self.bended_activations(fn).keys())
+        else:
+            return bended_params
 
-    def bend_module(self, fn="forward"):
+
+    @_import_to_interface
+    def bendable_keys(self, *request, fn="forward"):
+        keys = self._resolve_parameters(*request)
+        if self.is_traced(fn):
+            keys = keys + self._resolve_activations(*request, fn=fn)
+        return keys
+
+    def bend_module(self, fn="forward", version=None):
+        version = version or self.version
         with torch.no_grad():
+            # clone module with deep-copying parameters
             module = get_model_copy(self.module, copy_parameters=True)
             state_dict = self.bended_state_dict()
             # copy target weights, as load_state_dict method replaces in place
-            self._clone_bended_parameters(module, self._bended_params)
-            # clone module with deep-copying parameters
+            clone_parameters(module, list(self._bended_params[version].keys()) + self._bended_params_history[self.version])
             # loaded bended dict
             module.load_state_dict(state_dict)
             # add activation callbacks
@@ -289,11 +356,12 @@ class BendedModule(object):
     def bend_graph(self, fn="forward"):
         return bend_graph(self._graphs[fn], {k: CallbackChain(v) for k, v in self._bended_activations[fn].items()})
 
-    def _bend_parameter(self, parameter, callback):
-        assert parameter in self.weights, "parameter %s not found in module"%parameter
+    def _bend_parameter(self, parameter, callback, version=None):
+        version = version or self.version
+        assert parameter in self.weight_names, "parameter %s not found in module"%parameter
         if callback not in self._bending_callbacks:
             self._bending_callbacks.append(callback)
-        self._bended_params[parameter] = self._bended_params.get(parameter, []) + [callback]
+        self._bended_params[version][parameter] = self._bended_params[version].get(parameter, []) + [callback]
         #TODO register parameter in callback
         callback.add_bending_target(parameter, parameter=self._module.get_parameter(parameter))
 
@@ -315,8 +383,22 @@ class BendedModule(object):
                 self._controllables[v.name] = v
                 self._controllable_hash[v.name] = self._controllable_hash.get(v.name, []) + [self._bending_callbacks.index(callback)]
 
+    def bending_config(self, fn="forward", version=None):
+        version = version or self.version
+        #TODO reconstruct tree or ?
+        bending_config = _bending_config_from_dicts(self._bended_params[version], self._bended_activations.get(fn, {}), module=self)
+        print(bending_config)
+        return bending_config
+
     @_import_to_interface
-    def bend(self, callback, *params, fn=None, verbose=False):
+    def bend(self, *args, fn=None, verbose=False):
+        if len(args) == 1:
+            bended_config = args[0]
+            assert isinstance(args[0], BendingConfig)
+            for c, *w in args[0]:
+                self.bend(c, *w)
+            return 
+        callback, *params = args
         assert isinstance(callback, BendingCallback), "callback must be a BendingCallback instance"
         if fn is None:
             fn = list(self._graphs.keys())
@@ -351,14 +433,15 @@ class BendedModule(object):
             self._graphs[fn] = self.bend_graph(fn)
         self._reset_bending()
 
-    def _reset_bending(self):
+    def _reset_bending(self, version=None):
+        version = version or self.version
         self._bending_callbacks = []
-        self._bended_params = {}
+        self._bended_params[version] = {}
         self._bended_activations = {k: {} for k in self._bended_activations.keys()}
 
     @_import_to_interface
     def reset(self, version=None):
-        self._reset_bending()
+        self._reset_bending(version=version)
         for fn in list(self._graphs.keys()):
             if  fn+"_orig" not in self._graphs:
                 print('[Warning] could not recover graph for method %s'%fn)
@@ -367,10 +450,10 @@ class BendedModule(object):
             del self._graphs[fn+"_orig"]
         #TODO : callbacks are in modules for activations, handle it in proper way
         if version is None:
-            self._module.load_state_dict(self.state_dict(True)[self.version], strict=False)
+            self._module.load_state_dict(self.state_dict(self.version), strict=False)
         else:
             self.version = version
-            self._module.load_state_dict(self.state_dict(True)[version], strict=False)
+            self._module.load_state_dict(self.state_dict(version), strict=False)
 
     # callbacks
     @_import_to_interface
@@ -420,3 +503,64 @@ class BendedModule(object):
         outs = gm(**inputs)
         outs = {k.replace('_bended', ''): v for k, v in outs.items()}
         return outs
+
+
+    # version & interpolation handling
+
+    def _write_bendings(self) -> None:
+        # write weight bendings
+        self._param_dict[self.version] = self.bended_state_dict()
+        self.reset()
+
+    def _write_bendings_as_new(self, _version, force: bool = False, deep: bool = False, clear: bool = True) -> None:
+        if (_version in self._param_dict) and (not force):
+            raise BendingError(f'Version {_version} already exists. Please pass force=True as a keyword to erase previous configuration')
+        self._param_dict[_version] = self.bended_state_dict()
+        self._bended_params_history[_version] = list(self._bended_params[self.version].keys()) + list(self._bended_params_history[self.version])
+        self._bended_params[_version] = {}
+        if deep:
+            self._param_dict[_version] = copy.deepcopy(self._param_dict[_version])
+        if clear: 
+            self.reset(self.version)
+
+    def write(self, version=None, force: bool = False, deep: bool = False, clear: bool = True):
+        if version is None: 
+            self._write_bendings()
+        else:
+            self._write_bendings_as_new(version, force=force, deep=deep, clear = clear)
+        self.version = version
+
+    def set_version(self, version=None):
+        return BendedModuleVersionEnv(self, version=version)
+
+    def interpolate(self, *args, **weights):
+        if len(args) > 1: raise BendingError("interpolate takes a single optional positional argument for default weight, got %d"%(len(args)))
+        if len(args) == 1: weights[self._default_version_key] = float(args[0])
+        return BendedModuleInterpolationEnv(self, interp_dict=weights)
+
+    def set_interpolation_weights(self, interp_dict, interp_func):
+        for k in interp_dict.keys():
+            assert k in self._param_dict, "version %s not set"%k
+            interp_dict[k] = float(interp_dict[k])
+        self._interp_dict = interp_dict
+        self._interp_func = interp_func
+
+    def remove_interpolation_weights(self):
+        self._interp_dict = None
+        self._interp_func = None
+
+
+def unmatching_ids(module1, module2, weights, data=False):
+    def _get(module, w):
+        if isinstance(module, (nn.Module, BendedModule)): 
+            return get_parameter(module, w)
+        else:
+            return module[w]            
+    unmatched = []
+    for w in weights:
+        if data: 
+            res_tmp = id(_get(module1, w).data) == id(_get(module2, w).data)
+        else:
+            res_tmp = id(_get(module1, w)) == id(_get(module2, w))
+        if not res_tmp: unmatched.append(w)
+    return unmatched

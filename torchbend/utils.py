@@ -3,7 +3,6 @@ from collections import OrderedDict
 from typing import List, Union, Tuple
 
 
-
 class TestModule(nn.Module):
     def __init__(self, nlayers=3):
         super().__init__()
@@ -481,6 +480,22 @@ def _get_model_copy(model, copy_parameters=False):
 def get_random_hash(n=8):
     return "".join([chr(random.randrange(97,122)) for i in range(n)])
 
+def get_parameter(mod: torch.nn.Module, param: str):
+    param_list = param.split('.')
+    original_mod_type = type(mod)
+    for p in param_list:
+        try: 
+            p = int(p)
+            mod = mod.__getitem__(p)
+            continue
+        except ValueError as e:
+            pass
+        try:
+            mod = getattr(mod, p)
+        except Exception as e:
+            raise AttributeError('module of type %s does not seem to have key %s'%(original_mod_type, param))
+        
+    return mod 
 
 
-__all__= ['TestModule', 'get_random_hash']
+__all__= ['get_random_hash', 'get_parameter']

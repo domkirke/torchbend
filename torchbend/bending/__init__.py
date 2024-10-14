@@ -1,3 +1,4 @@
+from .config import BendingConfig
 from .parameter import BendingParameter, get_param_type
 from .base import BendingCallback, CallbackChain
 from .mask import Mask, OrderedMask

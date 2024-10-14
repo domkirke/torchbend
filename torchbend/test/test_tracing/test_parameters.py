@@ -1,7 +1,7 @@
 import torch
 import torchbend as tb
 import pytest
-from torchbend.test.conftest import *
+from test_modules.module_test_modules import modules_to_test
 
 
 @pytest.mark.parametrize("module_config", modules_to_test)

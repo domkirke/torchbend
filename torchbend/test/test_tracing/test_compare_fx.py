@@ -4,7 +4,7 @@ from tabulate import tabulate
 import torch
 import torchbend as tb
 import pytest
-from torchbend.test.conftest import modules_to_compare
+from test_modules.module_test_modules import modules_to_compare
 
 
 printed_graph_out = os.path.join(os.path.dirname(__file__), "graphs")

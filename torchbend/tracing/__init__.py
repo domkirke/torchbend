@@ -2,6 +2,7 @@ from .input import *
 from .proxy import *
 from .tracing import *
 from .module import *
+from .interp import * 
 
 from .script import *
 def script_method(self, script=True, export_for_nn: bool = False):

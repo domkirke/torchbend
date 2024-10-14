@@ -183,10 +183,7 @@ class BendingTracer(torch.fx.Tracer):
 
         # initialize all input args of the function, both from concrete_args and inputs
         # TODO no difference between concrete_args and inputs? remove concrete_args?    
-        
         self._input_args = inputs.update_(**concrete_args)
-
-
 
         self._model = root
         self._activations = {}
@@ -633,6 +630,7 @@ class BendingTracer(torch.fx.Tracer):
             else:
                 a = self.create_node("call_function", dist.convert_to_torch, args=(a,), kwargs = dist_args, name=a.name+"_tensor")#, type_expr="torch.Tensor")
                 type_expr = None
+            self._values[a.name] = self.run_node(a)
         return a, type_expr
     
     def _get_shape(self, x):
