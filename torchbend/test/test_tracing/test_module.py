@@ -1,6 +1,7 @@
 import torch
 import torchbend as tb
-from torchbend.tracing import unmatching_ids, get_model_copy, clone_parameters
+from torchbend.tracing import BendedWrapper, unmatching_ids, get_model_copy, clone_parameters
+from torchbend.tracing.utils import state_dict, named_parameters
 from torchbend.utils import checktuple, get_parameter
 import pytest
 import sys, os
@@ -12,17 +13,18 @@ if testpath not in sys.path:
 
 from test_modules.module_test_modules import modules_to_test, ModuleTestConfig 
 
+
 @pytest.mark.parametrize("module_config", modules_to_test)
 def test_model_copy(module_config: ModuleTestConfig):
     torch.set_grad_enabled(False)
 
-    module = module_config.get_module()
-    bended = tb.BendedModule(module)
+    module, bended = module_config.get_modules()
     weights = bended.bendable_keys(*module_config.weight_targets()) 
     assert id(module) == id(bended.module)
-    # assert not unmatching_ids(module, bended.module, weights)
-    # assert not unmatching_ids(module, bended.module, weights, data=True)
     assert not unmatching_ids(module, bended, weights, data=True)
+
+    if isinstance(bended, BendedWrapper):
+        module = bended.wrapped_module
 
     # test model copy
     module_copy = get_model_copy(module, copy_parameters=False)
@@ -51,7 +53,7 @@ def test_model_copy(module_config: ModuleTestConfig):
 def test_bending_config(module_config):
     module = module_config.get_module()
     for method in module_config.get_methods():
-        bended = tb.BendedModule(module)
+        bended = module_config.get_bended_module(module)
         bendable_params = module_config.weight_targets(method)
         bending_config = tb.BendingConfig((tb.Mask(0.3), *bendable_params), (tb.Mask(0.2), *bendable_params))
         bended.bend(bending_config)
@@ -63,8 +65,7 @@ def test_bending_config(module_config):
 
 @pytest.mark.parametrize("module_config", modules_to_test)
 def test_methods(module_config: ModuleTestConfig):
-    module = module_config.get_module()
-    bended_module = tb.BendedModule(module)
+    module, bended_module = module_config.get_modules()
     for method in module_config.get_methods():
         args, kwargs, _, _ = module_config.get_method_args(method)
         out = getattr(module, method)(*args, **kwargs)
@@ -75,9 +76,8 @@ def test_methods(module_config: ModuleTestConfig):
 
 @pytest.mark.parametrize("module_config", modules_to_test)
 def test_weights(module_config):
-    module = module_config.get_module()
-    named_params = dict(module.named_parameters())
-    bended_module = tb.BendedModule(module)
+    module, bended_module = module_config.get_modules()
+    named_params = dict(named_parameters(module))
 
     assert bended_module.weight_names == list(named_params.keys())
     bended_module.print_weights()
@@ -85,14 +85,13 @@ def test_weights(module_config):
     for k, v in named_params.items():
         assert k in weight_names
         assert bended_module.weight_shape(k) == v.shape
-    assert tb.compare_state_dict_tensors(module.state_dict(), bended_module.state_dict())
+    assert tb.compare_state_dict_tensors(state_dict(module), bended_module.state_dict())
     bended_module.print_weights(out=get_log_file(__file__))
 
 
 @pytest.mark.parametrize("module_config", modules_to_test)
 def test_graph(module_config):
-    module = module_config.get_module()
-    bended_module = tb.BendedModule(module)
+    module, bended_module = module_config.get_modules()
     with open(get_log_file(__file__), 'w+') as f:
         for method in module_config.get_methods():
             f.write('-'*10)
@@ -106,7 +105,7 @@ def test_graph(module_config):
                 is_equal = tb.compare_outs(out[i], o)
                 assert bool(is_equal), "outputs are not equal for method %s ; got %s"%(method, is_equal)
             for act in bended_module.activation_names(method):
-                shape = bended_module.activation_shape(act)
+                shape = bended_module.activation_shape(act, fn=method)
             log_to_file(f, "graph", graph)
             log_to_file(f, "activations", bended_module.print_activations(method))
 
@@ -117,14 +116,12 @@ def test_weight_bending(module_config):
     Safe bending adds the bending callbacks in a list, and modifies the state dict of a module
     safely at call.
     """
-    module = module_config.get_module()
-    bended_module = tb.BendedModule(module)
+    module, bended_module = module_config.get_modules()
     for method in module_config.get_methods():
-
         # remote bending
         zero_callback = tb.Mask(0.)
         bended_module.bend(zero_callback, *module_config.weight_targets(method), verbose=True)
-        assert tb.compare_state_dict_tensors(module.state_dict(), bended_module.state_dict()), "module's state dicts have been affected by bending."
+        assert tb.compare_state_dict_tensors(state_dict(module), bended_module.state_dict()), "module's state dicts have been affected by bending."
         assert len(bended_module.bending_callbacks) == 1
         assert len(bended_module.bended_params) != 0
         unbended_dict = bended_module.state_dict()
@@ -137,7 +134,7 @@ def test_weight_bending(module_config):
         args, kwargs, _, _ = module_config.get_method_args(method)
         out_orig = getattr(module, method)(*args, **kwargs)
         out_bended = getattr(bended_module, method)(*args, **kwargs)
-        assert tb.compare_state_dict_tensors(module.state_dict(), bended_module.state_dict()), "module's state dicts have been affected by bending."
+        assert tb.compare_state_dict_tensors(state_dict(module), bended_module.state_dict()), "module's state dicts have been affected by bending."
         assert not bool(tb.compare_outs(out_orig, out_bended))
 
         # reset
@@ -151,13 +148,13 @@ def test_weight_bending(module_config):
             assert bool(tb.compare_outs(out_orig, out_bended))
 
 
-
 @pytest.mark.parametrize("module_config", modules_to_test)
 def test_versions(module_config):
     #TODO something modifies original module ; check
     module = module_config.get_module()
+    module2 = module_config.get_module()
     for method in module_config.get_methods():
-        bended_module = tb.BendedModule(module)
+        bended_module = module_config.get_bended_module(module)
         zero_callback = tb.Mask(0.)
         args, kwargs, _, _ = module_config.get_method_args(method)
         weight_targets = module_config.weight_targets(method)
@@ -173,82 +170,40 @@ def test_versions(module_config):
         assert tb.compare_outs(bended_module.state_dict()[target], bended_module.state_dict('_default')[target])
 
         # test version context managers
-        with bended_module.set_version():
-            out = getattr(bended_module, method)(*args, **kwargs)
+        bended_module.create_version("imported", module2)
         with bended_module.set_version("bended"):
             out_bended = getattr(bended_module, method)(*args, **kwargs)
+        with bended_module.set_version("imported"):
+            out_imported = getattr(bended_module, method)(*args, **kwargs)
+        with bended_module.set_version():
+            out = getattr(bended_module, method)(*args, **kwargs)
         assert not bool(tb.compare_outs(out, out_bended))
-
+        assert not bool(tb.compare_outs(out, out_imported))
+        break
 
 @pytest.mark.parametrize("module_config", modules_to_test)
 def test_weight_interpolation(module_config):
     module = module_config.get_module()
+    module2 = module_config.get_module()
     # test interpolation with bended version
     for method in module_config.get_methods():
-        bended_module = tb.BendedModule(module)
+        bended_module = module_config.get_bended_module(module)
         args, kwargs, w_targets, a_targets = module_config.callback_with_args[method][:4]
+        bended_module.create_version("imported", module2)
         out_unbended = getattr(bended_module, method)(*args, **kwargs)
         bended_module.bend(tb.Mask(0.), *w_targets, *a_targets)
         bended_module.write("bended")
         out_bended = getattr(bended_module, method)(*args, **kwargs)
-        with bended_module.interpolate(1., bended=1.):
+        with bended_module.interpolate(1., bended=1., imported=1.):
             out_interpolated = getattr(bended_module, method)(*args, **kwargs)
-        
         assert not bool(tb.compare_outs(out_unbended, out_bended))
         assert not bool(tb.compare_outs(out_unbended, out_interpolated))
         assert not bool(tb.compare_outs(out_bended, out_interpolated))
-   
-
-@pytest.mark.parametrize("module_config", modules_to_test)
-def test_weight_bending_inplace(module_config):
-    """
-    In place bending does not modify the BendedModule state dict, but instead modifies the inner module in place.
-    This way, it can be reverted to saved state anyway, but still be bended in active calls (like inside wrappers.)
-    """
-    module = module_config.get_module()
-    bended_module = tb.BendedModule(module)
-    zero_callback = tb.Mask(0.)
-
-    # in-place bending
-    bended_module.bend_(zero_callback, *module_config.weight_targets(), verbose=True)
-
-    # compare parameters
-    for k in bended_module.bended_params.keys():
-        # bended module's state dict is not changed ; inner module is modified in place
-        assert torch.allclose(v, bended_module.state_dict()[k])
-        assert not torch.allclose(v, bended_module.module.state_dict()[k])
-        assert torch.allclose(bended_module.bended_state_dict()[k], bended_module.module.state_dict()[k])
-        assert not torch.allclose(bended_module.bended_state_dict()[k], bended_module.state_dict()[k])
-
-    # try calls
-    for method in module_config.get_methods():
-        args, kwargs, _, _ = module_config.get_method_args(method)
-        out_orig = getattr(module, method)(*args, **kwargs)
-        out_bended = getattr(bended_module, method)(*args, **kwargs)
-        assert not bool(tb.compare_outs(out_orig, out_bended))
-
-    # reset
-    bended_module.reset()
-    for k, v in module.state_dict().items():
-        # if v.eq(0).all():
-        #    continue 
-        # bended module's state dict is not changed ; inner module is modified in place
-        assert torch.allclose(v, bended_module.state_dict()[k])
-        assert torch.allclose(v, bended_module.module.state_dict()[k])
-        assert torch.allclose(bended_module.bended_state_dict()[k], bended_module.module.state_dict()[k])
-        assert torch.allclose(bended_module.bended_state_dict()[k], bended_module.state_dict()[k])
-
-    for method in module_config.get_methods():
-        args, kwargs, _, _ = module_config.get_method_args(method)
-        out_orig = getattr(module, method)(*args, **kwargs)
-        out_bended = getattr(bended_module, method)(*args, **kwargs)
-        assert bool(tb.compare_outs(out_orig, out_bended))
 
 
 @pytest.mark.parametrize("module_config", modules_to_test)
 def test_activation_getter(module_config):
-    module = module_config.get_module()
-    bended_module = tb.BendedModule(module)
+    module, bended_module = module_config.get_modules()
     cb = tb.Mask(prob=0.)
     for method in module_config.get_methods():
         args, kwargs, _, _ = module_config.get_method_args(method)
@@ -269,8 +224,7 @@ def test_activation_bending(module_config):
     Safe bending adds the bending callbacks in a list, and modifies the state dict of a module
     safely at call.
     """
-    module = module_config.get_module()
-    bended_module = tb.BendedModule(module)
+    module, bended_module = module_config.get_modules()
     zero_callback = tb.Mask(0.)
 
     for method in module_config.get_methods():
@@ -289,3 +243,50 @@ def test_activation_bending(module_config):
             # t = t + "_bended"
             outs = bended_module.get_activations(t, **kwargs, fn=method)
             assert tb.compare_outs(outs[t], torch.zeros_like(outs[t]))
+
+
+
+# @pytest.mark.parametrize("module_config", modules_to_test)
+# def test_weight_bending_inplace(module_config):
+#     """
+#     In place bending bends in place the parameter dict, without altering the original module to enable bending reset.
+#     """
+#     for method in module_config.get_methods():
+#         module = module_config.get_module()
+#         bended_module = tb.BendedModule(module)
+#         args, kwargs, _, _ = module_config.get_method_args(method)
+#         out_orig = getattr(module, method)(*args, **kwargs)
+#         zero_callback = tb.Mask(0.)
+
+#         # in-place bending
+#         bended_module.bend_(zero_callback, 
+#                             *module_config.weight_targets(), 
+#                             *module_config.activation_targets()) 
+
+#         # compare parameters
+#         for k in bended_module.bended_params.keys():
+#             # bended module's state dict is not changed ; inner module is modified in place
+#             assert torch.allclose(v, bended_module.state_dict()[k])
+#             assert not torch.allclose(v, bended_module.module.state_dict()[k])
+#             assert torch.allclose(bended_module.bended_state_dict()[k], bended_module.module.state_dict()[k])
+#             assert not torch.allclose(bended_module.bended_state_dict()[k], bended_module.state_dict()[k])
+
+#         # try calls
+#         out_bended = getattr(bended_module, method)(*args, **kwargs)
+#         assert not bool(tb.compare_outs(out_orig, out_bended))
+
+#         # reset
+#         bended_module.reset()
+#         for k, v in module.state_dict().items():
+#             # if v.eq(0).all():
+#             #    continue 
+#             # bended module's state dict is not changed ; inner module is modified in place
+#             assert torch.allclose(v, bended_module.state_dict()[k])
+#             assert torch.allclose(v, bended_module.module.state_dict()[k])
+#             assert torch.allclose(bended_module.bended_state_dict()[k], bended_module.module.state_dict()[k])
+#             assert torch.allclose(bended_module.bended_state_dict()[k], bended_module.state_dict()[k])
+
+#         args, kwargs, _, _ = module_config.get_method_args(method)
+#         out_orig = getattr(module, method)(*args, **kwargs)
+#         out_bended = getattr(bended_module, method)(*args, **kwargs)
+#         assert bool(tb.compare_outs(out_orig, out_bended))

@@ -338,7 +338,24 @@ def clone_parameters(module_or_dict: Union[Dict, torch.nn.Module], params: List[
     else:
         raise BendingError('clone_parameters only takes module or dictionaries as inputs, got : %s'%(type(module_or_dict)))
 
-
+def state_dict(obj):
+    if isinstance(obj, torch.nn.Module):
+        return obj.state_dict()
+    else:
+        state_dict = {}
+        for attr_name in dir(obj):
+            submodule = getattr(obj, attr_name)
+            if not isinstance(submodule, torch.nn.Module): continue
+            state_dict.update({attr_name+"."+k: v for k, v in submodule.state_dict().items()})
+        return state_dict
     
-                
-
+def named_parameters(obj):
+    if isinstance(obj, torch.nn.Module):
+        return dict(obj.named_parameters())
+    else:
+        named_parameters = {}
+        for attr_name in dir(obj):
+            submodule = getattr(obj, attr_name)
+            if not isinstance(submodule, torch.nn.Module): continue
+            named_parameters.update({attr_name+"."+k: v for k, v in dict(submodule.named_parameters()).items()})
+        return named_parameters

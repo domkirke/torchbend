@@ -1,4 +1,5 @@
 import numpy as np, os, torch, torch.nn as nn, sys, copy, bisect, random
+import tabulate
 from collections import OrderedDict
 from typing import List, Union, Tuple
 
@@ -498,4 +499,20 @@ def get_parameter(mod: torch.nn.Module, param: str):
     return mod 
 
 
-__all__= ['get_random_hash', 'get_parameter']
+def print_tensor_ids(*tensors, f=None):
+    out = []
+    for t in tensors:
+        if isinstance(t, torch.nn.Parameter):
+            out.append([id(t), id(t._cdata), sum(t), id(t.data), id(t.data.data), id(t.data._cdata)])
+        else:
+            out.append([None, None, sum(t), id(t), id(t.data), id(t._cdata)])
+    out_str = tabulate.tabulate(out, ['param_id', 'param_cdata_id', 'sum', 'data_id', 'data.data_id', 'data.data_cdata'])
+    if f is None:
+        print(out_str)
+    else:
+        with open(f, 'w+') as f:
+            f.write(out_str)
+
+
+
+__all__= ['get_random_hash', 'get_parameter', 'print_tensor_ids']

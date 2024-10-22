@@ -14,7 +14,7 @@ from torch.fx.graph import Graph
 from .. import distributions as dist, DEBUG
 from .proxy import *
 from .input import Inputs
-from ..utils import checklist
+from ..utils import checklist, checktuple
 from .utils import dist_to_tensor
 
 _orig_module_call: Callable = torch.nn.Module.__call__
@@ -205,7 +205,7 @@ class BendingTracer(torch.fx.Tracer):
         if return_out:
             out_node = list(filter(lambda x: x.op == "output", self.graph.nodes))[0]
             outs = []
-            for o in out_node.args:
+            for o in checktuple(out_node.args[0]):
                 if isinstance(o, (Node)):
                     outs.append(self._values[o.name])
                 else:

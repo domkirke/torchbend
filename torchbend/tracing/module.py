@@ -15,7 +15,7 @@ from .input import Inputs
 from .tracing import BendingTracer
 from .utils import BendingError, get_model_copy, bend_graph, _get_weight_properties
 from .utils import _import_to_interface, make_graph_jit_compatible, clone_parameters, _bending_config_from_dicts
-from ..utils import checklist, get_parameter
+from ..utils import checklist, get_parameter, print_tensor_ids
 from ..bending import BendingCallback, CallbackChain, BendingConfig
 
 
@@ -70,14 +70,16 @@ class BendedModule(object):
 
     # -- Module property --
     def _setmodule_(self, module) -> NoReturn:
-        if isinstance(module, nn.Module) or nn.Module is None:
-            self._init_module_(module)
-        else:
-            raise TraceError('cannot set graph to value of type %s'%type(module))
+        raise BendingError('Cannot set module of BendedModule after initaliazation.')
+        #TODO : allow? why? good idea?
+        # if isinstance(module, nn.Module):
+        #     self._init_module_(module)
+        # else:
+        #     raise TraceError('cannot set graph to value of type %s'%type(module))
     def _getmodule_(self) -> Union[torch.fx.Graph, None]:
         return self._module
     def _delmodule_(self) -> NoReturn:
-        del self._module
+        raise BendingError('Cannot delete module of BendedModule')
     module = property(_getmodule_, _setmodule_, _delmodule_)
 
     # -- Version property --
@@ -105,14 +107,17 @@ class BendedModule(object):
         # controllables parameters
         self._controllables = {}
         self._controllable_hash = {}
-        self.module: nn.Module = module
+        if issubclass(type(module), nn.Module):
+            self._init_module_(module)
+        else:
+            raise TypeError('module must be a nn.Module subclass, got : %s'%(type(module).__name__))
 
     def __getattr__(self, attr_name):
         if attr_name in dir(self):
             return super(BendedModule, self).__getattribute__(attr_name)
         else:
             # import attribute from current module
-            attr = getattr(self.module, attr_name)
+            attr = getattr(self._module, attr_name)
             if isinstance(attr, types.MethodType):
                 self._register_forward_call(attr_name)
                 return super(BendedModule, self).__getattribute__(attr_name)
@@ -143,13 +148,13 @@ class BendedModule(object):
         self._controllables[param_name].set_value(value)
         for i in self._controllable_hash[param_name]:
             self._bending_callbacks[i].update()
-    
+
     def trace(self, func="forward", *args, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
         """Updates inner graph with the target method and inputs"""
         #TODO general split between kwargs with _ at the beginning for tracer
         inputs = Inputs(*args, **kwargs)
         tracer = BendingTracer(func=func, _no_tensor_for_args=_no_tensor_for_args)
-        tracer_out = tracer.trace(self.module, inputs, return_out=_return_out, proxied_buffers=_proxied_buffers)
+        tracer_out = tracer.trace(self._module, inputs, return_out=_return_out, proxied_buffers=_proxied_buffers)
         graph = tracer_out[0] if _return_out else tracer_out
         self._graphs[func] = graph
         self._activations[func] = tracer._activations
@@ -164,21 +169,21 @@ class BendedModule(object):
     # parameters
     def parameters(self):
         """return model parameters"""
-        return self.module.parameters()
+        return self._module.parameters()
     def named_parameters(self):
         """return model's named parameters"""
-        return self.module.named_parameters()
+        return self._module.named_parameters()
 
     @property
     @_import_to_interface
     def weight_names(self):
         """returns weights names"""
-        if self.module is None:
+        if self._module is None:
             raise TraceError('BendedGraph has no weights since module as not been initialized')
-        return list(dict(self.module.named_parameters()).keys())
+        return list(dict(self._module.named_parameters()).keys())
 
     def weight_shape(self, param):
-        return self.module.state_dict()[param].shape
+        return self._module.state_dict()[param].shape
 
     @_import_to_interface
     def print_weights(self, flt=r".*", out=None) -> str:
@@ -293,7 +298,6 @@ class BendedModule(object):
             dicts[version] = (bended_dict, weight)
         return self._interp_func(self, dicts)
 
-
     def bended_state_dict(self, version=None):
         if self._interp_dict is None:
             return self._bended_state_dict_from_version(version)
@@ -321,7 +325,6 @@ class BendedModule(object):
         else:
             return bended_params
 
-
     @_import_to_interface
     def bendable_keys(self, *request, fn="forward"):
         keys = self._resolve_parameters(*request)
@@ -333,12 +336,13 @@ class BendedModule(object):
         version = version or self.version
         with torch.no_grad():
             # clone module with deep-copying parameters
-            module = get_model_copy(self.module, copy_parameters=True)
+            module = get_model_copy(self._module, copy_parameters=True)
+            # module = copy.deepcopy(self.module)
             state_dict = self.bended_state_dict()
             # copy target weights, as load_state_dict method replaces in place
             clone_parameters(module, list(self._bended_params[version].keys()) + self._bended_params_history[self.version])
             # loaded bended dict
-            module.load_state_dict(state_dict)
+            module.load_state_dict(state_dict, assign=True)
             # add activation callbacks
             if self._graphs.get(fn) is not None:
                 for k, v in self.bended_activations(fn).items():
@@ -424,14 +428,14 @@ class BendedModule(object):
         # extract controllables in case
         self._register_controllables(callback)
 
-    @_import_to_interface
-    def bend_(self, *args, fn="forward", **kwargs):
-        self.bend(*args, **kwargs)
-        self._module = self.bend_module()
-        if self._graphs.get(fn):
-            self._graphs[fn+"_orig"] = self._graphs[fn]
-            self._graphs[fn] = self.bend_graph(fn)
-        self._reset_bending()
+    # @_import_to_interface
+    # def bend_(self, *args, fn="forward", **kwargs):
+    #     self.bend(*args, **kwargs)
+    #     self._module = self.bend_module()
+    #     if self._graphs.get(fn):
+    #         self._graphs[fn+"_orig"] = self._graphs[fn]
+    #         self._graphs[fn] = self.bend_graph(fn)
+    #     self._reset_bending()
 
     def _reset_bending(self, version=None):
         version = version or self.version
@@ -457,7 +461,7 @@ class BendedModule(object):
 
     # callbacks
     @_import_to_interface
-    def forward(self, *args, **kwargs):
+    def __call__(self, *args, **kwargs):
         """call the module with current input."""
         module = self.bend_module()
         if self._graphs.get('forward') is None:
@@ -467,6 +471,9 @@ class BendedModule(object):
             graph = self.bend_graph()
             graph_module = torch.fx.GraphModule(module, graph)
             return graph_module(*args, **kwargs)
+
+    def forward(self, *args, **kwargs):
+        return self.__call__(*args, **kwargs)
 
     def _get_bended_activations(self, activations, fn="forward"):
         bended_activations = []
@@ -533,6 +540,18 @@ class BendedModule(object):
     def set_version(self, version=None):
         return BendedModuleVersionEnv(self, version=version)
 
+    def create_version(self, name, state_dict, strict=True):
+        if isinstance(state_dict, nn.Module):
+            state_dict = state_dict.state_dict()
+        if strict == True:
+            assert state_dict.keys() == self._param_dict[self._default_version_key].keys()
+        unmatched_keys = list(set(state_dict.keys()).difference(self._param_dict[self._default_version_key].keys()))
+        self._param_dict[name] = self.bended_state_dict()
+        self._param_dict[name].update(state_dict)
+        self._bended_params[name] = {}
+        self._bended_params_history[name] = []
+        return unmatched_keys
+
     def interpolate(self, *args, **weights):
         if len(args) > 1: raise BendingError("interpolate takes a single optional positional argument for default weight, got %d"%(len(args)))
         if len(args) == 1: weights[self._default_version_key] = float(args[0])
@@ -552,10 +571,11 @@ class BendedModule(object):
 
 def unmatching_ids(module1, module2, weights, data=False):
     def _get(module, w):
-        if isinstance(module, (nn.Module, BendedModule)): 
-            return get_parameter(module, w)
-        else:
+        if hasattr(module, "__getitem__"):
             return module[w]            
+        else:
+            return get_parameter(module, w)
+            
     unmatched = []
     for w in weights:
         if data: 

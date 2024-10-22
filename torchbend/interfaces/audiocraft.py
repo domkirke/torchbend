@@ -3,7 +3,7 @@ import torchaudio
 import torch, audiocraft, os, random
 from audiocraft.models import MusicGen, AudioGen
 from .base import Interface
-from ..tracing import BendingWrapper
+from ..tracing import BendedWrapper
 from .utils import get_random_hash
 
 
@@ -21,7 +21,7 @@ class BendedMusicGen(Interface):
         super(BendedMusicGen, self).__init__(model)
 
     def _bend_model(self, model):
-        self._model = BendingWrapper(model)
+        self._model = BendedWrapper(model)
         self._import_methods(self._model)
 
     def get_pretrained(self, *args, **kwargs):
@@ -128,7 +128,7 @@ print("all exported at %s"%out_dir_sess)
 
 
 # tb.wrapmethod(audiocraft.models.encodec.EncodecModel, "decode_latent")
-# model = tb.BendingWrapper(model, ['compression_model'])
+# model = tb.BendedWrapper(model, ['compression_model'])
 # token_file = 'tokens.pt'
 # if not os.path.isfile(token_file):
 #     descriptions = [None]
@@ -142,7 +142,7 @@ print("all exported at %s"%out_dir_sess)
 # tb.wrapmodule(decoder.quantizer)
 
 
-# model =  BendingWrapper(MusicGen.get_pretrained('facebook/musicgen-small'))
+# model =  BendedWrapper(MusicGen.get_pretrained('facebook/musicgen-small'))
 # model.lm.trace('forward', prompt="caca")
 
 # how to use forward instead of generate for lm? (streaming would mess the scripting)
