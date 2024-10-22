@@ -316,7 +316,7 @@ def make_graph_jit_compatible(graph: torch.fx.Graph):
     # _, out = new_graph.graph_copy(graph, nodes, return_output_node=True)
     # new_graph.output(out)
     for n in graph.nodes:
-        if n.op == "call_function" and n.target == dist.onvert_to_torch:
+        if n.op == "call_function" and n.target == dist.convert_to_torch:
             n.target = identity
     return graph 
 

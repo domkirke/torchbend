@@ -11,13 +11,10 @@ from test_modules.module_test_modules import modules_to_test, ModuleTestConfig
 
 
 
-
-
 @pytest.mark.parametrize('cb_class', [tb.Mask, partial(tb.Mask, dim=-2), tb.OrderedMask, partial(tb.OrderedMask, dim=-2)])
 @pytest.mark.parametrize('module_config', modules_to_test)
 def test_mask_weight(cb_class, module_config):
-    mod = module_config.get_module()
-    mod = tb.BendedModule(mod)
+    mod = module_config.get_bended_module()
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:
         mod.reset()
@@ -40,8 +37,7 @@ def test_mask_weight(cb_class, module_config):
 @pytest.mark.parametrize('cb_class', [tb.Mask, partial(tb.Mask, dim=-2), tb.OrderedMask, partial(tb.OrderedMask, dim=-2)])
 @pytest.mark.parametrize('module_config', modules_to_test)
 def test_mask_activation(cb_class, module_config):
-    mod = module_config.get_module()
-    mod = tb.BendedModule(mod)
+    mod = module_config.get_bended_module()
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:
         mod.reset()
@@ -64,8 +60,7 @@ def test_mask_activation(cb_class, module_config):
 @pytest.mark.parametrize('cb_class', [tb.Mask, partial(tb.Mask, dim=-2), tb.OrderedMask, partial(tb.OrderedMask, dim=-2)])
 @pytest.mark.parametrize('module_config', modules_to_test)
 def test_mask_script(cb_class, module_config):
-    mod = module_config.get_module()
-    mod = tb.BendedModule(mod)
+    mod = module_config.get_bended_module()
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config.scriptable():
         mod.reset()

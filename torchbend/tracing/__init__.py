@@ -5,7 +5,8 @@ from .module import *
 from .interp import * 
 
 from .script import *
-def script_method(self, script=True, export_for_nn: bool = False):
+def script_method(self, script=True, export_for_nn: bool = False, **kwargs):
+    mod = self if not hasattr(self, "get_scriptable") else self.get_scriptable(**kwargs)
     mod = ScriptedBendedModule(self, for_nntilde=export_for_nn)
     # for m in checklist(methods):
     #     setattr(mod, m, torch.jit.export(getattr(mod, m)))

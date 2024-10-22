@@ -13,8 +13,7 @@ from test_modules.module_test_modules import modules_to_test, ModuleTestConfig
 @pytest.mark.parametrize('cb_class', [tb.Bias, tb.Affine, tb.Scale])
 @pytest.mark.parametrize('module_config', modules_to_test)
 def test_affine_activation(cb_class, module_config):
-    mod = module_config.get_module()
-    mod = tb.BendedModule(mod)
+    mod = module_config.get_bended_module()
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:
         mod.reset()
@@ -45,8 +44,7 @@ def test_affine_activation(cb_class, module_config):
 @pytest.mark.parametrize('cb_class', [tb.Bias, tb.Affine, tb.Scale])
 @pytest.mark.parametrize('module_config', modules_to_test)
 def test_affine_weights(cb_class, module_config):
-    mod = module_config.get_module()
-    mod = tb.BendedModule(mod)
+    mod = module_config.get_bended_module()
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:
         mod.reset()
@@ -77,8 +75,7 @@ def test_affine_weights(cb_class, module_config):
 @pytest.mark.parametrize('cb_class', [tb.Bias, tb.Affine, tb.Scale])
 @pytest.mark.parametrize('module_config', modules_to_test)
 def test_affine_script(cb_class, module_config):
-    mod = module_config.get_module()
-    mod = tb.BendedModule(mod)
+    mod = module_config.get_bended_module()
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:
         mod.reset()

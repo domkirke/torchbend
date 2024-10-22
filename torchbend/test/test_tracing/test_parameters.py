@@ -6,8 +6,7 @@ from test_modules.module_test_modules import modules_to_test
 
 @pytest.mark.parametrize("module_config", modules_to_test)
 def test_bending_parameters_weights(module_config):
-    module = module_config.get_module()
-    bended_module = tb.BendedModule(module)
+    module, bended_module = module_config.get_modules()
     zero_callback = tb.Mask(tb.BendingParameter("mask", 1.))
 
     for method in module_config.get_methods():
@@ -29,8 +28,7 @@ def test_bending_parameters_weights(module_config):
 
 @pytest.mark.parametrize("module_config", modules_to_test)
 def test_bending_parameters_activations(module_config):
-    module = module_config.get_module()
-    bended_module = tb.BendedModule(module)
+    module, bended_module = module_config.get_modules()
 
     for method in module_config.get_methods():
         zero_callback = tb.Mask(prob=tb.BendingParameter("param_1", 1.))

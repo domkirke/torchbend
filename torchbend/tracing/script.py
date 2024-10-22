@@ -53,8 +53,10 @@ class ScriptedBendedModule(nn_tilde.Module):
         nn.Module.__init__(self)
         self._methods = ListAttribute([], List[str])
         self._attributes = ListAttribute([], List[str])
-
         self._nntilde = for_nntilde
+
+        if not hasattr(self, "scripted_methods"):
+            setattr(self, "scripted_methods", list(model._graphs.keys()))
         self._import_model(model)
         self._import_bending(model) 
         if for_nntilde:
@@ -108,8 +110,8 @@ class ScriptedBendedModule(nn_tilde.Module):
             for i, b in enumerate(self._bending_callbacks):
                 if v in b:
                     self._controllables_hash.value[v.name] = self._controllables_hash.value.get(v.name, []) + [i]
+            self._set_attribute_callbacks(v)
             if self._nntilde:
-                self._set_attribute_callbacks(v)
                 self.register_attribute(v.name, v.get_python_value())
                 
     def _update_bended_weights(self, model):

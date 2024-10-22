@@ -19,7 +19,7 @@ def probs_to_logits(probs, is_binary: bool=False, eps: float=1.e-7):
 
 
 class Bernoulli(Distribution):
-    def __init__(self, probs: Optional[torch.Tensor], logits: Optional[torch.Tensor]):
+    def __init__(self, probs: Optional[torch.Tensor] = None, logits: Optional[torch.Tensor] = None):
         if probs is not None:
             self.probs: torch.Tensor = probs
             self.logits = probs_to_logits(self.probs)
