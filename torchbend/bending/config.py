@@ -1,4 +1,5 @@
 from types import FunctionType
+import dill
 import copy
 
 """
@@ -9,6 +10,9 @@ bending_config = BendingConfig(
 )
 """
 
+class BendingConfigException(Exception):
+    pass
+
 
 class BendingConfig(object):
     def __init__(self, *args, module=None):
@@ -17,7 +21,7 @@ class BendingConfig(object):
         self._weight_hash = {}
         self._module = module 
         for a in args:
-            assert isinstance(a, tuple), "BendingConfig arguments must be tuples (Callable, *str)"
+            if not isinstance(a, tuple): raise BendingConfigException("BendingConfig arguments must be tuples (Callable, *str)")
             self._bendings.append(a)
         if module is not None:
             self.bind(module)
@@ -35,11 +39,15 @@ class BendingConfig(object):
         out += ")"
         return out
 
+    def op_from_key(self, key: str):
+        assert self.is_binded, ""
+        return self._weight_hash[key]
+
     def append(self, bend):
-        assert type(bend) == tuple, "tuple needed"
-        assert len(bend) > 1, "tuple must be (callback, *bended_keys)"
-        assert hasattr(bend[0], "__call__"), "tuple must be (callback, *bended_keys)"
-        assert set(map(type, bend[1:])) == {str}, "tuple must be (callback, *bended_keys)"
+        if not type(bend) == tuple: raise BendingConfigException("tuple needed")
+        if not len(bend) > 1: raise BendingConfigException("tuple must be (callback, *bended_keys)")
+        if not hasattr(bend[0], "__call__"): raise BendingConfigException("tuple must be (callback, *bended_keys)")
+        if not set(map(type, bend[1:])) == {str}: raise BendingConfigException("tuple must be (callback, *bended_keys)")
         self._bendings.append(bend)
         if self.is_binded:
             self._bind_bending(bend)
@@ -57,8 +65,8 @@ class BendingConfig(object):
         c, *w = bending
         resolved_weights = sum([self.module.bendable_keys(w_tmp) for w_tmp in w], [])
         for r_w in resolved_weights:
-            if not r_w in self._weight_hash: self._weight_hash[r_w] = set()
-            self._weight_hash[r_w].union({c})
+            if not r_w in self._weight_hash: self._weight_hash[r_w] = []
+            self._weight_hash[r_w].append(c)
         if not c in self._cb_hash: self._cb_hash[c] = []
         self._cb_hash[c].extend(resolved_weights)
 
@@ -93,8 +101,42 @@ class BendingConfig(object):
     def __add__(self, obj):
         if not isinstance(obj, BendingConfig): raise TypeError("BendingConfig can be added to BendingConfig, not %s"%(type(obj)))
         if self.module is not None:
-            assert self.module == obj.module, "For concatenations BendingConfig objects must have the same bounded module"
+            if not self.module == obj.module: raise BendingConfigException("For concatenations BendingConfig objects must have the same bounded module")
         return BendingConfig(*self._bendings, *obj._bendings, module=self.module)
+
+    def _pickle_obj(self):
+        return {
+            'bendings': self._bendings, 
+            'cb_hash': self._cb_hash, 
+            'weight_hash': self._weight_hash, 
+            'is_binded': self.is_binded, 
+            'obj_type': None if self._module is None else type(self._module).__name__
+        }
+
+    def save(self, path):
+        with open(path, 'wb') as f:
+            dill.dump(self._pickle_obj(), f)
+
+    @classmethod
+    def load(self, path, module=None):
+        with open(path, 'rb') as f: 
+            obj = dill.load(f)
+        config = BendingConfig()
+        if obj['is_binded']: 
+            if type(module).__name__ != obj['obj_type']:
+                raise BendingConfigException('BendingConfig was bounded to object of type %s, got %s'%(obj['obj_type'], type(module).__name__))
+            config._bendings = obj['bendings']
+            if module is None:
+                print('[Warning] BendingConfig was bounded to object of type %s, but was not provided.')
+                return config
+            config._module = module
+            config._cb_hash = obj['cb_hash']
+            config._weight_hash = obj['weight_hash']
+        else:
+            config._bendings = obj['bendings']
+        return config
+
+
 
 
 

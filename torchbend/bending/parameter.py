@@ -146,7 +146,7 @@ class BendingParameter(nn.Module):
                 if value < self.min_clamp:
                     raise BendingParameterException(f'tried to set value < min_clamp = {self.min_clamp}, but got {value}')
             if self.max_clamp is not None:
-                if value > self.min_clamp:
+                if value > self.max_clamp:
                     raise BendingParameterException(f'tried to set value > max_clamp = {self.max_clamp}, but got {value}')
 
         if torch.jit.is_scripting():
@@ -168,7 +168,7 @@ class BendingParameter(nn.Module):
             return torch.clamp(value, self.min_clamp, self.max_clamp)
 
     def _to_tensor(self, obj: Union[float, int]) -> torch.Tensor:
-        if isinstance(obj, (int, float)):
+        if isinstance(obj, (int, float, torch.Tensor, torch.nn.Parameter)):
             return BendingParamType._to_tensor(obj, self.param_type)
         else:
             raise TypeError('BendingParameter values can only be int or float')

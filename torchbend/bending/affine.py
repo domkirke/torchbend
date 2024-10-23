@@ -16,7 +16,7 @@ class Bias(BendingCallback):
     def __repr__(self):
         return f"Bias(bias={self.bias:.4f})"
 
-    def _apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor):
+    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor):
         param.set_(cache + self.get('bias'))
 
     def forward(self, param: torch.Tensor, name: Optional[str] = None):
@@ -37,7 +37,7 @@ class Scale(BendingCallback):
     def __repr__(self):
         return f"Scale(scale={self.scale:.4f})"
     
-    def _apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor):
+    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor):
         param.set_(cache * self.get('scale'))
 
     def forward(self, param: torch.Tensor, name: Optional[str] = None):
@@ -59,7 +59,7 @@ class Affine(BendingCallback):
     def __repr__(self):
         return f"Affine(scale={self.scale:.4f}, bias={self.bias:.4f})"
 
-    def _apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor):
+    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor):
         param.set_(cache * self.get('scale') + self.get('bias'))
 
     def forward(self, param: torch.Tensor, name: Optional[str] = None):

@@ -112,7 +112,7 @@ class Normal(BendingCallback):
         for i, v in enumerate(self._noises):
             v.set_(self._init_rnd_(v.shape))
 
-    def _apply_to_param(self, idx: int, param: torch.nn.Parameter, cache:torch.Tensor) -> None:
+    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache:torch.Tensor) -> None:
         if self.op == "mul":
             param.set_(self.get_noise_from_id(idx) * cache * self.get('std'))
         else: 

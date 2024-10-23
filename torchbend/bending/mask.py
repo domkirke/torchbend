@@ -117,7 +117,7 @@ class Mask(BendingCallback):
         for i, v in enumerate(self._masks):
             v.set_(self._init_mask(v.shape))
 
-    def _apply_to_param(self, idx: int, param: torch.nn.Parameter, cache:torch.Tensor) -> None:
+    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache:torch.Tensor) -> None:
         param.set_(self.get_mask_from_id(idx) * cache)
 
     def forward(self, param: torch.Tensor, name: Optional[str] = None):
@@ -182,5 +182,5 @@ class OrderedMask(Mask):
     def update(self):
         pass
 
-    def _apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor):
+    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor):
         param.set_(self.get_mask_from_id(idx, cache) * cache)

@@ -111,7 +111,6 @@ class BendingCallback(nn.Module):
                 return dict(self.named_buffers())[name]
             else:
                 return getattr(self, name)
-        
 
     def parse_bending_parameter(self, param, name=None):
         if isinstance(param, (int, float)):
@@ -147,7 +146,7 @@ class BendingCallback(nn.Module):
                     return v
         raise BendingCallbackException('%s not present in masks'%idx)
 
-    def _apply_to_param(self, idx: int, param: nn.Parameter, cache: Optional[torch.Tensor]):
+    def apply_to_param(self, idx: int, param: nn.Parameter, cache: Optional[torch.Tensor] = None):
         pass
 
     def apply(self, update: bool = True):
@@ -156,7 +155,7 @@ class BendingCallback(nn.Module):
             self.update()
         for i, v in enumerate(self._bending_targets):
             v_cached = self.cache_from_id(i).data
-            self._apply_to_param(i, v, v_cached)
+            self.apply_to_param(i, v, v_cached)
 
 
 
