@@ -46,11 +46,12 @@ class BendingCallback(nn.Module):
         return self
 
     
-    def get_cache(self, i: int):
+    def get_cache(self, i: int) -> torch.Tensor:
         "Don't judge me, this is because torch.jit only allows literal indexing..."
         assert i < len(self._cache)
         for j, c in enumerate(self._cache):
             if i == j: return c
+        raise BendingCallbackException('cache %d does not exist'%i)
 
     def register_controllable(self, name, value):
         assert name in self.controllable_params, "tried to register controllable value %s, but not compatible with %s"%(name, type(self))
