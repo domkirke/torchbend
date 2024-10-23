@@ -84,19 +84,19 @@ class Mask(BendingCallback):
         self._mask_names.append(name)
         self._mask_shapes.value.append(shape)
 
+
     def _mask_from_name(self, name: str) -> torch.Tensor:
         for i, m in enumerate(self._masks):
             if self._mask_names[i] == name:
                 return m
         raise RuntimeError('does not have mask for name %s'%name)
         
-    def _register_shape(self, name, shape):
-        super(Mask, self)._register_shape(name, shape)
-        name = name.replace('.', '_')
+    def register_activation(self, name, shape):
+        name = super(Mask, self).register_activation(name, shape)
         self._add_mask(name, shape)
 
-    def _register_parameter(self, parameter: List[Parameter], name=None, cache: bool = True):
-        name = super()._register_parameter(parameter, name=name, cache=cache)
+    def register_parameter(self, parameter: List[Parameter], name=None, cache: bool = True):
+        name = super().register_parameter(parameter, name=name, cache=cache)
         self._add_mask(name, parameter.shape)
 
     def get_mask(self, param, name: Optional[str]) -> torch.Tensor:

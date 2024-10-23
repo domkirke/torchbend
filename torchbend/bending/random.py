@@ -79,12 +79,12 @@ class Normal(BendingCallback):
                 return m
         raise RuntimeError('does not have mask for name %s'%name)
 
-    def _register_parameter(self, parameter: List[torch.nn.Parameter], name=None, cache: bool = True):
-        name = super()._register_parameter(parameter, name=name, cache=cache)
+    def register_parameter(self, parameter: List[torch.nn.Parameter], name=None, cache: bool = True):
+        name = super().register_parameter(parameter, name=name, cache=cache)
         self._add_noise(name, parameter.shape)
 
-    def _register_shape(self, name, shape):
-        super(Normal, self)._register_shape(name, shape)
+    def register_activation(self, name, shape):
+        super(Normal, self).register_activation(name, shape)
         name = name.replace('.', '_')
         self._add_noise(name, shape)
 

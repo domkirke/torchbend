@@ -45,6 +45,13 @@ class BendingCallback(nn.Module):
     def script(self):
         return self
 
+    
+    def get_cache(self, i: int):
+        "Don't judge me, this is because torch.jit only allows literal indexing..."
+        assert i < len(self._cache)
+        for j, c in enumerate(self._cache):
+            if i == j: return c
+
     def register_controllable(self, name, value):
         assert name in self.controllable_params, "tried to register controllable value %s, but not compatible with %s"%(name, type(self))
         if isinstance(value, BendingParameter):
@@ -55,7 +62,7 @@ class BendingCallback(nn.Module):
             self.register_buffer(name, value)
         super().__setattr__(name, value)
 
-    def _register_parameter(self, parameter: List[nn.Parameter], name=None, cache=True) -> str:
+    def register_parameter(self, parameter: List[nn.Parameter], name=None, cache=True) -> str:
         if not isinstance(parameter, nn.Parameter):
             raise BendingCallbackException("tried to register a parameter, but got type %s"%type(parameter))
         #TODO do not make this automatic? make "cache_parameter" function using weakrefs? 
@@ -80,16 +87,18 @@ class BendingCallback(nn.Module):
         self._parameter_idx += 1
         return name
 
-    def _register_shape(self, name, shape):
+    def register_activation(self, name, shape):
+        name = name.replace('.', '_')
         self._bending_shapes[name] = shape
+        return name
 
     def add_bending_target(self, name, parameter=None, shape=None, cache=True):
         if (parameter is None) and (shape is None):
             raise BendingCallbackException("add_bending_target must be given a parameter or shape attribute")
         if shape is not None:
-            self._register_shape(name, shape)
+            self.register_activation(name, shape)
         if parameter is not None:
-            self._register_parameter(parameter, name, cache=cache)
+            self.register_parameter(parameter, name, cache=cache)
 
     # def register_controllable(self, control):
     #     self._controllables[control.name] = control
