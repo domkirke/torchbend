@@ -3,4 +3,4 @@ gin-config
 numpy
 torch > 1.8
 dill
-git+https://github.com/acids-ircam/nn_tilde
+nn-tilde
