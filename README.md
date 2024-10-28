@@ -1,6 +1,6 @@
 # torchbend
 
-`torchbend` is a library grounded on `torch.fx` focused on generative neural networks analysis and creative bending. This library allows you to:
+Welcome to `torchbend`, a high-level framework for dissecting, analyzing and bending machine learning models programmed with [Pytorch](https://pytorch.org/docs/stable/index.html). This framework extends `torch.fx` and proposes convenient methods to target certain activations of a network, bend its parameters or internal values, and easily perform some [active divergence](https://arxiv.org/pdf/2107.05599) techniques to unbound the co-creative 
 
 - [✔︎] extend the tracing abilities of `torch.fx` with augmented parsers and proxies
     - dynamic parsing (wrapping un-traceable functions, shape propagation (warning : wrap shape with tuple! or find a solution?))

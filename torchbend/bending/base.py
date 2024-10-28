@@ -2,7 +2,7 @@ import torch
 import copy
 import torch.nn as nn
 from collections import OrderedDict
-from typing import Union, List, Optional
+from typing import Union, List, Optional, Callable
 from .parameter import BendingParameter, _VALID_PARAM_TYPES
 
 
@@ -187,4 +187,20 @@ class CallbackChain(nn.Module):
     def apply(self, update: bool = True):
         #TODO
         return NotImplemented
+
+
+class Lambda(BendingCallback):
+    weight_compatible = True 
+    activation_compatible = True 
+    controllable_params = []
+
+    def __init__(self, fn: Callable):
+        super().__init__()
+        self._callable = fn
+
+    def forward(self, x, name: Optional[str] = None):
+        return self._callable(x)
+
+    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor = None) -> None:
+        param.set_(self._callable(cache))
 

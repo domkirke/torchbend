@@ -163,8 +163,8 @@ def _get_weight_properties(args):
        minval = torch.nan
        maxval = torch.nan
     try:
-       meanval = value.mean()
-       stdval = value.std() 
+       meanval = value.float().mean()
+       stdval = value.float().std() 
     except ValueError:
        meanval = torch.nan
        stdval = torch.nan    

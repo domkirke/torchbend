@@ -50,6 +50,10 @@ def test_model_copy(module_config: ModuleTestConfig):
 
 
 @pytest.mark.parametrize("module_config", modules_to_test)
+def test_to(module_config):
+    assert False, "not implemented"
+
+@pytest.mark.parametrize("module_config", modules_to_test)
 def test_bending_config(module_config):
     module = module_config.get_module()
     for method in module_config.get_methods():
@@ -290,3 +294,4 @@ def test_activation_bending(module_config):
 #         out_orig = getattr(module, method)(*args, **kwargs)
 #         out_bended = getattr(bended_module, method)(*args, **kwargs)
 #         assert bool(tb.compare_outs(out_orig, out_bended))
+

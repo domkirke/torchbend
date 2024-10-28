@@ -33,8 +33,8 @@ def make_wrapper_for_obj(obj):
 
 
 class BendedWrapper(BendedModule):
-    def __init__(self, module):
-        super().__init__(make_wrapper_for_obj(module))
+    def __init__(self, module, _wrapped_methods=[]):
+        super().__init__(make_wrapper_for_obj(module), _wrapped_methods=_wrapped_methods)
         self.__original_obj__ = module
     
     def _getmodule_(self) -> object:

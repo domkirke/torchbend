@@ -6,6 +6,7 @@ from .utils import ModuleTestConfig
 
 
 class Foo(nn.Module):
+    __bended_methods__ = ['forward', 'forward_dist']
     def __init__(self, nlayers=3):
         super().__init__()
         self.nlayers = nlayers
@@ -33,6 +34,9 @@ class Foo(nn.Module):
 
 
 class WrappedFoo(object):
+
+    __bended_methods__ = ['forward', 'forward_dist']
+
     def __init__(self, nlayers=3):
         self._foo1 = Foo(nlayers)
         self._foo2 = Foo(nlayers)

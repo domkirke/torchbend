@@ -21,7 +21,7 @@ class BendedMusicGen(Interface):
         super(BendedMusicGen, self).__init__(model)
 
     def _bend_model(self, model):
-        self._model = BendedWrapper(model)
+        self._model = BendedWrapper(model, _wrapped_methods=self._imported_callbacks_)
         self._import_methods(self._model)
 
     def get_pretrained(self, *args, **kwargs):

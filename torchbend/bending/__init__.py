@@ -1,6 +1,6 @@
 from .config import BendingConfig
 from .parameter import BendingParameter, get_param_type
-from .base import BendingCallback, CallbackChain
+from .base import BendingCallback, CallbackChain, Lambda
 from .mask import Mask, OrderedMask
 from .affine import *
 from .random import *

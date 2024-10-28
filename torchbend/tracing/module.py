@@ -24,8 +24,8 @@ def _get_activations_properties(args):
     return [name, act_prop.op, act_prop.shape]
 
 
-def _get_wrapped_module_forward_call(fn):
-    def _wrapped_module_forward_call(self, *args, **kwargs):
+def _get_wrapped_module_forward_call(fn, bend=True):
+    def _wrapped_bended_module_forward_call(self, *args, **kwargs):
         module = self.bend_module(fn=fn)
         if self._graphs.get(fn) is None:
             return getattr(module, fn)(*args, **kwargs)
@@ -34,10 +34,12 @@ def _get_wrapped_module_forward_call(fn):
             graph = self.bend_graph(fn=fn)
             graph_module = torch.fx.GraphModule(module, graph)
             return graph_module(*args, **kwargs)
-    return _wrapped_module_forward_call
+    def _wrapped_module_forward_call(self, *args, **kwargs):
+        return getattr(self._module, fn)(*args, **kwargs)
+    return _wrapped_bended_module_forward_call if bend else _wrapped_module_forward_call 
 
 
-class BendedModuleVersionEnv(object):
+class BendedModuleVersionEnv:
     def __init__(self, *args, version=None):
         self._modules = args
         self._init_versions = [mod.version for mod in args]
@@ -67,6 +69,7 @@ class BendedModuleInterpolationEnv(object):
 
 class BendedModule(object):
     _default_version_key = "_default"
+    _wrapped_methods = ['forward']
 
     # -- Module property --
     def _init_module_(self, module):
@@ -105,9 +108,20 @@ class BendedModule(object):
     def _delversion_(self) -> NoReturn:
         self._version = self._default_version_key
     version = property(_getversion_, _setversion_, _delversion_)
-    
+
+    def to(self, *args, _no_warning: bool = False, **kwargs):
+        if not _no_warning: 
+            print('[Warning]to is an experimental feature for BendingModule ;\nsetting original module to target device before wrapping is advised.')
+            print('call with _no_warning=True to remove this warning.')
+        # make shallow copy to change module.
+        #TODO should be tested more 
+        self_copy = copy.copy(self)
+        if self_copy._module is not None:
+            self_copy._module = self_copy._module.to(*args, **kwargs)
+        return self_copy
+
     # -- init --
-    def __init__(self, module):
+    def __init__(self, module, _wrapped_methods=[]):
         self._graphs = {}
         self._activations = {}
         # callback, parameters and activations
@@ -121,6 +135,7 @@ class BendedModule(object):
         # controllables parameters
         self._controllables = {}
         self._controllable_hash = {}
+        self._wrapped_methods.extend(_wrapped_methods)
         if issubclass(type(module), nn.Module):
             self._init_module_(module)
         else:
@@ -134,7 +149,8 @@ class BendedModule(object):
             # import attribute from current module
             attr = getattr(self._module, attr_name)
             if isinstance(attr, types.MethodType):
-                self._register_forward_call(attr_name)
+                _is_bended = (attr in self._wrapped_methods) or (attr.__name__ in getattr(type(self._module), "__bended_methods__", []))
+                self._register_forward_call(attr_name, _with_bended=_is_bended)
                 return super(BendedModule, self).__getattribute__(attr_name)
             else:
                 return attr
@@ -243,8 +259,8 @@ class BendedModule(object):
     def is_traced(self, fn):
         return fn in self._graphs
 
-    def _register_forward_call(self, func):
-        setattr(self, func, types.MethodType(_get_wrapped_module_forward_call(func), self))
+    def _register_forward_call(self, func, _with_bended=False):
+        setattr(self, func, types.MethodType(_get_wrapped_module_forward_call(func, _with_bended), self))
 
     def trace(self, func="forward", *args, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
         """Updates inner graph with the target method and inputs"""
@@ -257,7 +273,7 @@ class BendedModule(object):
         self._activations[func] = tracer._activations
         self._bended_activations[func] = dict()
         if func != "forward":
-            self._register_forward_call(func)
+            self._register_forward_call(func, True)
         if _return_out:
             return graph, tracer_out[1]
         else:
@@ -397,7 +413,7 @@ class BendedModule(object):
         return torch.fx.GraphModule(module, graph)
 
     @_import_to_interface
-    def bend(self, *args, fn=None, verbose=False):
+    def bend(self, *args, fn=None, verbose=False, bend_param=True, bend_graph=True):
         if len(args) == 1:
             bended_config = args[0]
             assert isinstance(bended_config, BendingConfig)
@@ -412,8 +428,9 @@ class BendedModule(object):
             fn = checklist(fn)
 
         # bend weights
-        target_params = self._resolve_parameters(*params)
-        target_activations = {method: self._resolve_activations(*params, fn=method) for method in fn}
+        
+        target_params = [] if not bend_param else self._resolve_parameters(*params)
+        target_activations = {method: [] if not bend_graph else self._resolve_activations(*params, fn=method) for method in fn}
         if len(target_params) + sum(map(len, target_activations.values())) == 0:
             raise BendingError('Could not find bendable elements with specification %s'%params)
         for param in target_params:
