@@ -115,9 +115,7 @@ class BendedModule(object):
             print('call with _no_warning=True to remove this warning.')
         # make shallow copy to change module.
         #TODO should be tested more 
-        self_copy = copy.copy(self)
-        if self_copy._module is not None:
-            self_copy._module = self_copy._module.to(*args, **kwargs)
+        self_copy = BendedModule(self._module.to(*args, **kwargs))
         return self_copy
 
     # -- init --
