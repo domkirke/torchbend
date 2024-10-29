@@ -1,4 +1,5 @@
 import torch
+from functools import reduce
 import copy
 import torch.nn as nn
 from collections import OrderedDict
@@ -42,9 +43,12 @@ class BendingCallback(nn.Module):
         else:
             super().__setattr__(name, value)
 
+    @property
+    def controllables(self):
+        return self._controllables
+
     def script(self):
         return self
-
     
     def get_cache(self, i: int) -> torch.Tensor:
         "Don't judge me, this is because torch.jit only allows literal indexing..."
@@ -168,10 +172,10 @@ class BendingCallback(nn.Module):
             self.apply_to_param(i, v, v_cached)
 
     def __rshift__(self, obj):
-        if isinstance(obj, BendingCallback):
-            return CallbackChain(self, obj)
-        elif isinstance(obj, CallbackChain):
+        if isinstance(obj, CallbackChain):
             return CallbackChain(self, *obj.callbacks)
+        elif isinstance(obj, BendingCallback):
+            return CallbackChain(self, obj)
         else:
             raise TypeError('%s can only be added to CallbackChain or BendingCallback objects'%(type(self).__name__))
 
@@ -179,17 +183,37 @@ class BendingCallback(nn.Module):
 class CallbackChain(nn.Module):
     def __init__(self, *args):
         super().__init__()
-        self.callbacks = nn.ModuleList(*args)
+        full_controllables = {}
+        for i, c in enumerate(args):
+            assert isinstance(c, (BendingCallback, CallbackChain)), "CallbackChain only takes BendingCallback or CallbackChain as arguments"
+            controllables = c.controllables
+            for k, c in controllables.items():
+                if (k in full_controllables) and id(c) != id(full_controllables[k]):
+                    #TODO merge?
+                    raise BendingCallbackException('BendingParameter with name %s is present multiplie times, but with different objects.')
+                full_controllables[k] = c
+        self.callbacks = nn.ModuleList(args)
+        self._controllables = nn.ModuleDict(full_controllables)
+        self._controllable_params: List[str] = torch.jit.Attribute(list(self._controllables.keys()), List[str])
+        self._init_compatibility_attributes()
+
+    def _init_compatibility_attributes(self):
+        for attr in ['weight', 'activation', 'jit', 'nntilde']:
+            res = reduce(lambda x, y : x and y, [getattr(c, f"{attr}_compatible") for c in self.callbacks], True)
+            setattr(self, f"{attr}_compatible", torch.jit.Attribute(res, bool))
+
+    @property
+    def controllable_params(self) -> List[str]:
+        return self._controllable_params
 
     def script(self):
         scripted = copy.copy(self)
         scripted.callbacks = nn.ModuleList([s.script() for s in scripted.callbacks])
         return scripted
 
-    def forward(self, x, name: Optional[str] = None):
+    def add_bending_target(self, name, parameter=None, shape=None, cache=True):
         for i, m in enumerate(self.callbacks):
-            x = m(x, name=name)
-        return x 
+            m.add_bending_target(name, parameter=parameter, shape=shape, cache=cache)
 
     def apply_to_param(self, idx: int, param: nn.Parameter, cache: Optional[torch.Tensor] = None):
         for i, m in enumerate(self.callbacks):
@@ -198,28 +222,30 @@ class CallbackChain(nn.Module):
             else:
                 m.apply_to_param(idx, param, param.data)
 
+    def update(self):
+        for i, m in enumerate(self.callbacks):
+            m.update()
+
+    @torch.jit.export
+    def apply(self, update: bool = True):
+        """applies in place a transformation to cached parameters."""
+        for i, m in enumerate(self.callbacks):
+            m.apply(update)
+
+    @torch.jit.export
+    def forward(self, x, name: Optional[str] = None):
+        for i, m in enumerate(self.callbacks):
+            x = m(x, name=name)
+        return x 
+
     def __rshift__(self, obj):
-        if isinstance(obj, BendingCallback):
-            return CallbackChain(*self.callbacks, obj)
-        elif isinstance(obj, CallbackChain):
+        if isinstance(obj, CallbackChain):
             return CallbackChain(*self.callbacks, *obj.callbacks)
+        elif isinstance(obj, BendingCallback):
+            return CallbackChain(*self.callbacks, obj)
         else:
             raise TypeError('%s can only be added to CallbackChain or BendingCallback objects'%(type(self).__name__))
 
-
-
-class Lambda(BendingCallback):
-    weight_compatible = True 
-    activation_compatible = True 
-    controllable_params = []
-
-    def __init__(self, fn: Callable):
-        super().__init__()
-        self._callable = fn
-
-    def forward(self, x, name: Optional[str] = None):
-        return self._callable(x)
-
-    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor = None) -> None:
-        param.set_(self._callable(cache))
+def is_bending_callback(obj):
+    return isinstance(obj, (BendingCallback, CallbackChain))
 

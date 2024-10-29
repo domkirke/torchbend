@@ -183,25 +183,28 @@ class StateDictException(Exception):
 def tensor_eq(t1, t2):
     return t2.eq(t1).all()
 
-def tensor_allclose(t1, t2):
-    return torch.allclose(t1, t2)
+def tensor_allclose(t1, t2, rtol=1e-05, atol=1e-08):
+    return torch.allclose(t1, t2, rtol=rtol, atol=atol)
 
 
 class ComparisonResult(Enum):
     NotEqual = 0
     Equal = 1
+    AlmostEqual = 2
     DifferentTypes = 10
     DifferentLength = 11
     DifferentKeys = 12
     SimilarTypes = 21
     def __bool__(self) -> Literal[True]:
-        return self in [ComparisonResult.Equal, ComparisonResult.SimilarTypes]
+        return self in [ComparisonResult.AlmostEqual, ComparisonResult.Equal, ComparisonResult.SimilarTypes]
 
-def compare_outs(out1, out2, allow_subclasses=False):
+ALMOST_EQUAL_THRESHOLD = 1.e-5
+
+def compare_outs(out1, out2, allow_subclasses=False, allow_almost_equal=False):
     if isinstance(out1, (list, tuple)):
         if not isinstance(out2, type(out1)): return ComparisonResult.DifferentTypes
         if len(out1) != len(out2): return ComparisonResult.DifferentLength
-        if ComparisonResult.NotEqual in [compare_outs(out1[i], out2[i]) for i in range(len(out1))]:
+        if ComparisonResult.NotEqual in [compare_outs(out1[i], out2[i], allow_subclasses=allow_subclasses, allow_almost_equal=allow_almost_equal) for i in range(len(out1))]:
             return ComparisonResult.NotEqual
         else:
             return ComparisonResult.Equal
@@ -209,7 +212,7 @@ def compare_outs(out1, out2, allow_subclasses=False):
         if not isinstance(out2, dict): return ComparisonResult.DifferentTypes
         keys1, keys2 = set(out1.keys()), set(out2.keys())
         if len(keys1.difference(keys2)) + len(keys2.difference(keys1)) != 0: return ComparisonResult.DifferentKeys
-        if ComparisonResult.NotEqual in [compare_outs(out1[k], out2[k]) for k in keys1]:
+        if ComparisonResult.NotEqual in [compare_outs(out1[k], out2[k], allow_subclasses=allow_subclasses, allow_almost_equal=allow_almost_equal) for k in keys1]:
             return ComparisonResult.NotEqual
         else:
             return ComparisonResult.Equal
@@ -218,14 +221,16 @@ def compare_outs(out1, out2, allow_subclasses=False):
             out1 = dist.convert_to_torch(out1)
             out2 = dist.convert_to_torch(out2)
             res = compare_outs(dist.utils.convert_from_torch(out1).as_tuple(), 
-                                dist.utils.convert_from_torch(out2).as_tuple())
+                                dist.utils.convert_from_torch(out2).as_tuple(),
+                                allow_subclasses=allow_subclasses, allow_almost_equal=allow_almost_equal)
             if bool(res):
                 return ComparisonResult.SimilarTypes
             else:
                 return ComparisonResult.NotEqual
         else:
             return compare_outs(dist.utils.convert_from_torch(out1).as_tuple(), 
-                                dist.utils.convert_from_torch(out2).as_tuple())
+                                dist.utils.convert_from_torch(out2).as_tuple(), 
+                                allow_subclasses=allow_subclasses, allow_almost_equal=allow_almost_equal)
     else:
         if allow_subclasses:
             if not isinstance(out1, type(out2)): return ComparisonResult.DifferentTypes
@@ -235,11 +240,15 @@ def compare_outs(out1, out2, allow_subclasses=False):
         if torch.is_tensor(out1):
             if tensor_allclose(out1, out2):
                 return ComparisonResult.Equal
+            elif (tensor_allclose(out1, out2, atol=ALMOST_EQUAL_THRESHOLD) and allow_almost_equal):
+                return ComparisonResult.AlmostEqual
             else:
                 return ComparisonResult.NotEqual
         elif isinstance(out1, (float, int, str, complex, bool, bytes, bytearray)):
             if out1 == out2:
                 return ComparisonResult.Equal
+            elif (tensor_allclose(out1, out2, atol=ALMOST_EQUAL_THRESHOLD) and allow_almost_equal):
+                return ComparisonResult.AlmostEqual
             else:
                 return ComparisonResult.NotEqual
         

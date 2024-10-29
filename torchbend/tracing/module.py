@@ -16,7 +16,7 @@ from .tracing import BendingTracer
 from .utils import BendingError, get_model_copy, bend_graph, _get_weight_properties
 from .utils import _import_to_interface, make_graph_jit_compatible, clone_parameters, _bending_config_from_dicts
 from ..utils import checklist, get_parameter, print_tensor_ids
-from ..bending import BendingCallback, CallbackChain, BendingConfig
+from ..bending import BendingCallback, CallbackChain, is_bending_callback, BendingConfig
 
 
 def _get_activations_properties(args):
@@ -309,7 +309,6 @@ class BendedModule(object):
         return self.__call__(*args, **kwargs)
 
 
-
     #  -- Bending callbacks --
     def _bended_state_dict_from_version(self, version=None):
         version = version or self.version
@@ -412,12 +411,12 @@ class BendedModule(object):
             # add activation callbacks
             if self._graphs.get(fn) is not None:
                 for k, v in self.bended_activations(fn).items():
-                    setattr(module, k+'_callback', CallbackChain(v))
+                    setattr(module, k+'_callback', CallbackChain(*v))
             return module
 
     @_import_to_interface
     def bend_graph(self, fn="forward"):
-        return bend_graph(self._graphs[fn], {k: CallbackChain(v) for k, v in self._bended_activations[fn].items()})
+        return bend_graph(self._graphs[fn], {k: CallbackChain(*v) for k, v in self._bended_activations[fn].items()})
 
     @_import_to_interface
     def graph_module(self, fn="forward", module=None, make_jit_compatible: bool = False):
@@ -437,7 +436,7 @@ class BendedModule(object):
                 self.bend(c, *w)
             return 
         callback, *params = args
-        assert isinstance(callback, BendingCallback), "callback must be a BendingCallback instance"
+        assert is_bending_callback(callback), "callback must be a BendingCallback instance"
         if fn is None:
             fn = list(self._graphs.keys())
         else:
