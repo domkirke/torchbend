@@ -149,7 +149,7 @@ class BendedModule(object):
             # import attribute from current module
             attr = getattr(self._module, attr_name)
             if isinstance(attr, types.MethodType):
-                _is_bended = (attr in self._wrapped_methods) or (attr.__name__ in getattr(type(self._module), "__bended_methods__", []))
+                _is_bended = (attr.__name__ in self._wrapped_methods) or (attr.__name__ in getattr(type(self._module), "__bended_methods__", []))
                 self._register_forward_call(attr_name, _with_bended=_is_bended)
                 return super(BendedModule, self).__getattribute__(attr_name)
             else:
@@ -176,6 +176,7 @@ class BendedModule(object):
             raise TraceError('BendedGraph has no weights since module as not been initialized')
         return list(dict(self._module.named_parameters()).keys())
 
+    @_import_to_interface
     def weight_shape(self, param):
         return self._module.state_dict()[param].shape
 
@@ -195,14 +196,17 @@ class BendedModule(object):
                 f.write(pretty_weights)
         return pretty_weights
 
+    @_import_to_interface
     def parameters(self):
         """return model parameters"""
         return self._module.parameters()
 
+    @_import_to_interface
     def named_parameters(self):
         """return model's named parameters"""
         return self._module.named_parameters()
     
+    @_import_to_interface
     def state_dict(self, version=None, with_versions=False):
         if with_versions:
             assert version is None, "either version or with_versions must be true."
@@ -226,6 +230,7 @@ class BendedModule(object):
         valid_acts = list(set(sum(list(valid_acts.values()), [])))
         return valid_acts
 
+    @_import_to_interface
     def activations(self, fn="forward", op=None, flt=r".*"):
         activations = self._activations[fn] 
         if op is not None:
@@ -234,9 +239,11 @@ class BendedModule(object):
         activations = dict(filter(lambda obj: re.match(flt, obj[0]), activations.items()))
         return activations
 
+    @_import_to_interface
     def activation_names(self, fn="forward"):
         return list(self._activations[fn].keys())
 
+    @_import_to_interface
     def activation_shape(self, param, fn="forward"):
         return self.activations(fn)[param].shape
 
@@ -330,6 +337,7 @@ class BendedModule(object):
             keys = keys + self._resolve_activations(*request, fn=fn)
         return keys
 
+    @_import_to_interface
     def bended_state_dict(self, version=None):
         if self._interp_dict is None:
             return self._bended_state_dict_from_version(version)
@@ -338,16 +346,20 @@ class BendedModule(object):
             return self._bended_state_dict_from_interp()
 
     @property
+    @_import_to_interface
     def bending_callbacks(self):
         return list(self._bending_callbacks)
 
     @property
+    @_import_to_interface
     def bended_params(self):
         return {k: list(v) for k, v in self._bended_params[self.version].items()}
 
+    @_import_to_interface
     def bended_activations(self, fn):
         return {k: list(v) for k, v in self._bended_activations[fn].items()}
 
+    @_import_to_interface
     def bended_keys(self, fn=None, version=None):
         version = version or self.version
         bended_params = list({k: list(v) for k, v in self._bended_params[version].items()}.keys())
@@ -357,6 +369,7 @@ class BendedModule(object):
         else:
             return bended_params
 
+    @_import_to_interface
     def bending_config(self, fn="forward", version=None):
         version = version or self.version
         #TODO reconstruct tree or ?
@@ -384,6 +397,7 @@ class BendedModule(object):
         except Exception as e:
             print('Cannot bend activation %s with callback %s.\nException : %s\n Proceeding'%(parameter, callback, e))
     
+    @_import_to_interface
     def bend_module(self, fn="forward", version=None):
         version = version or self.version
         with torch.no_grad():
@@ -401,9 +415,11 @@ class BendedModule(object):
                     setattr(module, k+'_callback', CallbackChain(v))
             return module
 
+    @_import_to_interface
     def bend_graph(self, fn="forward"):
         return bend_graph(self._graphs[fn], {k: CallbackChain(v) for k, v in self._bended_activations[fn].items()})
 
+    @_import_to_interface
     def graph_module(self, fn="forward", module=None, make_jit_compatible: bool = False):
         if module is None:
             module = self.bend_module(fn=fn)
@@ -508,6 +524,7 @@ class BendedModule(object):
                 bended_activations.append(act)
         return bended_activations
 
+    @_import_to_interface
     def get_activations(self, *activations, fn="forward", bended=True, **inputs):
         """return target activations from given inputs."""
         # modify graph
@@ -553,6 +570,7 @@ class BendedModule(object):
         if clear: 
             self.reset(self.version)
 
+    @_import_to_interface
     def write(self, version=None, force: bool = False, deep: bool = False, clear: bool = True):
         if version is None: 
             self._write_bendings()
@@ -560,9 +578,11 @@ class BendedModule(object):
             self._write_bendings_as_new(version, force=force, deep=deep, clear = clear)
         self.version = version
 
+    @_import_to_interface
     def set_version(self, version=None):
         return BendedModuleVersionEnv(self, version=version)
 
+    @_import_to_interface
     def create_version(self, name, state_dict, strict=True):
         if isinstance(state_dict, nn.Module):
             state_dict = state_dict.state_dict()
@@ -577,11 +597,13 @@ class BendedModule(object):
 
     # -- interpolation -- 
 
+    @_import_to_interface
     def interpolate(self, *args, **weights):
         if len(args) > 1: raise BendingError("interpolate takes a single optional positional argument for default weight, got %d"%(len(args)))
         if len(args) == 1: weights[self._default_version_key] = float(args[0])
         return BendedModuleInterpolationEnv(self, interp_dict=weights)
 
+    @_import_to_interface
     def set_interpolation_weights(self, interp_dict, interp_func):
         for k in interp_dict.keys():
             assert k in self._param_dict, "version %s not set"%k
@@ -589,11 +611,10 @@ class BendedModule(object):
         self._interp_dict = interp_dict
         self._interp_func = interp_func
 
+    @_import_to_interface
     def remove_interpolation_weights(self):
         self._interp_dict = None
         self._interp_func = None
-
-
 
 
 def unmatching_ids(module1, module2, weights, data=False):

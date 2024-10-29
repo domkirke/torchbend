@@ -167,6 +167,13 @@ class BendingCallback(nn.Module):
             v_cached = self.cache_from_id(i).data
             self.apply_to_param(i, v, v_cached)
 
+    def __rshift__(self, obj):
+        if isinstance(obj, BendingCallback):
+            return CallbackChain(self, obj)
+        elif isinstance(obj, CallbackChain):
+            return CallbackChain(self, *obj.callbacks)
+        else:
+            raise TypeError('%s can only be added to CallbackChain or BendingCallback objects'%(type(self).__name__))
 
 
 class CallbackChain(nn.Module):
@@ -184,9 +191,21 @@ class CallbackChain(nn.Module):
             x = m(x, name=name)
         return x 
 
-    def apply(self, update: bool = True):
-        #TODO
-        return NotImplemented
+    def apply_to_param(self, idx: int, param: nn.Parameter, cache: Optional[torch.Tensor] = None):
+        for i, m in enumerate(self.callbacks):
+            if i == 0:
+                m.apply_to_param(idx, param, cache)
+            else:
+                m.apply_to_param(idx, param, param.data)
+
+    def __rshift__(self, obj):
+        if isinstance(obj, BendingCallback):
+            return CallbackChain(*self.callbacks, obj)
+        elif isinstance(obj, CallbackChain):
+            return CallbackChain(*self.callbacks, *obj.callbacks)
+        else:
+            raise TypeError('%s can only be added to CallbackChain or BendingCallback objects'%(type(self).__name__))
+
 
 
 class Lambda(BendingCallback):
