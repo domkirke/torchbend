@@ -112,3 +112,35 @@ class LoopFoo(nn.Module):
             x *= x_tmp.sum()
         return x
 
+class DoubleLinear(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+        self.ln1 = torch.nn.Linear(10, 30)
+        self.ln2 = torch.nn.Linear(10, 30)
+    def forward(self, x):
+        return self.ln1(x), self.ln2(x)
+
+class ScaledLinear(nn.Linear):
+    def forward(self, x, y):
+        return y * super().forward(x)
+
+class SplitTestModule(nn.Module):
+    forward_inputs = {'x': torch.zeros(4, 10), 'y': 1}
+    # forward_targets = ['module1_ln1', 'module1_ln2', 'mul', 'add_1', 'add_2']
+    forward_targets = ['mul']
+    def __init__(self):
+        super().__init__()
+        self.module1 = DoubleLinear(10, 30)
+        self.module2 = ScaledLinear(10, 30)
+        self.constant = torch.nn.Parameter(torch.tensor(1.))
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor):
+        in1, in2 = self.module1(x)
+        in3 = self.module2(x, y)
+        in4 = self.constant
+        return in1 + in2 + in3 + in4
+
+split_graph_test_modules = [
+    SplitTestModule()
+]
+        

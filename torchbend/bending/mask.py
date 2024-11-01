@@ -84,7 +84,6 @@ class Mask(BendingCallback):
         self._mask_names.append(name)
         self._mask_shapes.value.append(shape)
 
-
     def _mask_from_name(self, name: str) -> torch.Tensor:
         for i, m in enumerate(self._masks):
             if self._mask_names[i] == name:
@@ -117,10 +116,10 @@ class Mask(BendingCallback):
         for i, v in enumerate(self._masks):
             v.set_(self._init_mask(v.shape))
 
-    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache:torch.Tensor) -> None:
+    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor) -> None:
         param.set_(self.get_mask_from_id(idx) * cache)
 
-    def forward(self, param: torch.Tensor, name: Optional[str] = None):
+    def bend_input(self, param: torch.Tensor, name: Optional[str] = None):
         mask = self.get_mask(param, name).to(param)
         return param * mask
         

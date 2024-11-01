@@ -512,7 +512,7 @@ class BendingTracer(torch.fx.Tracer):
 
         self._values[node.name] = out
         shape = self._get_shape(out)
-        self._activations[node.name] = ActivationProperties(op=node.op, shape=shape)
+        self._activations[node.name] = ActivationProperties(op=node.op, shape=shape, target=node.target, type=node.type)
         proxy = proxy_type(node, self, value=out, type_expr=type_expr)
         return proxy
 

@@ -5,7 +5,7 @@ from types import MethodType
 import torch, torch.nn as nn
 from ..bending import BendingParameter, get_param_type, BendingCallback, CallbackChain
 from .module import BendedModule
-from .utils import _defs_from_template, _resolve_code, _import_defs_from_tmpfile
+from ..utils import _resolve_code, _import_defs_from_tmpfile
 import nn_tilde
 
 class ScriptedBendedException(Exception):

@@ -1,4 +1,5 @@
 import numpy as np, os, torch, torch.nn as nn, sys, copy, bisect, random
+import re
 import tabulate
 from collections import OrderedDict
 from typing import List, Union, Tuple
@@ -514,5 +515,66 @@ def print_tensor_ids(*tensors, f=None):
             f.write(out_str)
 
 
+def _resolve_code(code, **kwargs):
+    # pattern = str(code)
+    for k, v in kwargs.items():
+        pattern = re.compile(r'\{\{%s\}\}'%(k.upper()))
+        iterations = list(pattern.finditer(code))
+        while len(iterations) > 0:
+            start, end = iterations[0].start(), iterations[0].end()
+            code = code[:start] + str(v) + code[end:]
+            iterations = list(pattern.finditer(code))
+    #TODO check if no {{}} left
+    return code
 
-__all__= ['get_random_hash', 'get_parameter', 'print_tensor_ids']
+def _replace_placeholders(code, **kwargs):
+    for k, v in kwargs.items():
+        pattern = re.compile(r'\{\{%s(\:LOOP)?(\[\])?\}\}'%(k.upper()))
+        iterations = list(pattern.finditer(code))
+        while len(iterations) > 0:
+            start, end = iterations[0].start(), iterations[0].end()
+            if (iterations[0].groups()[0] or "").upper() == ":LOOP":
+                n = kwargs.get(f'_{k}_loop')
+                assert n is not None
+                code = code[:start] + _parse_code_loop_placeholder(v, n, **kwargs)  + code[end:]
+            elif iterations[0].groups()[1] == "[]":
+                assert kwargs.get('iteration') is not None
+                code = code[:start] + _parse_code_placeholder(v[int(kwargs['iteration'])]) + code[end:]
+            else:
+                code = code[:start] + _parse_code_placeholder(v) + code[end:]
+            iterations = list(pattern.finditer(code))
+    return code
+    
+def _parse_code_placeholder(v: str):
+    return str(v)
+def _parse_code_loop_placeholder(v: str, length: int, **values):
+    val=""
+    for i in range(length):
+        val += _replace_placeholders(v, iteration=i, **values)
+    return val
+
+# def _defs_from_template(template,  **kwargs):
+#     local_namespace = {}
+#     code = _replace_placeholders(template, **kwargs)    
+#     code_compiled = compile(code, __file__, 'exec')
+#     exec(code_compiled, {}, local_namespace)
+#     return local_namespace
+
+
+def get_random_hash(n=8):
+    return "".join([chr(random.randrange(97,122)) for i in range(n)])
+
+def _import_defs_from_tmpfile(code, gl=None, lo=None, tmpdir="/tmp/torchbend/jit"):
+    gl = gl or globals() 
+    os.makedirs(tmpdir, exist_ok=True)
+    file = os.path.join(tmpdir, get_random_hash()+".py")
+    with open(file, 'w+') as f:
+        f.write(code)
+    lo = lo or {}
+    code_compiled = compile(code, file, 'exec')
+    exec(code_compiled, gl, lo)
+    return lo 
+
+
+
+__all__= ['get_random_hash', 'get_parameter', 'print_tensor_ids', '_import_defs_from_tmpfile',  '_resolve_code']

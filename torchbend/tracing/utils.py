@@ -86,43 +86,6 @@ class BendingError(RuntimeError):
     pass
 
 
-def bend_graph(graph, callbacks, verbose=False):
-    new_graph = torch.fx.Graph()
-    env = {}
-    bended_lookup = {}
-    name_hash = {}
-    for node in graph.nodes:
-        new_node = new_graph.node_copy(node, lambda x: env[x.name])
-        # check arguments to replace by bended node in case
-        new_args = list(new_node.args)
-        for i, arg in enumerate(new_args):
-            if isinstance(arg, torch.fx.Node):
-                if arg.name in bended_lookup:
-                    new_args[i] = bended_lookup[arg.name]
-        new_node.args = tuple(new_args)
-        env[node.name] = new_node
-        # add bending layer to graph
-        #TODO using inserting_after??
-        if node.name in callbacks:
-            if verbose:
-                print('bending activation %s with function %s...'%(node.name, callbacks[node.name]))
-            # add placeholder
-            # add callback
-            bended_node_name = node.name+"_bended"
-            hack_obj_name = node.name + "_callback"
-            # if hack_obj_name not in name_hash:
-            #     name_hash[hack_obj_name] = 0
-            #     hack_obj_name += "_0"
-            # else:
-            #     idx = name_hash[hack_obj_name]
-            #     name_hash[hack_obj_name] += 1
-            #     hack_obj_name += f"_{idx}"
-            bended_node = new_graph.create_node("call_module", hack_obj_name, args=(new_node,), kwargs={'name': node.name}, name=bended_node_name)
-            env[bended_node_name] = bended_node 
-            bended_lookup[node.name] = bended_node 
-    return new_graph
-
-
 
 
 
@@ -259,60 +222,6 @@ def compare_state_dict_tensors(dict1, dict2):
     for k, v in dict1.items():
         result = result and bool(compare_outs(v, dict2[k]))
     return result
-
-def _resolve_code(code, **kwargs):
-    pattern = str(code)
-    for k, v in kwargs.items():
-        pattern = re.compile(r'\{\{%s\}\}'%(k.upper()))
-        iterations = list(pattern.finditer(code))
-        while len(iterations) > 0:
-            start, end = iterations[0].start(), iterations[0].end()
-            code = code[:start] + str(v) + code[end:]
-            iterations = list(pattern.finditer(code))
-    #TODO check if no {{}} left
-    return code
-
-def _defs_from_template(template,  **kwargs):
-    code = template
-    local_namespace = {}
-    for k, v in kwargs.items():
-        pattern = re.compile(r'\{\{%s\}\}'%(k.upper()))
-        iterations = list(pattern.finditer(code))
-        while len(iterations) > 0:
-            start, end = iterations[0].start(), iterations[0].end()
-            code = code[:start] + str(v) + code[end:]
-            iterations = list(pattern.finditer(code))
-    
-    code_compiled = compile(code, __file__, 'exec')
-    exec(code_compiled, {}, local_namespace)
-    return local_namespace
-
-
-def get_random_hash(n=8):
-    return "".join([chr(random.randrange(97,122)) for i in range(n)])
-
-def _import_defs_from_tmpfile(code, gl=None, lo=None, tmpdir="/tmp/torchbend/jit"):
-    gl = gl or globals() 
-    os.makedirs(tmpdir, exist_ok=True)
-    file = os.path.join(tmpdir, get_random_hash()+".py")
-    with open(file, 'w+') as f:
-        f.write(code)
-    lo = lo or {}
-    code_compiled = compile(code, file, 'exec')
-    exec(code_compiled, gl, lo)
-    return lo 
-
-def _template_from_param(template: str, param: BendingParameter, **kwargs):
-    kwargs['name'] = kwargs.get('name', param.name)
-    if param.param_type == get_param_type("float"):
-        kwargs['dtype'] = kwargs.get('dtype', torch.float32)
-        kwargs['type_expr'] = kwargs.get('type_expr', "float")
-        return _defs_from_template(template, **kwargs)
-    elif param.param_type == get_param_type("int"):
-        kwargs['dtype'] = kwargs.get('dtype', torch.int64)
-        kwargs['type_expr'] = kwargs.get('type_expr', "int")
-        return _defs_from_template(template, **kwargs)
-
 
 def identity(x: Any) -> Any:
     return x

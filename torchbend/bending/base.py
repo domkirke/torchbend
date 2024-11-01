@@ -1,11 +1,28 @@
 import torch
+from collections import OrderedDict
+import inspect
 from functools import reduce
 import copy
 import torch.nn as nn
+from types import MethodType
 from collections import OrderedDict
-from typing import Union, List, Optional, Callable
+from typing import Union, List, Optional, Callable, Dict, Tuple
 from .parameter import BendingParameter, _VALID_PARAM_TYPES
+from ..utils import _import_defs_from_tmpfile, _replace_placeholders
 
+_native_callback_arguments = ['x', 'name']
+
+call_pattern = """
+\tx = self.callbacks[{{ITERATION}}].forward(x, name=name, {{CALLBACK_SIGS[]}})
+"""
+
+forward_pattern = """
+@torch.jit.export
+def forward(self, x: Optional[torch.Tensor] = None, name: Optional[str] = None, {{ADDITIONAL_ARGS}}):
+\tassert x is not None, "at least a value must be given"
+{{CALL_PATTERN:LOOP}}
+\treturn x 
+"""
 
 class BendingCallbackException(Exception):
     pass
@@ -14,12 +31,55 @@ class BendingCallbackAttributeException(Exception):
     pass
 
 
+def _create_forward_function(additional_args):
+    is_list = OrderedDict()
+    defaults = OrderedDict()
+    types = OrderedDict()
+    callback_sigs = []
+    for a in additional_args:
+        for c in a:
+            if c[0] is not None:
+                is_list[c[0]] = is_list.get(c[0], 0) + 1
+                defaults[c[0]] = defaults.get(c[0], []) + [c[1]._default]
+                if c[1].annotation is not None:
+                    types[c[0]] = types.get(c[0], []) + [c[1].annotation.__name__]
+                else:
+                    types[c[0]] = types.get(c[0], []) + ['torch.Tensor']
+
+    parsed_add_args = []
+    for k, v in is_list.items():
+        if v == 1:
+            parsed_add_args.append(f"{k}: Optional[{types[k][0]}] = {defaults[k][0]}")
+        else:
+            types = ",".join(types[k])
+            defaults = ",".join(defaults[k])
+            parsed_add_args.append(f"{k}: Optional[{types}] = {defaults}")
+        # annotation = c[1].annotation.__name__ if is_list.get(c[0]) == 0 else "List[%s]"%(c[1].annotation.__name__)
+        # parsed_add_args.append(f"{c[1].name}: {annotation} = {c[1].}")
+    
+    for a in additional_args:
+        add_kwargs = []
+        for c in a:
+            if c[0] is None: continue
+            if is_list[c[0]] == 1:
+                add_kwargs.append(f"{c[1].name}={c[1].name}")
+            else:
+                add_kwargs.append(f"{c[1].name}={c[1].name}[{c[2]}]")
+        callback_sigs.append(",".join(add_kwargs))
+    parsed_add_args = ",".join(parsed_add_args)
+    codes = _replace_placeholders(forward_pattern, additional_args=parsed_add_args, call_pattern=call_pattern, callback_sigs=callback_sigs, _call_pattern_loop=len(additional_args))
+    funcs = _import_defs_from_tmpfile(codes, gl=globals(), lo=locals())
+    return funcs['forward']
+
+
+
 class BendingCallback(nn.Module):
     weight_compatible = False
     activation_compatible = False
     jit_compatible = False
     nntilde_compatible = False
     controllable_params = []
+    
 
     def __init__(self):
         super().__init__()
@@ -32,6 +92,8 @@ class BendingCallback(nn.Module):
         # bending shapes are used for activation bending, where just shapes are needed. 
         self._bending_shapes = OrderedDict()
         self._parameter_idx = 0
+        self._is_capturing = False
+        self._not_ready_str = "BendingCallback is not ready"
 
     def __contains__(self, i: BendingParameter):
         """checks if a parameter is used by the callback instance"""
@@ -46,6 +108,17 @@ class BendingCallback(nn.Module):
     @property
     def controllables(self):
         return self._controllables
+
+    @property
+    def is_ready(self) -> bool:
+        return True
+
+    # capture and stop
+    def capture(self) -> None:
+        self._is_capturing = True
+
+    def stop(self) -> None:
+        self._is_capturing = False
 
     def script(self):
         return self
@@ -105,9 +178,6 @@ class BendingCallback(nn.Module):
         if parameter is not None:
             self.register_parameter(parameter, name, cache=cache)
 
-    # def register_controllable(self, control):
-    #     self._controllables[control.name] = control
-
     def get(self, name: str):
         if torch.jit.is_scripting():
             # assert name in self.controllable_params, "%s has no controllable value %s"%(type(self), name)
@@ -145,10 +215,14 @@ class BendingCallback(nn.Module):
     def update(self):
         """updates internal state from controllables."""
         pass
-
-    def forward(self, *args, **kwargs):
-        """applies transformation to an input (typically activations)"""
+    
+    def bend_input(self,  x: torch.Tensor, name: Optional[str] = None):
         raise NotImplementedError()
+
+    def forward(self, x: torch.Tensor, name: Optional[str] = None):
+        """applies transformation to an input (typically activations)"""
+        if not self.is_ready: raise BendingCallbackException(self._not_ready_str)
+        return self.bend_input(x, name=name)
     
     def cache_from_id(self, idx: int) -> torch.nn.Parameter:
         #grrrr
@@ -161,7 +235,7 @@ class BendingCallback(nn.Module):
         raise BendingCallbackException('%s not present in masks'%idx)
 
     def apply_to_param(self, idx: int, param: nn.Parameter, cache: Optional[torch.Tensor] = None):
-        pass
+        raise NotImplementedError()
 
     def apply(self, update: bool = True):
         """applies in place a transformation to cached parameters."""
@@ -170,6 +244,10 @@ class BendingCallback(nn.Module):
         for i, v in enumerate(self._bending_targets):
             v_cached = self.cache_from_id(i).data
             self.apply_to_param(i, v, v_cached)
+
+    # -- capture
+
+    # -- ops
 
     def __rshift__(self, obj):
         if isinstance(obj, CallbackChain):
@@ -196,6 +274,23 @@ class CallbackChain(nn.Module):
         self._controllables = nn.ModuleDict(full_controllables)
         self._controllable_params: List[str] = torch.jit.Attribute(list(self._controllables.keys()), List[str])
         self._init_compatibility_attributes()
+        self._additional_args = self._init_forward_function()
+
+    def _init_forward_function(self) -> List[Tuple[List[str], List[int]]]:
+        additional_args = [list() for _ in self.callbacks]
+        fn_counter = {}
+        for i, callback in enumerate(self.callbacks):
+            sig = inspect.signature(getattr(callback, "forward"))
+            for name, param in dict(sig.parameters).items():
+                if name in _native_callback_arguments: continue
+                if name not in fn_counter: fn_counter[name] = 0
+                additional_args[i].append((name, param, fn_counter[name]))
+                fn_counter[name] += 1
+        # create new forward function with additional arguments
+        if len(fn_counter) != 0: 
+            func = _create_forward_function(additional_args) 
+            setattr(self, "forward", MethodType(func, self))
+        return additional_args
 
     def _init_compatibility_attributes(self):
         for attr in ['weight', 'activation', 'jit', 'nntilde']:
@@ -228,12 +323,13 @@ class CallbackChain(nn.Module):
 
     @torch.jit.export
     def apply(self, update: bool = True):
-        """applies in place a transformation to cached parameters."""
+        """applies in place a transformation to cached parameters during jit export."""
         for i, m in enumerate(self.callbacks):
             m.apply(update)
 
     @torch.jit.export
     def forward(self, x, name: Optional[str] = None):
+        """applies the transformation to a given input"""
         for i, m in enumerate(self.callbacks):
             x = m(x, name=name)
         return x 

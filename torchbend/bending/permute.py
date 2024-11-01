@@ -46,7 +46,7 @@ class Permute(BendingCallback):
             prm = torch.randperm(param.shape[self.dim]).to(device=param.device)
         return prm 
 
-    def forward(self, param: torch.Tensor, name: Optional[str] = None):
+    def bend_input(self, param: torch.Tensor, name: Optional[str] = None):
         permute = self.get_permutation(param, name).to(device=param.device)
         dim = self.dim.to(device=param.device)
         return torch.index_select(param, dim, permute)

@@ -51,3 +51,13 @@ def test_loop(module, method):
             log_to_file(f, "flow", graph.flow_steps)
     return True
 
+@pytest.mark.parametrize("module", ttm.split_graph_test_modules)
+def test_graph_split(module):
+    module = tb.BendedModule(module)
+    kwargs = module.forward_inputs
+    module.trace(**kwargs)
+    for t in module.forward_targets:
+        out_mid = module.get_activations(t, **kwargs)
+        out, graph = module.from_activations(t, **kwargs, **out_mid, _return_graph=True)
+
+

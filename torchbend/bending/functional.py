@@ -11,7 +11,7 @@ class Lambda(BendingCallback):
         super().__init__()
         self._callable = fn
 
-    def forward(self, x, name: Optional[str] = None):
+    def bend_input(self, x, name: Optional[str] = None):
         return self._callable(x)
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor = None) -> None:

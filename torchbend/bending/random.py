@@ -118,7 +118,7 @@ class Normal(BendingCallback):
         else: 
             param.set_(self.get_noise_from_id(idx) * self.get('std') + cache)
 
-    def forward(self, param: torch.Tensor, name: Optional[str] = None):
+    def bend_input(self, param: torch.Tensor, name: Optional[str] = None):
         noise = self.get_noise(param, name).to(param)
         if self.op == "mul":
             return param * (noise * self.get('std'))
