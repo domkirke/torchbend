@@ -614,13 +614,13 @@ class BendedModule(object):
         setattr(self, method_name, types.MethodType(_get_method_from_graph(method_name), self))
 
     @_import_to_interface
-    def get_activations(self, *activations, fn="forward", _return_graph=False, _save_as_method=None, **inputs):
+    def get_activations(self, *activations, fn="forward", _return_graph=False, _save_as_method=None, _filter_bended=False, **inputs):
         """return target activations from given inputs."""
         # modify graph
-        module = self.bend_module()
+        module = self.bend_module(fn=fn)
         graph = self.bend_graph(fn=fn)
 
-        activations = self._resolve_activations(*activations, _raise_notfound=True)
+        activations = self._resolve_activations(*activations, _raise_notfound=True, _with_bended = not _filter_bended)
         # if bended:
         #     activations = self._get_bended_activations(activations, fn=fn)
         new_graph = graph_get_activations(graph, activations)
@@ -640,7 +640,7 @@ class BendedModule(object):
     def from_activations(self, *activations, fn="forward", _return_graph=False, _save_as_method = None, **inputs):
         """return target activations from given inputs."""
         # bend modules and graphs
-        module = self.bend_module()
+        module = self.bend_module(fn=fn)
         graph = self.bend_graph(fn=fn)
         # retrieve activations
         activations = self._resolve_activations(*activations, _raise_notfound=True)
@@ -667,7 +667,7 @@ class BendedModule(object):
             for callback in callbacks: 
                 if not isinstance(callback, BendingCallback): raise TypeError("callback must be a BendingCallback, got : %s"%(type(callback).__name__))
                 activations = _get_bended_activation_from_callaback(self._bended_activations[fn], callback)
-                assert activations != 0, "given callback does not seem to be bending any activation for method %s.\nCallback : %s"%(fn, callback)
+                assert len(activations) != 0, "given callback does not seem to be bending any activation for method %s.\nCallback : %s"%(fn, callback)
         graph = self.bend_graph(fn=fn)
         callbacks = {a: CallbackChain(*self._bended_activations[fn][a]) for a in activations}
         new_graph = graph_from_activations(graph, activations, remove_placeholders=True, parse_inputs_from_callbacks=callbacks)

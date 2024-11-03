@@ -13,19 +13,38 @@ from test_modules.module_test_modules import modules_to_test, ModuleTestConfig
 @pytest.mark.parametrize('module_config', modules_to_test)
 def test_interpolation(module_config, n=8):
     mod = module_config.get_bended_module()
+
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:    
         mod.reset()
         mod.trace(func=method, **kwargs)
         args, kwargs, _, _ = module_config.get_method_args(method)
-        cb = tb.InterpolateActivation()
-        for target in activation_targets:
-            mod.bend(cb, target)
-            outs = mod.get_activations(target, **kwargs, fn=method)
-            gm = mod.bend_activation_as_input(target, fn=method)
+
+        # # single activations
+        # for target in activation_targets:
+        #     cb = tb.InterpolateActivation()
+        #     mod.reset()
+        #     mod.bend(cb, target)
+        #     outs = mod.get_activations(target, **kwargs, fn=method, _filter_bended=True)
+        #     gm = mod.bend_activation_as_input(target, fn=method)
+        #     # unbatched
+        #     interp = torch.randn(outs[target].shape[0])
+        #     outs_interpolated = gm(**get_kwargs_from_gm(gm, **kwargs, **outs), interp_weights=interp)
+        #     # batched
+        #     interp = torch.randn(4, outs[target].shape[0])
+        #     outs_interpolated = gm(**get_kwargs_from_gm(gm, **kwargs, **outs), interp_weights=interp)
+
+        # full activations
+        if len(activation_targets) > 1:
+            mod.reset()
+            cb = tb.InterpolateActivation()
+            mod.bend(cb, *activation_targets, fn=method)
+            outs = mod.get_activations(*activation_targets, **kwargs, fn=method, _filter_bended=True)
+            gm = mod.bend_activation_as_input(*activation_targets, fn=method)
             # unbatched
-            interp = torch.randn(outs[target].shape[0])
-            outs_interpolated = gm(**get_kwargs_from_gm(gm, **kwargs, **outs), interp_weights=interp)
+            interp = {f"{t}_interp_weights": torch.randn(outs[t].shape[0]) for t in activation_targets}
+            outs_interpolated = gm(**get_kwargs_from_gm(gm, **kwargs, **outs), **interp)
             # batched
-            interp = torch.randn(4, outs[target].shape[0])
-            outs_interpolated = gm(**get_kwargs_from_gm(gm, **kwargs, **outs), interp_weights=interp)
+            interp = {f"{t}_interp_weights": torch.randn(4, outs[t].shape[0]) for t in activation_targets}
+            outs_interpolated = gm(**get_kwargs_from_gm(gm, **kwargs, **outs), **interp)
+
             
