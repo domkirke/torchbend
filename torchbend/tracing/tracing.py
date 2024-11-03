@@ -111,6 +111,9 @@ class ActivationProperties():
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
             setattr(self, k, v)
+        self.__objs = list(kwargs.keys())
+    def __repr__(self):
+        return "ActivationProperties(" + ", ".join([(k, getattr(self, k)) for k in self.__objs]) + ")"
 
 
 class TracingContext():

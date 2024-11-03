@@ -7,4 +7,5 @@ from .mask import Mask, OrderedMask
 from .affine import *
 from .random import *
 from .permute import Permute
+from .interpolation import InterpolateActivation
 from .utils import import_hacks_from_file

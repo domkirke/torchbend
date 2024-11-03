@@ -277,3 +277,15 @@ def named_parameters(obj):
             if not isinstance(submodule, torch.nn.Module): continue
             named_parameters.update({attr_name+"."+k: v for k, v in dict(submodule.named_parameters()).items()})
         return named_parameters
+
+
+def get_kwargs_from_gm(gm, **kwargs):
+    target_kwargs = list(filter(lambda x: x.op == "placeholder", gm.graph.nodes))
+    target_kwargs_names = [n.name for n in target_kwargs]
+    missing_kwargs = list(filter(lambda x: x.name not in kwargs.keys() and len(x.args) == 0, target_kwargs))
+    if len(missing_kwargs) > 0: raise RuntimeError('missing kwargs : %s'%missing_kwargs)
+    out_kwargs = {}
+    for k in target_kwargs:
+        if k.name in kwargs:
+            out_kwargs[k.name] = kwargs[k.name]
+    return out_kwargs

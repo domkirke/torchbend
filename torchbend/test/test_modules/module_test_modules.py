@@ -75,14 +75,14 @@ modules_to_test = [
                      {
                      'forward': (
                          tuple(),
-                         {"x": torch.randn(1, 1, 128)},
+                         {"x": torch.randn(4, 1, 128)},
                          [".*weight"],
                          ["module_list_1"],
                          True
                      ), 
                      'forward_dist': (
                          tuple(),
-                         {"x": torch.randn(1, 1, 128)},
+                         {"x": torch.randn(4, 1, 128)},
                          [".*weight"],
                          ["module_list_1"],
                          True

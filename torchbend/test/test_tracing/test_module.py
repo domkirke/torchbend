@@ -1,16 +1,17 @@
 import torch
 import torchbend as tb
 from torchbend.tracing import BendedWrapper, unmatching_ids, get_model_copy, clone_parameters
-from torchbend.tracing.utils import state_dict, named_parameters
+from torchbend.tracing.utils import state_dict, named_parameters, get_kwargs_from_gm
 from torchbend.utils import checktuple, get_parameter
 import pytest
 import sys, os
 from conftest import get_log_file, log_to_file
+from typing import Optional
 
 testpath = os.path.abspath((os.path.join(os.path.dirname(__file__), "..")))
 if testpath not in sys.path:
     sys.path.append(testpath)
-from test_modules.module_test_modules import modules_to_test, ModuleTestConfig 
+from test_modules.module_test_modules import modules_to_test, ModuleTestConfig
 
 
 @pytest.mark.parametrize("module_config", modules_to_test)
@@ -207,13 +208,16 @@ def test_activation_getter(module_config):
         args, kwargs, _, _ = module_config.get_method_args(method)
         bended_module.trace(*args, **kwargs, func=method)
         targets = module_config.activation_targets(method)
-        outs = bended_module.get_activations(*targets, **kwargs, fn=method, bended=False)
+        outs = bended_module.get_activations(*targets, **kwargs, fn=method)
         assert set(targets) == set(outs.keys()) 
         bended_module.bend(cb, *targets)
-        outs_bended = bended_module.get_activations(*targets, **kwargs, fn=method, bended=True) 
+        outs_bended = bended_module.get_activations(*targets, **kwargs, fn=method, _save_as_method="getter") 
+        outs_bended_2 = getattr(bended_module, "getter")(**kwargs)
         for t in targets:
-            assert not bool(tb.compare_outs(outs[t], outs_bended[t]))
+            assert bool(tb.compare_outs(outs[t], outs_bended[t]))
+            assert bool(tb.compare_outs(outs[t], outs_bended_2[t]))
         #TODO bend and check
+        
 
 
 @pytest.mark.parametrize("module_config", modules_to_test)
@@ -224,6 +228,7 @@ def test_activation_bending(module_config):
     """
     module, bended_module = module_config.get_modules()
     zero_callback = tb.Mask(0.)
+    zero_callback_2 = tb.Mask(0.)
 
     for method in module_config.get_methods():
         args, kwargs, _, bended_activations = module_config.get_method_args(method)
@@ -232,30 +237,47 @@ def test_activation_bending(module_config):
 
         for t in bended_activations:
             bended_module.bend(zero_callback, t, fn=method, verbose=True)
+            bended_module.bend(zero_callback_2, t, fn=method, verbose=True)
 
         outs_orig = getattr(module, method)(*args, **kwargs)
         outs = getattr(bended_module, method)(*args, **kwargs)
         assert not bool(tb.compare_outs(outs, outs_orig))
 
         for t in bended_activations:
-            # t = t + "_bended"
-            outs = bended_module.get_activations(t, **kwargs, fn=method, bended=True)
-            assert tb.compare_outs(outs[t], torch.zeros_like(outs[t]))
+            outs = bended_module.get_activations(t, **kwargs, fn=method)
+            outs_bended = bended_module.get_activations(f"{t}_bended", **kwargs, fn=method)
+            assert tb.compare_outs(outs_bended[f"{t}_bended"], torch.zeros_like(outs[t]))
 
 
 @pytest.mark.parametrize("module_config", modules_to_test)
-def test_graph_split(module_config):
-    bended = module_config.get_bended_module()
+def test_bending_callbacks_as_inputs(module_config):
+
+    class Dumb1(tb.BendingCallback):
+        def forward(self, x: torch.Tensor, name: Optional[str] = None, param1: int = 2, param2: str = "plpl"):
+            x = torch.ones_like(x) * param1
+            return x
+    class Dumb2(tb.BendingCallback):
+        def forward(self, x: torch.Tensor, name: Optional[str] = None, param1: int = -1, param3: str = "plpl"):
+            x = x * param1
+            return x
+
+    module, bended_module = module_config.get_modules()
+    cb1 = Dumb1()
+    cb2 = Dumb2()
+
     for method in module_config.get_methods():
-        _, kwargs, _, activations = module_config.get_method_args(method)
-        bended.trace(func=method, **kwargs)
-        activations = bended.bendable_keys(*activations, return_weights=False)
-        for a in activations:
-            out_acts = bended.get_activations(a, fn=method, **kwargs)
-            out = bended.from_activations(a, **out_acts, **kwargs, fn=method)
+        args, kwargs, _, bended_activations = module_config.get_method_args(method)
+        bended_module.trace(method, *args, **kwargs)
 
-
-
+        # test with 1 activations
+        for t in bended_activations:
+            bended_module.reset()
+            bended_module.bend(cb1, t, fn=method, verbose=True)
+            bended_module.bend(cb2, t, fn=method)
+            acts = bended_module.get_activations(f"{t}$", fn=method, **kwargs)
+            gm = bended_module.bend_activation_as_input(t, fn=method)
+            out = gm(**get_kwargs_from_gm(gm, **acts, **kwargs, param1 = [1, 1], param2="coucou", param3="bonjour"))
+            
 
 # @pytest.mark.parametrize("module_config", modules_to_test)
 # def test_weight_bending_inplace(module_config):

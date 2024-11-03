@@ -1,4 +1,4 @@
-import torch
+import torch, re
 from collections import OrderedDict
 import inspect
 from functools import reduce
@@ -30,6 +30,20 @@ class BendingCallbackException(Exception):
 class BendingCallbackAttributeException(Exception):
     pass
 
+def _make_default_arg(v):
+    if isinstance(v, str):
+        return f'\"{v}\"'
+    else:
+        return str(v)
+
+
+def _annotation_siganture_str(annotation):
+    name = annotation.__name__
+    if name == "Optional":
+        return re.match(r'.*\[(.*)\]', str(annotation)).groups()[0]
+    else:
+        return name
+
 
 def _create_forward_function(additional_args):
     is_list = OrderedDict()
@@ -42,18 +56,18 @@ def _create_forward_function(additional_args):
                 is_list[c[0]] = is_list.get(c[0], 0) + 1
                 defaults[c[0]] = defaults.get(c[0], []) + [c[1]._default]
                 if c[1].annotation is not None:
-                    types[c[0]] = types.get(c[0], []) + [c[1].annotation.__name__]
+                    types[c[0]] = types.get(c[0], []) + [_annotation_siganture_str(c[1].annotation)]
                 else:
                     types[c[0]] = types.get(c[0], []) + ['torch.Tensor']
 
     parsed_add_args = []
     for k, v in is_list.items():
         if v == 1:
-            parsed_add_args.append(f"{k}: Optional[{types[k][0]}] = {defaults[k][0]}")
+            parsed_add_args.append(f"{k}: Optional[{types[k][0]}] = {_make_default_arg(defaults[k][0])}")
         else:
-            types = ",".join(types[k])
-            defaults = ",".join(defaults[k])
-            parsed_add_args.append(f"{k}: Optional[{types}] = {defaults}")
+            types[k] = ",".join(types[k])
+            defaults[k] = "[" + ", ".join(map(_make_default_arg, defaults[k])) + "]"
+            parsed_add_args.append(f"{k}: Optional[Tuple[{types[k]}]] = {defaults[k]}")
         # annotation = c[1].annotation.__name__ if is_list.get(c[0]) == 0 else "List[%s]"%(c[1].annotation.__name__)
         # parsed_add_args.append(f"{c[1].name}: {annotation} = {c[1].}")
     
@@ -65,8 +79,8 @@ def _create_forward_function(additional_args):
                 add_kwargs.append(f"{c[1].name}={c[1].name}")
             else:
                 add_kwargs.append(f"{c[1].name}={c[1].name}[{c[2]}]")
-        callback_sigs.append(",".join(add_kwargs))
-    parsed_add_args = ",".join(parsed_add_args)
+        callback_sigs.append(", ".join(add_kwargs))
+    parsed_add_args = ", ".join(parsed_add_args)
     codes = _replace_placeholders(forward_pattern, additional_args=parsed_add_args, call_pattern=call_pattern, callback_sigs=callback_sigs, _call_pattern_loop=len(additional_args))
     funcs = _import_defs_from_tmpfile(codes, gl=globals(), lo=locals())
     return funcs['forward']
