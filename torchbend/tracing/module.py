@@ -11,13 +11,14 @@ from torch import nn
 from torch.fx import Graph
 from torch.fx.proxy import TraceError
 from typing import Union , NoReturn, Optional, Tuple
+from .. import get_output, TorchbendOutput
 from . import interp
 from .input import Inputs
 from .graphmodule import BendedGraphModule
 from .tracing import BendingTracer
 from .utils import BendingError, get_model_copy, _get_weight_properties
 from .graph import graph_insert_callbacks, graph_get_activations, graph_from_activations
-from .utils import _import_to_interface, make_graph_jit_compatible, clone_parameters, _bending_config_from_dicts
+from .utils import _import_to_interface, make_graph_jit_compatible, clone_parameters, _bending_config_from_dicts, display_table_for_jupyter
 from ..utils import checklist, get_parameter, print_tensor_ids
 from ..bending import BendingCallback, CallbackChain, is_bending_callback, BendingConfig
 
@@ -230,9 +231,13 @@ class BendedModule(object):
     def print_weights(self, flt=r".*", out=None) -> str:
         """print / export weights"""
         parameters = dict(filter(lambda v: re.match(flt, v[0]), dict(self.named_parameters()).items()))
-        pretty_weights = tabulate(map(_get_weight_properties, parameters.items()), headers=['name', 'shape', 'dtype', 'min', 'max', 'mean', 'stddev'])
+        pretty_weights = list(map(_get_weight_properties, parameters.items()))
+        pretty_weights_txt = tabulate(pretty_weights, headers=['name', 'shape', 'dtype', 'min', 'max', 'mean', 'stddev'])
         if out is None:
-            print(pretty_weights)
+            if get_output() == TorchbendOutput.RAW:
+                print(pretty_weights_txt)
+            elif get_output() == TorchbendOutput.NOTEBOOK:
+                display_table_for_jupyter(pretty_weights, columns=['name', 'shape', 'dtype', 'min', 'max', 'mean', 'stddev'], display=True)
         elif isinstance(out, TextIOWrapper):
             out.write(pretty_weights)
         else:
@@ -240,7 +245,7 @@ class BendedModule(object):
             os.makedirs(out.parent, exist_ok=True)
             with open(out, 'w+') as f:
                 f.write(pretty_weights)
-        return pretty_weights
+        return pretty_weights_txt
 
     @_import_to_interface
     def parameters(self):
@@ -299,9 +304,13 @@ class BendedModule(object):
     @_import_to_interface
     def print_activations(self, fn="forward", op=None, flt=r".*", out=None) -> str:
         activations = self.activations(fn, op=op, flt=flt)
-        act_txt = tabulate(map(_get_activations_properties, activations.items()))
+        act_parsed = list(map(_get_activations_properties, activations.items()))
+        act_txt = tabulate(act_parsed)
         if out is None:
-            print(act_txt)
+            if get_output() == TorchbendOutput.RAW:
+                print(act_txt)
+            elif get_output() == TorchbendOutput.NOTEBOOK:
+                display_table_for_jupyter(act_parsed, columns=['name', 'op', 'target', 'type', 'shape'], display=True)
         elif isinstance(out, TextIOWrapper):
             out.write(act_txt)
         else:

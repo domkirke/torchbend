@@ -1,4 +1,6 @@
 import copy, re, os
+from IPython.core.display import HTML, display as ipython_display
+import pandas as pd
 from typing import Any, Union, Dict, List
 import random
 from enum import Enum
@@ -125,12 +127,9 @@ def _get_weight_properties(args):
     except ValueError:
        minval = torch.nan
        maxval = torch.nan
-    try:
-       meanval = value.float().mean()
-       stdval = value.float().std() 
-    except ValueError:
-       meanval = torch.nan
-       stdval = torch.nan    
+       
+    meanval = value.float().mean()
+    stdval = torch.nan if value.numel() == 1 else value.float().std() 
     return [name, value.shape, value.dtype, minval, maxval, meanval, stdval]
 
 
@@ -289,3 +288,33 @@ def get_kwargs_from_gm(gm, **kwargs):
         if k.name in kwargs:
             out_kwargs[k.name] = kwargs[k.name]
     return out_kwargs
+
+
+# Create a sample DataFrame with more rows for better scrolling demonstration
+
+
+# Function to display a scrollable DataFrame
+def display_table_for_jupyter(table, columns=None, max_height=600, display=False):
+    df = pd.DataFrame(table, columns=columns)
+    # Convert DataFrame to HTML with styles
+    html = df.to_html(classes='mystyle', index=False)
+    # Define scrolling CSS
+    scroll_css = f"""
+    <style>
+    .mystyle tbody {{
+        display:block;
+        overflow-y:scroll;
+        max-height:{max_height}px;
+    }}
+    .mystyle thead, .mystyle tbody tr {{
+        display:table;
+        width:100%;
+        table-layout:fixed;
+    }}
+    </style>
+    """
+    # Display with CSS
+    obj = HTML(scroll_css + html)
+    if display: 
+        ipython_display(obj)
+    return obj
