@@ -294,7 +294,7 @@ def get_kwargs_from_gm(gm, **kwargs):
 
 
 # Function to display a scrollable DataFrame
-def display_table_for_jupyter(table, columns=None, max_height=600, display=False):
+def display_table_for_jupyter(table, columns=None, max_height=300, display=False):
     df = pd.DataFrame(table, columns=columns)
     # Convert DataFrame to HTML with styles
     html = df.to_html(classes='mystyle', index=False)

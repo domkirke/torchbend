@@ -33,14 +33,23 @@ def graph_insert_callbacks(graph, callbacks, verbose=False, _fn_name="forward"):
             bended_lookup[node.name] = bended_node 
     return new_graph
 
+
+def _get_new_node_args(env, node):
+    if isinstance(node, (list, tuple)):
+        return [_get_new_node_args(env, n) for n in node]
+    elif isinstance(node, torch.fx.Node):
+        return env[node.name]
+    else:
+        return node
+
 def graph_get_activations(graph: torch.fx.Graph, activations: List[str]):
     out_graph = torch.fx.Graph()
     env = {}
     out_nodes = {}
     for node in list(graph.nodes):
         if node.op != "output":
-            args = tuple([n if not isinstance(n, torch.fx.Node) else env[n.name] for n in node.args])
-            kwargs = {k: v if not isinstance(v, torch.fx.Node) else env[v.name] for k, v in node.kwargs.items()}
+            args = tuple([_get_new_node_args(env, n) for n in node.args])
+            kwargs = {k: _get_new_node_args(env, v) for k, v in node.kwargs.items()}
             env[node.name] = out_graph.create_node(node.op, node.target, args, kwargs, name=node.name, type_expr=node.type)
             if node.name in activations:
                 out_nodes[node.name] = env[node.name]
@@ -87,7 +96,7 @@ def graph_from_activations(graph, activations, remove_placeholders=False, parse_
             signature = inspect.signature(cb.forward)
             # args = tuple()
             # new_kwargs = OrderedDict()
-            kwargs = {k: v if not isinstance(v, torch.fx.Node) else  env[v.name] for k, v in n.kwargs.items()}
+            kwargs = {k: _get_new_node_args(env, v) for k, v in n.kwargs.items()}
             for name, param in dict(signature.parameters).items():
                 # bypass current positional arguments
                 if name == "x": pass
@@ -111,8 +120,8 @@ def graph_from_activations(graph, activations, remove_placeholders=False, parse_
     for n in graph.nodes:
         if n.op == "placeholder": continue
         if n.name not in nodes_to_remove and n.name not in activations:
-            args = tuple([n if not isinstance(n, torch.fx.Node) else env[n.name] for n in n.args])
-            kwargs = {k: v if not isinstance(v, torch.fx.Node) else  env[v.name] for k, v in n.kwargs.items()}
+            args = tuple([_get_new_node_args(env, n) for n in n.args])
+            kwargs = {k: _get_new_node_args(env, v) for k, v in n.kwargs.items()}
             if n.name.endswith('_bended') and n.name.replace('_bended', '') in activations and parse_inputs_from_callbacks:
                 bended_activation_name = n.name.replace('_bended', '')
                 cb = parse_inputs_from_callbacks[bended_activation_name]

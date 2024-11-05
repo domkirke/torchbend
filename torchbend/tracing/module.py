@@ -181,6 +181,10 @@ class BendedModule(object):
                 return super(BendedModule, self).__getattribute__(attr_name)
             else:
                 return attr
+            
+    def __repr__(self):
+        module_repr = type(self.module).__name__
+        return "BendedModule(%s)"%module_repr
 
     # -- copy & to
     @classmethod
@@ -239,12 +243,12 @@ class BendedModule(object):
             elif get_output() == TorchbendOutput.NOTEBOOK:
                 display_table_for_jupyter(pretty_weights, columns=['name', 'shape', 'dtype', 'min', 'max', 'mean', 'stddev'], display=True)
         elif isinstance(out, TextIOWrapper):
-            out.write(pretty_weights)
+            out.write(pretty_weights_txt)
         else:
             out = pathlib.Path(out)
             os.makedirs(out.parent, exist_ok=True)
             with open(out, 'w+') as f:
-                f.write(pretty_weights)
+                f.write(pretty_weights_txt)
         return pretty_weights_txt
 
     @_import_to_interface
@@ -282,12 +286,17 @@ class BendedModule(object):
         return valid_acts
 
     @_import_to_interface
-    def activations(self, fn="forward", op=None, flt=r".*"):
+    def activations(self, fn="forward", op=None, flt=None, exclude=None):
         activations = self._activations[fn] 
         if op is not None:
             op = checklist(op)
             activations = dict(filter(lambda obj: obj[1].op in op, activations.items()))
-        activations = dict(filter(lambda obj: re.match(flt, obj[0]), activations.items()))
+        if flt is not None:
+            for f in checklist(flt):
+                activations = dict(filter(lambda x, r=f: re.match(r, x[0]) is not None, activations.items())) 
+        if exclude is not None:
+            for e in checklist(exclude):
+                activations = dict(filter(lambda x, r=e: re.match(r, x[0]) is None, activations.items())) 
         return activations
 
     @_import_to_interface
@@ -302,9 +311,40 @@ class BendedModule(object):
         return self.activations(fn)[param].shape
 
     @_import_to_interface
-    def print_activations(self, fn="forward", op=None, flt=r".*", out=None) -> str:
-        activations = self.activations(fn, op=op, flt=flt)
+    def print_graph(self, fn="forward", op=None, flt=r".*", exclude=None, out=None) -> str:
+        graph = self._graphs[fn]
+        if op is not None: op = checklist(op)
+        graph_parsed = [[n.op, n.name, n.target, n.args, n.kwargs]
+                      for n in graph.nodes]
+        if op is not None:
+            graph_parsed = list(filter(lambda x: x[0] in op, graph_parsed))
+        if flt is not None:
+            for f in checklist(flt):
+                graph_parsed = list(filter(lambda x, r=f: re.match(r, x[1]) is not None, graph_parsed)) 
+        if exclude is not None:
+            for e in checklist(exclude):
+                graph_parsed = list(filter(lambda x, r=e: re.match(r, x[1]) is None, graph_parsed)) 
+        graph_txt = tabulate(graph_parsed,
+              headers=['opcode', 'name', 'target', 'args', 'kwargs'])
+        if out is None:
+            if get_output() == TorchbendOutput.RAW:
+                print(graph_txt)
+            elif get_output() == TorchbendOutput.NOTEBOOK:
+                display_table_for_jupyter(graph_parsed, columns=['opcode', 'name', 'target', 'args', 'kwargs'], display=True)
+        elif isinstance(out, TextIOWrapper):
+            out.write(graph_txt)
+        else:
+            out = pathlib.Path(out)
+            os.makedirs(out.parent, exist_ok=True)
+            with open(out, 'w+') as f:
+                f.write(graph_txt)
+        return graph_txt
+
+    @_import_to_interface
+    def print_activations(self, fn="forward", op=None, flt=None, exclude=None, out=None) -> str:
+        activations = self.activations(fn, op=op, flt=flt, exclude=exclude)
         act_parsed = list(map(_get_activations_properties, activations.items()))
+        
         act_txt = tabulate(act_parsed)
         if out is None:
             if get_output() == TorchbendOutput.RAW:

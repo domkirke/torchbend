@@ -16,6 +16,7 @@ import gin
 class BendingRAVEException(Exception):
     pass
 
+
 def script_rave_model(pretrained, **kwargs):
     cc.use_cached_conv(True)
     if isinstance(pretrained.encoder, ravelib.blocks.VariationalEncoder):
@@ -39,6 +40,61 @@ def _scripted_model_to_nntilde(self):
     return ScriptableRAVE(self)
 
 
+def post_process_variational(self, z):
+    z = z - self.model.latent_mean.unsqueeze(-1)
+    z = F.conv1d(z, self.model.latent_pca.unsqueeze(-1))
+    return z
+
+def pre_process_variational(self, z):
+    z = F.conv1d(z, self.model.latent_pca.T.unsqueeze(-1))
+    z = z + self.model.latent_mean.unsqueeze(-1)
+    return z
+
+def post_process_discrete(self, z):
+    z = self.model.encoder.rvq.encode(z)
+    return z.float()
+
+def pre_process_discrete(self, z):
+    z = torch.clamp(z, 0,
+                    self.encoder.rvq.layers[0].codebook_size - 1).long()
+    z = self.model.encoder.rvq.decode(z)
+    if self.model.encoder.noise_augmentation:
+        noise = torch.randn(z.shape[0], self.model.encoder.noise_augmentation,
+                            z.shape[-1]).type_as(z)
+        z = torch.cat([z, noise], 1)
+    return z
+
+def post_process_ws(self, z):
+    return z
+
+def pre_process_ws(self, z):
+    if self.model.encoder.noise_augmentation:
+        noise = torch.randn(z.shape[0], self.model.encoder.noise_augmentation,
+                            z.shape[-1]).type_as(z)
+        z = torch.cat([z, noise], 1)
+    return z
+
+
+def post_process_sph(self, z):
+    return rave.blocks.unit_norm_vector_to_angles(z)
+
+def pre_process_sph(self, z):
+    return rave.blocks.angles_to_unit_norm_vector(z)
+
+pre_process_fn = {rave.blocks.VariationalEncoder: pre_process_variational, 
+                  rave.blocks.DiscreteEncoder: pre_process_discrete, 
+                  rave.blocks.WasserteinEncoder: pre_process_ws, 
+                  rave.blocks.SphericalEncoder: pre_process_sph
+                 }
+
+post_process_fn = {rave.blocks.VariationalEncoder: post_process_variational, 
+                  rave.blocks.DiscreteEncoder: post_process_discrete, 
+                  rave.blocks.WasserteinEncoder: post_process_ws, 
+                  rave.blocks.SphericalEncoder: post_process_sph
+                 }            
+
+
+
 class BendedRAVE(Interface):
     _imported_callbacks_ = []
     _proxied_buffers = ['.*pad', '.*cache', 'latent_mean', 'latent_pca']
@@ -48,6 +104,8 @@ class BendedRAVE(Interface):
         self.batch_size = batch_size
         model(torch.zeros(self.batch_size, 1, 8192))
         self.model = model
+        self.pre_process_latent = MethodType(pre_process_fn[type(self.model.encoder)], self)
+        self.post_process_latent = MethodType(post_process_fn[type(self.model.encoder)], self)
 
     @staticmethod
     def load_model(model_path):
@@ -106,13 +164,45 @@ class BendedRAVE(Interface):
         if out is not None: self.write_audio(out, audio[0])
         return audio
 
-    def encode(self, x: Union[torch.Tensor, str]):
+    @property
+    def encoder(self):
+        return BendedModule(self._model.encoder)
+    @property
+    def decoder(self):
+        return BendedModule(self._model.decoder)
+    @property
+    def discriminator(self):
+        return BendedModule(self._model.discriminator)
+
+    @property
+    def latent_size(self):
+        return self.model.latent_size
+
+    def pre_process_latent(self, z):
+        raise NotImplementedError 
+
+    def post_process_latent(self, z):
+       raise NotImplementedError 
+
+    def get_dims_for_fidelity(self, fidelity: float):
+        latent_size = max(np.argmax(self.model.fidelity.numpy() > fidelity), 1)
+        return latent_size
+
+    def get_fidelity_for_dims(self, dims: int):
+        return self.model.fidelity[dims]
+
+    def encode(self, x: Union[torch.Tensor, str], postprocess=False):
         if isinstance(x, str):
             x = self.load_audio(x)
         decoder_out = self._model.encode(x)
-        return self._model.encoder.reparametrize(decoder_out)[:2][0]
+        z = self._model.encoder.reparametrize(decoder_out)[:2][0]
+        if postprocess: 
+            z = self.post_process_latent(z)
+        return z
 
-    def decode(self, z: torch.Tensor, out: Optional[str] = None):
+    def decode(self, z: torch.Tensor, out: Optional[str] = None, preprocess=False):
+        if preprocess: 
+            z = self.pre_process_latent(z)
         audio = self._model.decode(z)
         if out is not None: self.write_audio(out, audio[0])
         return audio
