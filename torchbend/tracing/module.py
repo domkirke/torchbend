@@ -206,7 +206,7 @@ class BendedModule(object):
         return obj
 
     # -- parameters & weights --
-    def _resolve_parameters(self, *weights):
+    def resolve_parameters(self, *weights):
         """get valid weight names from a regexp"""
         valid_weights = []
         for weight in self.weight_names:
@@ -232,9 +232,15 @@ class BendedModule(object):
         return self._module.state_dict()[param].shape
 
     @_import_to_interface
-    def print_weights(self, flt=r".*", out=None) -> str:
+    def print_weights(self, flt=r".*", exclude=None, out=None) -> str:
         """print / export weights"""
-        parameters = dict(filter(lambda v: re.match(flt, v[0]), dict(self.named_parameters()).items()))
+        parameters = dict(self.named_parameters())
+        if flt is not None:
+            for f in checklist(flt):
+                parameters = dict(filter(lambda x, r=f: re.match(r, x[0]) is not None, parameters.items()))
+        if exclude is not None:
+            for e in checklist(exclude):
+                parameters = dict(filter(lambda x, r=e: re.match(r, x[0]) is None, parameters.items())) 
         pretty_weights = list(map(_get_weight_properties, parameters.items()))
         pretty_weights_txt = tabulate(pretty_weights, headers=['name', 'shape', 'dtype', 'min', 'max', 'mean', 'stddev'])
         if out is None:
@@ -271,7 +277,7 @@ class BendedModule(object):
             return self._param_dict[version]
 
     # -- activations --
-    def _resolve_activations(self, *activations, fn="forward", _with_bended=True, _raise_notfound=False):
+    def resolve_activations(self, *activations, fn="forward", _with_bended=True, _raise_notfound=False):
         """get valid activation names from a regexp"""
         valid_acts = {}
         for act in self.activation_names(fn, _with_bended=_with_bended):
@@ -434,9 +440,9 @@ class BendedModule(object):
     def bendable_keys(self, *request, fn="forward", return_weights=True, return_activations=True):
         keys = []
         if return_weights:
-            keys = self._resolve_parameters(*request)
+            keys = self.resolve_parameters(*request)
         if self.is_traced(fn) and return_activations:
-            keys = keys + self._resolve_activations(*request, fn=fn)
+            keys = keys + self.resolve_activations(*request, fn=fn)
         return keys
 
     @_import_to_interface
@@ -544,8 +550,8 @@ class BendedModule(object):
         else:
             fn = checklist(fn)
 
-        target_params = [] if not bend_param else self._resolve_parameters(*params)
-        target_activations = {method: [] if not bend_graph else self._resolve_activations(*params, fn=method, _with_bended=False) for method in fn}
+        target_params = [] if not bend_param else self.resolve_parameters(*params)
+        target_activations = {method: [] if not bend_graph else self.resolve_activations(*params, fn=method, _with_bended=False) for method in fn}
 
         # bend weights
         if len(target_params) + sum(map(len, target_activations.values())) == 0:
@@ -630,7 +636,7 @@ class BendedModule(object):
     #     """split a given graphed method in two parts"""
     #     if fn not in self._graphs:
     #         raise BendingError('function %s does not exist, or has not been traced')
-    #     activations = self._resolve_activations(*activations, _raise_notfound=True)
+    #     activations = self.resolve_activations(*activations, _raise_notfound=True)
     #     if bended:
     #         activations = self._get_bended_activations(activations, fn=fn)
     #     version = version or self.version
@@ -669,7 +675,7 @@ class BendedModule(object):
         module = self.bend_module(fn=fn)
         graph = self.bend_graph(fn=fn)
 
-        activations = self._resolve_activations(*activations, _raise_notfound=True, _with_bended = not _filter_bended)
+        activations = self.resolve_activations(*activations, _raise_notfound=True, _with_bended = not _filter_bended)
         # if bended:
         #     activations = self._get_bended_activations(activations, fn=fn)
         new_graph = graph_get_activations(graph, activations)
@@ -692,7 +698,7 @@ class BendedModule(object):
         module = self.bend_module(fn=fn)
         graph = self.bend_graph(fn=fn)
         # retrieve activations
-        activations = self._resolve_activations(*activations, _raise_notfound=True)
+        activations = self.resolve_activations(*activations, _raise_notfound=True)
         new_graph = graph_from_activations(graph, activations)
         # forward
         gm = BendedGraphModule(module, new_graph)
