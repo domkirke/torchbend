@@ -34,10 +34,13 @@ class Permute(BendingCallback):
         perm = torch.randperm(shape[self.dim], generator=self.generator)
         self.register_buffer(buffer_name, perm.int())
 
-    def add_bending_target(self, name, shape=None):
-        super(Permute, self).add_bending_target(name, shape=shape)
-        if shape is not None:
-            self._init_permute_(name, shape)
+    def register_parameter(self, parameter, name=None):
+        name = super().register_parameter(parameter, name=name)      
+        self._init_permute_(name, parameter.shape)
+            
+    def register_activation(self, name, shape):
+        name = super().register_activation(name, shape)
+        self._init_permute_(name, shape)
     
     def get_permutation(self, param, name: Optional[str]) -> torch.Tensor:
         if name is not None:

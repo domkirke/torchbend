@@ -492,7 +492,7 @@ class BendedModule(object):
             self._bending_callbacks.append(callback)
         self._bended_params[version][parameter] = self._bended_params[version].get(parameter, []) + [callback]
         #TODO register parameter in callback
-        callback.add_bending_target(parameter, parameter=self._module.get_parameter(parameter))
+        callback.register_parameter(self._module.get_parameter(parameter), name=parameter)
 
     def _bend_activation(self, parameter, callback, fn="forward"):
         if callback not in self._bending_callbacks:
@@ -501,7 +501,7 @@ class BendedModule(object):
         self._bended_activations[fn][parameter] = self._bended_activations[fn].get(parameter, []) + [callback]
         try: 
             #TODO register activation shape
-            callback.add_bending_target(f"{fn}:{parameter}", shape=self.activation_shape(parameter, fn=fn))
+            callback.register_activation(f"{fn}:{parameter}", shape=self.activation_shape(parameter, fn=fn))
         except Exception as e:
             print('Cannot bend activation %s with callback %s.\nException : %s\n Proceeding'%(parameter, callback, e))
     

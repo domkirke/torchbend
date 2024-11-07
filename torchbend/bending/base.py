@@ -237,6 +237,11 @@ class BendingCallback(nn.Module):
         """applies transformation to an input (typically activations)"""
         if not self.is_ready: raise BendingCallbackException(self._not_ready_str)
         return self.bend_input(x, name=name)
+
+    def get_shape(self, shape):
+        """returns the shape of the activation after processing. 
+        Used in CallbackChain to register piped activation bending"""
+        return shape
     
     def cache_from_id(self, idx: int) -> torch.nn.Parameter:
         #grrrr
@@ -355,6 +360,17 @@ class CallbackChain(nn.Module):
             return CallbackChain(*self.callbacks, obj)
         else:
             raise TypeError('%s can only be added to CallbackChain or BendingCallback objects'%(type(self).__name__))
+
+    def register_parameter(self, parameter: List[nn.Parameter], name=None, cache=True) -> str:
+        for c in self.callbacks:
+            c.register_parameter(parameter, name=name, cache=cache)
+
+    def register_activation(self, name, shape):
+        for c in self.callbacks:
+            # TODO make a get_shape function for 
+            c.register_activation(name, shape)
+            shape = c.get_shape(shape)
+    
 
 def is_bending_callback(obj):
     return isinstance(obj, (BendingCallback, CallbackChain))
