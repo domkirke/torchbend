@@ -275,8 +275,7 @@ def test_bending_callbacks_as_inputs(module_config):
             bended_module.bend(cb1, t, fn=method, verbose=True)
             bended_module.bend(cb2, t, fn=method)
             acts = bended_module.get_activations(f"{t}$", fn=method, **kwargs)
-            gm = bended_module.bend_activation_as_input(t, fn=method)
-            out = gm(**get_kwargs_from_gm(gm, **acts, **kwargs, param1 = [1, 1], param2="coucou", param3="bonjour"))
+            out = bended_module.from_activations(t, fn=method, **acts, **kwargs, param1 = [1, 1], param2="coucou", param3="bonjour")
             
 
 # @pytest.mark.parametrize("module_config", modules_to_test)

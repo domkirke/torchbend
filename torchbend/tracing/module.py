@@ -18,7 +18,7 @@ from .graphmodule import BendedGraphModule
 from .tracing import BendingTracer
 from .utils import BendingError, get_model_copy, _get_weight_properties
 from .graph import graph_insert_callbacks, graph_get_activations, graph_from_activations
-from .utils import _import_to_interface, make_graph_jit_compatible, clone_parameters, _bending_config_from_dicts, display_table_for_jupyter
+from .utils import _import_to_interface, make_graph_jit_compatible, clone_parameters, _bending_config_from_dicts, display_table_for_jupyter, get_kwargs_from_gm
 from ..utils import checklist, get_parameter, print_tensor_ids
 from ..bending import BendingCallback, CallbackChain, is_bending_callback, BendingConfig
 
@@ -675,7 +675,7 @@ class BendedModule(object):
         module = self.bend_module(fn=fn)
         graph = self.bend_graph(fn=fn)
 
-        activations = self.resolve_activations(*activations, _raise_notfound=True, _with_bended = not _filter_bended)
+        activations = self.resolve_activations(*activations, _raise_notfound=True, fn=fn, _with_bended = not _filter_bended)
         # if bended:
         #     activations = self._get_bended_activations(activations, fn=fn)
         new_graph = graph_get_activations(graph, activations)
@@ -691,29 +691,35 @@ class BendedModule(object):
             return outs
 
     
-    @_import_to_interface
-    def from_activations(self, *activations, fn="forward", _return_graph=False, _save_as_method = None, **inputs):
-        """return target activations from given inputs."""
-        # bend modules and graphs
-        module = self.bend_module(fn=fn)
-        graph = self.bend_graph(fn=fn)
-        # retrieve activations
-        activations = self.resolve_activations(*activations, _raise_notfound=True)
-        new_graph = graph_from_activations(graph, activations)
-        # forward
-        gm = BendedGraphModule(module, new_graph)
-        outs = gm(**inputs)
-        # register as method in case
-        if _save_as_method: 
-            self._register_method_from_graph(graph, fn, _save_as_method)
-        # return
-        if _return_graph:
-            return outs, new_graph
-        else:
-            return outs
+    # @_import_to_interface
+    # def from_activations(self, *activations, fn="forward", _return_graph=False, _save_as_method = None, **inputs):
+    #     """return target activations from given inputs."""
+    #     # bend modules and graphs
+    #     module = self.bend_module(fn=fn)
+    #     graph = self.bend_graph(fn=fn)
+    #     # retrieve activations
+    #     activations = self.resolve_activations(*activations, _raise_notfound=True)
+    #     new_graph = graph_from_activations(graph, activations)
+    #     # forward
+    #     gm = BendedGraphModule(module, new_graph)
+    #     outs = gm(**inputs)
+    #     # register as method in case
+    #     if _save_as_method: 
+    #         self._register_method_from_graph(graph, fn, _save_as_method)
+    #     # return
+    #     if _return_graph:
+    #         return outs, new_graph
+    #     else:
+    #         return outs
 
     @_import_to_interface
-    def bend_activation_as_input(self, *activations: Optional[Tuple[str]], callbacks: Optional[Tuple[BendingCallback]] = None, fn: str = "forward", _save_as_method=None):
+    def from_activations(self,
+                                 *activations: Optional[Tuple[str]], 
+                                 callbacks: Optional[Tuple[BendingCallback]] = None, 
+                                 fn: str = "forward", 
+                                 _return_graph = False, 
+                                 _save_as_method=None, 
+                                 **inputs):
         #TODO add method to target name of callbacks in activation bending
         assert fn in self._graphs, "method %s is not accessible or isn't traced yet."%(fn)
         if len(activations) == 0:
@@ -726,9 +732,14 @@ class BendedModule(object):
         graph = self.bend_graph(fn=fn)
         callbacks = {a: CallbackChain(*self._bended_activations[fn][a]) for a in activations}
         new_graph = graph_from_activations(graph, activations, remove_placeholders=True, parse_inputs_from_callbacks=callbacks)
+        gm =  BendedGraphModule(self.bend_module(fn=fn), new_graph)
+        outs = gm(**get_kwargs_from_gm(gm, **inputs))
         if _save_as_method:
             self._register_method_from_graph(new_graph, fn, _save_as_method)
-        return BendedGraphModule(self.bend_module(fn=fn), new_graph)
+        if _return_graph:
+            return outs, graph
+        else:
+            return outs
         
 
     #  -- version & interpolation handling --

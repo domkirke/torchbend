@@ -1,5 +1,5 @@
 import torch
-from typing import Optional
+from typing import Optional, Union, List
 from .base import BendingCallback
 
 
@@ -50,5 +50,39 @@ class Permute(BendingCallback):
         permute = self.get_permutation(param, name).to(device=param.device)
         dim = self.dim.to(device=param.device)
         return torch.index_select(param, dim, permute)
+
+
+
+class ThresholdPermute(BendingCallback):
+    activation_compatible = True
+    controllable_params = ['threshold']
+    def __init__(self, threshold: float = 0.5, dim: Union[int, List[int], None]=None, invert: bool = False):
+        super().__init__()
+        self.register_controllable('threshold', threshold)
+        self.dim = dim
+        self.invert = invert
+
+    def forward(self, x: torch.Tensor, name: Optional[str] = None):
+        dim = self.dim
+        if dim < 0:
+            dim =  x.ndim + dim
+        threshold = self.get('threshold')
+
+        vals = x.mean(tuple(range(dim+1, x.ndim)))
+
+        idx = torch.argsort(vals, dim=-1, descending=not self.invert)
+        idx_sorted = idx[..., :int(threshold * idx.shape[-1])]
+
+        mask = torch.zeros_like(x)
+        index = []
+        for d in mask.shape[:(dim)]:
+            d = torch.arange(d) 
+            for _ in range(dim+1):
+                d = d.unsqueeze(-1)
+            index.append(d)
+            index += [idx_sorted]
+        mask.__setitem__(index, 1)
+        return x * mask
+
         
         

@@ -13,7 +13,7 @@ class InterpolateActivation(BendingCallback):
         assert interp_weights.shape[-1] == x.shape[0]
         if softmax: interp_weights = torch.nn.functional.softmax(interp_weights, dim=-1)
         interp_weights = interp_weights.reshape(interp_weights.shape + (1, ) * (x.ndim - 1))
-        out = ((interp_weights * x).sum(-interp_weights.ndim))
+        out = ((interp_weights * x).sum(-interp_weights.ndim+1))
         if out.ndim == x.ndim - 1:
             out = out[None]
         return out
