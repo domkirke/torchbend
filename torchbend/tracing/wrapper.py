@@ -2,11 +2,11 @@
 import torch.nn as nn
 from typing import NoReturn
 from . import BendedModule, BendingError
+from .module import _copy_attrs
 
 class BendedWrapperModule(nn.Module):
     def __init__(self, obj):
         nn.Module.__init__(self)
-        
         self._import_attrs(obj)
 
     def _import_attrs(self, obj):
@@ -33,14 +33,18 @@ def make_wrapper_for_obj(obj):
 
 
 class BendedWrapper(BendedModule):
+    __copy_attrs__ = BendedModule.__copy_attrs__ + ['__original_obj__']
     def __init__(self, module, _wrapped_methods=[]):
         super().__init__(make_wrapper_for_obj(module), _wrapped_methods=_wrapped_methods)
         self.__original_obj__ = module
+
+    def __repr__(self):
+        return "BendedWrapper(%s)"%(type(self.__original_obj__).__name__)
     
     def _getmodule_(self) -> object:
         return self.__original_obj__
     def _setmodule_(self, module) -> NoReturn:
-        raise BendingError('Cannot set module of BendedModule after initaliazation.')
+        raise BendingError('Cannot set module of BendedModule after initialization.')
     def _delmodule_(self) -> NoReturn:
         raise BendingError('Cannot delete module of BendedModule')
     module = property(_getmodule_, _setmodule_, _delmodule_)
@@ -48,6 +52,12 @@ class BendedWrapper(BendedModule):
     @property
     def wrapped_module(self):
         return self._module
+
+    @classmethod
+    def copy(cls, module):
+        module_copy = BendedWrapper(module.__original_obj__)
+        _copy_attrs(module, module_copy, cls.__copy_attrs__)
+        return module_copy
 
     def create_version(self, name, obj, strict=True):
         assert issubclass(type(obj), type(self.module)), "cannot create version for type %s from type %s"%(type(self.module), type(self.obj))

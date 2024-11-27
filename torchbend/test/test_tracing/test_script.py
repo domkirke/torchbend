@@ -1,10 +1,7 @@
 import torch
 import torchbend as tb
-from torchbend.tracing import unmatching_ids, get_model_copy, clone_parameters
-from torchbend.utils import checktuple, get_parameter
 import pytest
 import sys, os
-from conftest import get_log_file, log_to_file
 from types import MethodType
 
 testpath = os.path.abspath((os.path.join(os.path.dirname(__file__), "..")))
@@ -62,7 +59,7 @@ def test_bended_scripting(module_config):
         bended.trace(fn=method, *args, **kwargs)
         # bend module
         cb = tb.Mask(0.)
-        bended.bend(cb, *bended_weights, *bended_acts)
+        bended.bend(cb, fn=method, *bended_weights, *bended_acts)
 
     # script module
     scripted = bended.script()
@@ -77,6 +74,7 @@ def test_bended_scripting(module_config):
 def test_controlled_bended_scripting(module_config):
     module, bended = module_config.get_modules()
     param = tb.BendingParameter("mask", 1.)
+
     # trace scriptable methods
     for method in get_scriptable_methods(module):
         args, kwargs, bended_weights, bended_acts = module_config.get_method_args(method)
@@ -85,6 +83,9 @@ def test_controlled_bended_scripting(module_config):
         cb = tb.Mask(param)
         bended.bend(cb, *bended_weights, *bended_acts)
 
+    def check_bending_param(param, val, tol=1.e-5):
+        return  (param > val - tol) and (param < val + tol)
+
     # script module
     scripted = bended.script()
     # compare outs
@@ -92,7 +93,7 @@ def test_controlled_bended_scripting(module_config):
         # compare with unmasked weights & activations
         param.set_value(1.)
         scripted.set_mask(1.)
-        assert scripted.get_mask() == 1.
+        assert check_bending_param(scripted.get_mask(), 1.)
         out_orig = getattr(module, method)(*args, **kwargs)
         out_scripted = getattr(scripted, method)(*args, **kwargs)
         assert tb.compare_outs(out_orig, out_scripted)
@@ -100,27 +101,22 @@ def test_controlled_bended_scripting(module_config):
         # compare with masked weights & activations
         param.set_value(0.)
         scripted.set_mask(0.)
-        assert scripted.get_mask() == 0.
+        assert check_bending_param(scripted.get_mask(), 0.)
         out_orig = getattr(module, method)(*args, **kwargs)
         out_scripted = getattr(scripted, method)(*args, **kwargs)
         assert not tb.compare_outs(out_orig, out_scripted)
 
 
-
-
-
-
-# @pytest.mark.parametrize("module_config", scriptable_modules_to_test)
-# def test_bended_scripting(module_config):
-#     module = module_config.get_module()
-#     scripted = module.script()
-#     scripted = torch.jit.script(scripted)
-#     for method in module_config.get_methods():
-#         args, kwargs, _, _ = module_config.get_method_args(method)
-#         out_orig = getattr(module, method)(*args, **kwargs)
-#         out_bended = getattr(scripted, method)(*args, **kwargs)
-#         assert tb.compare_outs(out_orig, out_bended)
-
+@pytest.mark.parametrize("module_config", scriptable_modules_to_test)
+def test_controlled_types_scripting(module_config):
+    module, bended = module_config.get_modules()
+    raise NotImplementedError
+    # test bounded float
+    # test unbounded float
+    # test bounded int
+    # test unbounded int
+    # test string
+    # test bool
 
         
     

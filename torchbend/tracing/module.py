@@ -195,7 +195,7 @@ class BendedModule(object):
 
     def to(self, *args, _no_warning: bool = False, **kwargs):
         if not _no_warning: 
-            print('[Warning]to is an experimental feature for BendingModule ;\nsetting original module to target device before wrapping is advised.')
+            print('[Warning]to on bended modules is an experimental feature of torchbend ;\nsetting original module to target device before wrapping is advised.')
             print('call with _no_warning=True to remove this warning.')
         # make shallow copy to change module.
         obj = type(self).copy(self)
@@ -730,7 +730,8 @@ class BendedModule(object):
                 activations = _get_bended_activation_from_callaback(self._bended_activations[fn], callback)
                 assert len(activations) != 0, "given callback does not seem to be bending any activation for method %s.\nCallback : %s"%(fn, callback)
         graph = self.bend_graph(fn=fn)
-        callbacks = {a: CallbackChain(*self._bended_activations[fn][a]) for a in activations}
+        bended_activations = list(filter(lambda a: a in self._bended_activations[fn], activations))
+        callbacks = {a: CallbackChain(*self._bended_activations[fn][a]) for a in bended_activations}
         new_graph = graph_from_activations(graph, activations, remove_placeholders=True, parse_inputs_from_callbacks=callbacks)
         gm =  BendedGraphModule(self.bend_module(fn=fn), new_graph)
         outs = gm(**get_kwargs_from_gm(gm, **inputs))

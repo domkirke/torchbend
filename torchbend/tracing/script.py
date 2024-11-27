@@ -129,7 +129,7 @@ class ScriptedBendedModule(nn_tilde.Module):
         for s in self.scripted_methods:
             for k, v in getattr(self, f"_{s}")._modules.items():
                 if isinstance(v, (CallbackChain, BendingCallback)):
-                    setattr(getattr(self, f"_{s}")._modules, k, v.script())
+                    getattr(self, f"_{s}")._modules.__setitem__(k, v.script())
 
     def _import_bending(self, model):
         self._import_bending_ops(model)

@@ -1,5 +1,6 @@
 import copy, re, os
-from IPython.core.display import HTML, display as ipython_display
+from IPython.core.display import HTML
+from IPython import display as ipython_display
 import pandas as pd
 from typing import Any, Union, Dict, List
 import random

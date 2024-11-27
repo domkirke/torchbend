@@ -1,6 +1,6 @@
 import os
+import typing
 import torch, torch.nn as nn
-import rave
 import gin
 from .utils import ModuleTestConfig
 
@@ -59,16 +59,6 @@ class WrappedFoo(object):
 
 
 
-config = os.path.join(os.path.dirname(rave.__file__), "configs", "v2.gin")
-class RAVETest(rave.RAVE):
-    def __new__(cls, *args, **kwargs):
-        gin.parse_config_file(config)
-        return super().__new__(cls, *args, **kwargs)
-        
-    def forward(self, x):
-        return super().forward(x)
-
-
 modules_to_test = [
     ModuleTestConfig(Foo, 
                      (tuple(), dict()), 
@@ -121,14 +111,40 @@ modules_to_compare = [
                          {"x": torch.randn(1, 1, 128)},
                      )}
      ), 
-     ModuleTestConfig(RAVETest,
+     
+]
+
+__all__ = ['Foo', 'modules_to_test', 'scriptable_modules_to_test', 'modules_to_compare']
+
+class NotImplementedClass(object):
+    def __getattr__(self, obj):
+        return NotImplemented
+    def __setattr__(self, name: str, value: typing.Any) -> None:
+        raise NotImplementedError()
+
+
+try: 
+    import rave
+    config = os.path.join(os.path.dirname(rave.__file__), "configs", "v2.gin")
+    class RAVETest(rave.RAVE):
+        def __new__(cls, *args, **kwargs):
+            gin.parse_config_file(config)
+            return super().__new__(cls, *args, **kwargs)
+            
+        def forward(self, x):
+            return super().forward(x)
+    modules_to_compare.append(
+        ModuleTestConfig(RAVETest,
                       (tuple(), dict()),
                       {'forward': (
                           tuple(),
                           {'x': torch.randn(1, 1, 4096)},
                       )}
+        )
     )
-]
+    __all__.append('RAVETest')
 
+except Exception as e:
+    class RAVETest(NotImplementedClass):
+        pass
 
-__all__ = ['Foo', 'RAVETest', 'modules_to_test', 'scriptable_modules_to_test', 'modules_to_compare']
