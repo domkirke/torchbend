@@ -25,8 +25,8 @@ class Normal(BendingCallback):
 
     def __repr__(self):
         rp =  f"{type(self).__name__}(std={float(self.std):.3f}"
-        if self.seed is not None:
-            rp += f", seed={int(self.seed)}"
+        if self._seed is not None:
+            rp += f", seed={int(self._seed)}"
         rp+=")"
         return rp
 
