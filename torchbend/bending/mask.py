@@ -173,7 +173,7 @@ class OrderedMask(Mask):
 
 class ThresholdActivation(BendingCallback):
     activation_compatible = True
-    controllable_params = ['threshold']
+    controllable_params = {'threshold': None}
     def __init__(self, threshold: float = 0.5, dim: Union[int, List[int], None]=None, invert: bool = False):
         super().__init__()
         self.register_controllable('threshold', threshold)
