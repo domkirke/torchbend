@@ -4,7 +4,6 @@ import sys
 import numpy
 import os, torch
 
-
 class BendedStyleGAN3(Interface):
     def __init__(self, pretrained, *args, cache_dir='.cache/stylegan3', device=torch.device('cpu'), **kwargs):
         sys.path.append(cache_dir)

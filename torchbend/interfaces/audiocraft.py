@@ -6,6 +6,7 @@ from .base import Interface
 from ..tracing import BendedWrapper
 from .utils import get_random_hash
 
+_IMPORT_AS_INTERFACE_ = True
 
 
 class BendedMusicGen(Interface):

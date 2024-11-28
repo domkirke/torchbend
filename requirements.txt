@@ -1,5 +1,4 @@
 tabulate
-gin-config
 numpy
 matplotlib
 pandas

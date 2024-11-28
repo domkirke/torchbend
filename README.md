@@ -1,19 +1,11 @@
 # torchbend
 
-Welcome to `torchbend`, a high-level framework for dissecting, analyzing and bending machine learning models programmed with [Pytorch](https://pytorch.org/docs/stable/index.html). This framework extends `torch.fx` and proposes convenient methods to target certain activations of a network, bend its parameters or internal values, and easily perform some [active divergence](https://arxiv.org/pdf/2107.05599) techniques to unbound the co-creative 
+Welcome to `torchbend`, a high-level framework for dissecting, analyzing and bending machine learning models programmed with [Pytorch](https://pytorch.org/docs/stable/index.html). This framework extends `torch.fx` and proposes convenient methods to target certain activations of a network, bend its parameters or internal values, and easily perform some [active divergence](https://arxiv.org/pdf/2107.05599) techniques to unbound a co-creative approache to generative ML.
 
-- [✔︎] extend the tracing abilities of `torch.fx` with augmented parsers and proxies
-    - dynamic parsing (wrapping un-traceable functions, shape propagation (warning : wrap shape with tuple! or find a solution?))
-    - tracing torch distributions (currently implemented : `Bernoulli`, `Normal`, `Categorical`)
-    - item assigneme
-- [✔︎] easily parse and analyze model's graphs 
-- [︎✔︎] bend model's weights and activations
-- [✕︎] adapt the library to specific generative models, and provide handy interfaces for python notebooks
-    - [✕︎] handful classes for image, text, and sound
-    - [✕︎] panel implementation for real-time bending
-    - [✕︎] model analysis UI
-- [✕︎] script generative models with JIT additional bending inputs (for use in [nn~] for example)
+### Warning
+`torchbend` is still a beta library, and is likely to change a lot in the future months. Do not hestitate to add issues on github, but sustainability can not be ensured before version 1 release!
 
+<!--
 `torchbend` provides end-to-end examples and interfaces for the following libraries:
 
 | Model                | Weights | Activation | Script |
@@ -31,75 +23,23 @@ Welcome to `torchbend`, a high-level framework for dissecting, analyzing and ben
 | Llama                | ◇       | ✕︎       | ✕︎   |
 
 <small>✔︎: tested ; ✕︎ : not working ; ◇ : to try out</small>
+-->
 
+## Installation 
 
-## Parse and analyse model's graphs
+*Installing pytorch.* This repository assumes that you have a dedicated python environement (for example through [miniconda](https://docs.anaconda.com/miniconda/install/)) with an installed torch version. If you don't, find the appropriate version of PyTorch on the [official website](https://pytorch.org/). 
 
-```python
-import torch, torchbend
-
-# make dumb module to test
-module = torchbend.TestModule()
-module_in = torch.randn(1, 1, 512)
-
-# init BendedModule with the module, and trace target functions with given inputs
-bended_module = torchbend.BendedModule(module)
-bended_module.trace("forward", x=module_in)
-
-# print weights and activations
-print("weights : ")
-bended_module.print_weights()
-print("activations : ")
-bended_module.print_activations()
-
-outs = bended_module.get_activations('pre_conv', x=module_in)
-print("pre_conv activation min and max : ", outs['pre_conv'].min(), outs['pre_conv'].max())
+*Installing torchbend*. Installing torchbend requires so far to clone the repository and install the dependencies with `pip` : 
+```sh
+git clone https://github.com/acids-ircam/torchbend.git
+cd torchbend
+pip install .
 ```
 
-
-## Bending weights and activations
-
-```python
-import torch, torchbend
-
-# make dumb module to test
-module = torchbend.TestModule()
-module_in = torch.randn(1, 1, 512)
-
-# init BendedModule with the module, and trace target functions with given inputs
-bended_module = torchbend.BendedModule(module)
-bended_module.trace("forward", x=module_in)
-
-# bend target weights and make forward pass
-bended_module.bend(torchbend.bending.Mask(0.), "pre_conv.weight")
-outs = bended_module(x=module_in)
-print("pre_conv bended weight std : ", bended_module.bended_state_dict()['pre_conv.weight'].std())
-print("pre_conv original weight std : ", bended_module.module.state_dict()['pre_conv.weight'].std())
-
-# reset bending
-bended_module.reset()
-
-# bend target activation 
-bended_module.bend(torchbend.bending.Mask(0.), "pre_conv")
-outs = bended_module.get_activations('pre_conv', x=module_in, bended=True)
-print("pre_conv activation min and max : ", outs['pre_conv'].min(), outs['pre_conv'].max())
-```
-
-## Bending MusicGen
-
-```python
-import torchaudio
-import torchbend as tb
-from audiocraft.models import MusicGen
-
-card = 'facebook/musicgen-small'
-model = MusicGen.get_pretrained(card)
-model.set_generation_params(duration=4) 
-
-model.compression_model = tb.BendedModule(model.compression_model)
-model.compression_model.print_weights("decoder.*", "descriptions/"+card.split('/')[-1])
-model.compression_model.bend_(tb.Mask(0.7), 'decoder.model.\d+.lstm.weight_hh_l.', verbose=True)
-
-out = model.generate(['monkey kick'])
-torchaudio.save('test.wav', out[0], sample_rate=44100)
+If the environment targets to bend some of the interfaces, additional requirements may be required for specific interfaces as RAVE, that can be installed by precising extra configurations : 
+```sh
+git clone https://github.com/acids-ircam/torchbend.git
+cd torchbend
+pip install ".[rave]"
+pip install "git+https://github.com/acids-ircam/RAVE.git" --no-deps
 ```
