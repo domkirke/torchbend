@@ -47,7 +47,7 @@ class Normal(BendingCallback):
         if torch.jit.is_scripting():
             noise = torch.randn(self._get_rnd_shape(shape))
         else:
-            noise = torch.randn(self._get_rnd_shape(shape), generator=self.generator)
+            noise = torch.randn(self._get_rnd_shape(shape))
         return noise
 
     def _add_noise(self, name, shape):
