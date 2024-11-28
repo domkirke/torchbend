@@ -117,8 +117,8 @@ class BendableNNTildeModule(nn_tilde.Module):
                 print('[Warning] Bended parameter %s not found in current module.'%param)
                 continue
             for cb in cb_list:
-                # cb.update_parameter(model.get_parameter(param), param_dict[param])
-                cb.update_parameter(model_param_dict[param], param_dict[param])
+                # cb.update_weight(model.get_parameter(param), param_dict[param])
+                cb.update_weight(model_param_dict[param], param_dict[param])
 
     def _update_bended_activations(self, model):
         pass

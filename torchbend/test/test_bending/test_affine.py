@@ -40,7 +40,6 @@ def test_affine_activation(cb_class, module_config):
         assert not bool(tb.compare_outs(out_orig, out_masked))
 
 
-
 @pytest.mark.parametrize('cb_class', [tb.Bias, tb.Affine, tb.Scale])
 @pytest.mark.parametrize('module_config', modules_to_test)
 def test_affine_weights(cb_class, module_config):

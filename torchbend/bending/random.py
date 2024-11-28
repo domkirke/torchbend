@@ -1,6 +1,6 @@
 import torch
 from typing import Optional, List
-from .base import BendingCallback, BendingCallbackException
+from .base import BendingCallback, BendingParamType, BendingCallbackException
 
 
 class Normal(BendingCallback):
@@ -9,29 +9,14 @@ class Normal(BendingCallback):
     jit_compatible = True
     nntilde_compatible = True
     valid_ops = ['add', 'mul']
-    controllable_params = ['std']
-
-    def __getstate__(self):
-        out_dict = dict(self.__dict__)
-        del out_dict["generator"]
-        return out_dict
-
-    def __setstate__(self, obj):
-        self.__dict__.update(obj)
-        self.generator = torch.Generator()
-        if obj.get('seed'):
-            self.generator.manual_seed(obj.get('seed'))
+    controllable_params = {'std': (BendingParamType['float'], BendingParamType['int'])}
 
     def __init__(self, std: float = 0.3, seed: int = None, dim=None, op = "add"):
-        super().__init__()
+        super().__init__(seed=seed)
         self.register_controllable('std', std)
         assert op in self.valid_ops
         self.op = op
         self.dim = dim
-        self.seed = seed
-        self.generator = torch.Generator()
-        if self.seed is not None:
-            self.generator.manual_seed(self.seed)
 
         # init masks
         self._noises = torch.nn.ParameterList()
@@ -79,8 +64,8 @@ class Normal(BendingCallback):
                 return m
         raise RuntimeError('does not have mask for name %s'%name)
 
-    def register_parameter(self, parameter: List[torch.nn.Parameter], name=None, cache: bool = True):
-        name = super().register_parameter(parameter, name=name, cache=cache)
+    def register_weight(self, parameter: List[torch.nn.Parameter], name=None, cache: bool = True):
+        name = super().register_weight(parameter, name=name, cache=cache)
         self._add_noise(name, parameter.shape)
 
     def register_activation(self, name, shape):

@@ -20,7 +20,7 @@ def {{NAME}}{{SIGNATURE}}:
 attribute_template = """
 @torch.jit.export
 def get_{{NAME}}(self) -> {{TYPE_EXPR}}:
-    return float(self._get_bending_control(\"{{NAME}}\")) 
+    return {{TYPE_EXPR}}(self._get_bending_control(\"{{NAME}}\")) 
 
 @torch.jit.export
 def set_{{NAME}}(self, value: {{TYPE_EXPR}}) -> int:
@@ -83,9 +83,9 @@ class ScriptedBendedModule(nn_tilde.Module):
             setattr(self, k, MethodType(v, self))
 
     def _import_model(self, model):
-        bended_module = model.bend_module()
         self._bended_modules = []
         for method in model._graphs.keys():
+            bended_module = model.bend_module(fn=method)
             module = model.graph_module(method, module=bended_module, make_jit_compatible=True)
             setattr(self, f"_{method}", module)
             self._bended_modules.append(getattr(self, f"_{method}"))
@@ -122,8 +122,8 @@ class ScriptedBendedModule(nn_tilde.Module):
                 print('[Warning] Bended parameter %s not found in current module.'%param)
                 continue
             for cb in cb_list:
-                # cb.update_parameter(model.get_parameter(param), param_dict[param])
-                cb.update_parameter(model_param_dict[param], param_dict[param])
+                # cb.update_weight(model.get_parameter(param), param_dict[param])
+                cb.update_weight(model_param_dict[param], param_dict[param])
 
     def _update_bended_activations(self, model):
         for s in self.scripted_methods:

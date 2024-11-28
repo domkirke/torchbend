@@ -107,18 +107,6 @@ def test_controlled_bended_scripting(module_config):
         assert not tb.compare_outs(out_orig, out_scripted)
 
 
-@pytest.mark.parametrize("module_config", scriptable_modules_to_test)
-def test_controlled_types_scripting(module_config):
-    module, bended = module_config.get_modules()
-    raise NotImplementedError
-    # test bounded float
-    # test unbounded float
-    # test bounded int
-    # test unbounded int
-    # test string
-    # test bool
-
-        
     
 
 

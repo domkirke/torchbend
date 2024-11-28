@@ -1,6 +1,7 @@
 import torch
 from typing import Optional
-from .base import BendingCallback
+from .parameter import BendingParamType
+from .base import BendingCallback, BendingCallbackAttributeException
 
 
 class Bias(BendingCallback):
@@ -8,7 +9,10 @@ class Bias(BendingCallback):
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
-    controllable_params = ['bias']
+    controllable_params = {'bias': None}
+
+    # bias: int | float | complex
+
     def __init__(self, bias: float = 0.):
         super().__init__()
         self.bias = bias
@@ -16,7 +20,8 @@ class Bias(BendingCallback):
     def __repr__(self):
         return f"Bias(bias={self.bias:.4f})"
 
-    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor):
+    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: Optional[torch.Tensor] = None):
+        assert cache is not None
         param.set_(cache + self.get('bias'))
 
     def bend_input(self, param: torch.Tensor, name: Optional[str] = None):
@@ -28,7 +33,7 @@ class Scale(BendingCallback):
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
-    controllable_params = ['scale']
+    controllable_params = {'scale': None}
 
     def __init__(self, scale: float = 1.):
         super().__init__()
@@ -49,7 +54,7 @@ class Affine(BendingCallback):
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
-    controllable_params = ['scale', 'bias']
+    controllable_params = {'scale': None, 'bias': None}
 
     def __init__(self, bias: float = 0., scale: float = 1.):
         super().__init__()

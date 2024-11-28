@@ -6,6 +6,7 @@ from typing import Optional, List, Tuple, Iterable, Union
 
 from torch.nn.parameter import Parameter as Parameter
 from .base import BendingCallback, BendingCallbackException
+from .parameter import BendingParamType
 from .utils import prod
 
 
@@ -18,37 +19,20 @@ class Mask(BendingCallback):
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
-    controllable_params = ['prob']
+    controllable_params = {'prob': None}
 
-    def __init__(self, prob: float = 0.3, seed: int = None, dim: Union[int, List[int], None]=None):
-        super().__init__()
+    def __init__(self, prob: float = 0.3, seed: int = None, dim: Optional[Union[int, List[int]]]=None):
+        super().__init__(seed=seed)
         # register paramters
         self.register_controllable('prob', prob)
-        self.seed = seed
-        self.generator = torch.Generator()
-        if self.seed is not None:
-            self.generator.manual_seed(self.seed)
         self.dim = dim
         # init masks
         self._masks = torch.nn.ParameterList()
         self._mask_names = []
         self._mask_shapes = torch.jit.Attribute([], List[List[int]])
 
-    def __getstate__(self):
-        out_dict = dict(self.__dict__)
-        if "generator" in out_dict:
-            del out_dict["generator"]
-        return out_dict
-
-    def __setstate__(self, obj):
-        self.__dict__.update(obj)
-        self.generator = torch.Generator()
-        if obj.get('seed'):
-            self.generator.manual_seed(obj.get('seed'))
-
     def script(self):
         mod = copy.copy(self)
-        del mod.generator
         return mod
 
     def __repr__(self):
@@ -58,6 +42,8 @@ class Mask(BendingCallback):
         dim = self.dim
         if dim is None:
             return shape
+        if len(shape) == 0:
+            return tuple()
         mask_shape = [1] * len(shape)
         if isinstance(dim, int):
             mask_shape[dim] = shape[dim]
@@ -73,7 +59,7 @@ class Mask(BendingCallback):
         if torch.jit.is_scripting():
             mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob)).requires_grad_(False)#, generator=self.generator)
         else:
-            mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob), generator=self.generator).requires_grad_(False)
+            mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob)).requires_grad_(False)
         return mask
 
     def _add_mask(self, name, shape):
@@ -94,8 +80,8 @@ class Mask(BendingCallback):
         name = super(Mask, self).register_activation(name, shape)
         self._add_mask(name, shape)
 
-    def register_parameter(self, parameter: List[Parameter], name=None, cache: bool = True):
-        name = super().register_parameter(parameter, name=name, cache=cache)
+    def register_weight(self, parameter: List[Parameter], name=None, cache: bool = True):
+        name = super().register_weight(parameter, name=name, cache=cache)
         self._add_mask(name, parameter.shape)
 
     def get_mask(self, param, name: Optional[str]) -> torch.Tensor:
@@ -135,7 +121,7 @@ class OrderedMask(Mask):
         if torch.jit.is_scripting():
             mask = torch.randperm(numel)
         else:
-            mask = torch.randperm(numel, generator=self.generator, requires_grad=False)
+            mask = torch.randperm(numel, requires_grad=False)
         # stupid but otherwise cannot be added to ParameterList
         return mask.float()
 

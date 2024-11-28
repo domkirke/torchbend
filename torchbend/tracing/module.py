@@ -373,18 +373,18 @@ class BendedModule(object):
     def _register_forward_call(self, func, _with_bended=False):
         setattr(self, func, types.MethodType(_get_wrapped_module_forward_call(func, _with_bended), self))
 
-    def trace(self, func="forward", *args, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
+    def trace(self, fn="forward", *args, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
         """Updates inner graph with the target method and inputs"""
         #TODO general split between kwargs with _ at the beginning for tracer
         inputs = Inputs(*args, **kwargs)
-        tracer = BendingTracer(func=func, _no_tensor_for_args=_no_tensor_for_args)
+        tracer = BendingTracer(func=fn, _no_tensor_for_args=_no_tensor_for_args)
         tracer_out = tracer.trace(self._module, inputs, return_out=_return_out, proxied_buffers=_proxied_buffers)
         graph = tracer_out[0] if _return_out else tracer_out
-        self._graphs[func] = graph
-        self._activations[func] = tracer._activations
-        self._bended_activations[func] = dict()
-        if func != "forward":
-            self._register_forward_call(func, True)
+        self._graphs[fn] = graph
+        self._activations[fn] = tracer._activations
+        self._bended_activations[fn] = dict()
+        if fn != "forward":
+            self._register_forward_call(fn, True)
         if _return_out:
             return graph, tracer_out[1]
         else:
@@ -482,7 +482,6 @@ class BendedModule(object):
         version = version or self.version
         #TODO reconstruct tree or ?
         bending_config = _bending_config_from_dicts(self._bended_params[version], self._bended_activations.get(fn, {}), module=self)
-        print(bending_config)
         return bending_config
 
     def _bend_parameter(self, parameter, callback, version=None):
@@ -492,7 +491,7 @@ class BendedModule(object):
             self._bending_callbacks.append(callback)
         self._bended_params[version][parameter] = self._bended_params[version].get(parameter, []) + [callback]
         #TODO register parameter in callback
-        callback.register_parameter(self._module.get_parameter(parameter), name=parameter)
+        callback.register_weight(self._module.get_parameter(parameter), name=parameter)
 
     def _bend_activation(self, parameter, callback, fn="forward"):
         if callback not in self._bending_callbacks:
@@ -549,6 +548,7 @@ class BendedModule(object):
             fn = list(self._graphs.keys())
         else:
             fn = checklist(fn)
+        fn = list(filter(lambda x: x in self._graphs, fn))
 
         target_params = [] if not bend_param else self.resolve_parameters(*params)
         target_activations = {method: [] if not bend_graph else self.resolve_activations(*params, fn=method, _with_bended=False) for method in fn}
@@ -584,6 +584,8 @@ class BendedModule(object):
         self._bending_callbacks = []
         self._bended_params[version] = {}
         self._bended_activations = {k: {} for k in self._bended_activations.keys()}
+        self._controllables = {}
+        self._controllables_hash = {}
 
     @_import_to_interface
     def reset(self, version=None):

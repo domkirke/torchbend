@@ -23,6 +23,7 @@ class Foo(nn.Module):
             out = mod(out)
         return out
 
+    # @torch.jit.export
     def forward_dist(self, x):
         out = self.pre_conv(x)
         for i, mod in enumerate(self.module_list):
@@ -31,6 +32,31 @@ class Foo(nn.Module):
 
     def script(self):
         return self
+
+
+class ShapedFoo(Foo):
+    __bended_methods__ = ['forward', 'return_shape', 'loop_on_shape']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.param = nn.Parameter(torch.tensor(1.))
+
+    @torch.jit.export 
+    def return_shape(self, x):
+        out = self.pre_conv(x)
+        for i, mod in enumerate(self.module_list):
+            out = mod(out)
+        out = out + out.shape[1] * self.param 
+        return out
+
+    @torch.jit.export
+    def loop_on_shape(self, x):
+        out = self.pre_conv(x)
+        for i, mod in enumerate(self.module_list):
+            out = mod(out)
+        for i in range(out.shape[0]):
+            out = out + (i+1) * self.param
+        return out
 
 
 class WrappedFoo(object):
@@ -94,6 +120,32 @@ modules_to_test = [
                          {"x": torch.randn(1, 1, 128)},
                          [".*weight"],
                          ["_foo1_module_list_1", "_foo2_module_list_1"],
+                         True
+                     )
+                    }
+                    ),
+    ModuleTestConfig(ShapedFoo, 
+                     (tuple(), dict()), 
+                     {
+                     'forward': (
+                         tuple(),
+                         {"x": torch.randn(1, 1, 128)},
+                         [".*weight"],
+                         ["module_list_1"],
+                         True
+                     ),
+                     'return_shape': (
+                         tuple(),
+                         {"x": torch.randn(1, 1, 128)},
+                         [".*weight", "param"],
+                         ["module_list_1"],
+                         True
+                     ), 
+                     'loop_on_shape': (
+                         tuple(),
+                         {"x": torch.randn(1, 1, 128)},
+                         [".*weight", "param"],
+                         ["module_list_1"],
                          True
                      )
                     }

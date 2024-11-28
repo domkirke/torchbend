@@ -119,7 +119,7 @@ def test_weight_bending(module_config):
     for method in module_config.get_methods():
         # remote bending
         zero_callback = tb.Mask(0.)
-        bended_module.bend(zero_callback, *module_config.weight_targets(method), verbose=True)
+        bended_module.bend(zero_callback, *module_config.weight_targets(method), verbose=True, fn=method)
         assert tb.compare_state_dict_tensors(state_dict(module), bended_module.state_dict()), "module's state dicts have been affected by bending."
         assert len(bended_module.bending_callbacks) == 1
         assert len(bended_module.bended_params) != 0
@@ -206,7 +206,7 @@ def test_activation_getter(module_config):
     cb = tb.Mask(prob=0.)
     for method in module_config.get_methods():
         args, kwargs, _, _ = module_config.get_method_args(method)
-        bended_module.trace(*args, **kwargs, func=method)
+        bended_module.trace(*args, **kwargs, fn=method)
         targets = module_config.activation_targets(method)
         outs = bended_module.get_activations(*targets, **kwargs, fn=method)
         assert set(targets) == set(outs.keys()) 

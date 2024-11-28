@@ -5,6 +5,12 @@ def debug(val):
     global DEBUG
     DEBUG = bool(val)
 
+def log_warning(*args):
+    print('[Warning]', *args)
+
+def log_error(*args):
+    print('[Error]', *args)
+
 import enum
 class TorchbendOutput(enum.Enum):
     RAW = 0

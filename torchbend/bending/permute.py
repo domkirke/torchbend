@@ -34,8 +34,8 @@ class Permute(BendingCallback):
         perm = torch.randperm(shape[self.dim], generator=self.generator)
         self.register_buffer(buffer_name, perm.int())
 
-    def register_parameter(self, parameter, name=None):
-        name = super().register_parameter(parameter, name=name)      
+    def register_weight(self, parameter, name=None):
+        name = super().register_weight(parameter, name=name)      
         self._init_permute_(name, parameter.shape)
             
     def register_activation(self, name, shape):

@@ -16,10 +16,10 @@ def test_interpolation(module_config, n=8):
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:    
         mod.reset()
-        mod.trace(func=method, **kwargs)
+        mod.trace(fn=method, **kwargs)
         args, kwargs, _, _ = module_config.get_method_args(method)
 
-        # # single activations
+        # single activations
         for target in activation_targets:
             cb = tb.InterpolateActivation()
             mod.reset()

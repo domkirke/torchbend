@@ -31,8 +31,8 @@ class Capture(BendingCallback):
     def is_ready(self) -> bool:
         return self._is_initialized or self._is_capturing
 
-    def register_parameter(self, parameter, name=None, cache = True):
-        name = super().register_parameter(parameter, name=name, cache=cache)
+    def register_weight(self, parameter, name=None, cache = True):
+        name = super().register_weight(parameter, name=name, cache=cache)
         self._buffer_tmp[name] = []
 
     def register_activation(self, name, shape):
@@ -57,19 +57,19 @@ class Capture(BendingCallback):
             else:
                 self._captures[k] = self._concatenate_buffers(v)
             self._buffer_tmp[k] = []
-            self._is_initialized = True
+        self._is_initialized = True
 
     def bend_input(self, x: torch.Tensor, name: str | None = None):
         return x
 
     def forward(self, x: torch.Tensor, name: Optional[str] = None):
         """applies transformation to an input (typically activations)"""
-        if not self.is_ready: raise BendingCallbackException(self._not_ready_str)
         if self._is_capturing:
             assert name is not None
             self.record_buffer(x, name)
             return x
         else:
+            if not self.is_ready: raise BendingCallbackException(self._not_ready_str)
             return self.bend_input(x, name=name)
 
 
