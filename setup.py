@@ -2,8 +2,19 @@ from distutils.core import setup
 from setuptools import find_packages
 import importlib, os
 
+import os
+
+def get_interface_dependencies():
+    interfaces = {}
+    req_path = os.path.join(os.path.dirname(__file__), "torchbend", "interfaces", "requirements")
+    for f in os.listdir(req_path):
+        if os.path.splitext(f)[1] == ".txt":
+            with open(os.path.join(req_path, f), 'r') as pp:
+                requirements = pp.read().split('\n')
+            interfaces[os.path.splitext(f)[0]] = requirements
+    return interfaces
+
 def find_interfaces():
-      from torchbend.interfaces import get_interface_dependencies
       return get_interface_dependencies()
     
 with open("requirements.txt", "r") as requirements:
