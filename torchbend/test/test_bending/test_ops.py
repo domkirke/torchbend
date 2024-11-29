@@ -7,7 +7,7 @@ import torchbend as tb
 testpath = os.path.abspath((os.path.join(os.path.dirname(__file__), "..")))
 if testpath not in sys.path:
     sys.path.append(testpath)
-from test_modules.module_test_modules import modules_to_test, ModuleTestConfig
+from test_modules import modules_to_test, ModuleTestConfig
 
 @pytest.mark.parametrize("test_modules", modules_to_test)
 @pytest.mark.parametrize("callbacks,is_equal", [((tb.Scale(2.), tb.Scale(0.5)), True),

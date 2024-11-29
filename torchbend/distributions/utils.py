@@ -11,11 +11,13 @@ def convert_to_torch(distribution):
     if isinstance(distribution, tdist.Distribution):
         return distribution
     elif isinstance(distribution, Bernoulli):
-        return tdist.Bernoulli(distribution.probs)
+        return tdist.Bernoulli(probs=distribution.probs)
     elif isinstance(distribution, Categorical):
         return tdist.Categorical(logits=distribution.logits)
     elif isinstance(distribution, Normal):
         return tdist.Normal(distribution.mean, distribution.stddev)
+    elif isinstance(distribution, Uniform):
+        return tdist.Uniform(distribution.low, distribution.high)
     else:
         raise NotImplementedError
 
@@ -23,11 +25,13 @@ def convert_from_torch(distribution):
     if isinstance(distribution, Distribution):
         return distribution
     if isinstance(distribution, tdist.Bernoulli):
-        return Bernoulli(distribution.probs)
+        return Bernoulli(probs=distribution.probs)
     elif isinstance(distribution, tdist.Categorical):
         return Categorical(logits=distribution.logits)
     elif isinstance(distribution, tdist.Normal):
         return Normal(distribution.mean, distribution.stddev)
+    elif isinstance(distribution, tdist.Uniform):
+        return Uniform(distribution.low, distribution.high)
     else:
         raise NotImplementedError
 

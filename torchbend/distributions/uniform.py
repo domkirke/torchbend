@@ -10,6 +10,9 @@ class Uniform(Distribution):
         self._batch_shape = low.shape
         self._event_shape = torch.Size([0])
 
+    def as_tuple(self):
+        return (self.low, self.high)
+
     def rsample(self):
         rand = torch.rand(self._batch_shape, dtype=self.low.dtype, device=self.low.device)
         return self.low + rand * (self.high - self.low)

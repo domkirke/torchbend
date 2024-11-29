@@ -3,7 +3,7 @@ import torch
 testpath = os.path.abspath((os.path.join(os.path.dirname(__file__), "..")))
 if testpath not in sys.path:
     sys.path.append(testpath)
-from test_modules.module_test_modules import modules_to_test, ModuleTestConfig 
+from test_modules import modules_to_test, ModuleTestConfig 
 
 
 devices = [torch.device('cpu')]

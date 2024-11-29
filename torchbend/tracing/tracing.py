@@ -682,6 +682,9 @@ class BendingTracer(torch.fx.Tracer):
         elif isinstance(a, dist.Categorical):
             a = a.as_tuple()
             a = self.create_proxy("call_function", dist.Categorical, args=a, kwargs={}, name=f"_dist_Categorical_{self._get_dist_count('Categorical')}")
+        elif isinstance(a, dist.Uniform):
+            a = a.as_tuple()
+            a = self.create_proxy("call_function", dist.Uniform, args=a, kwargs={}, name=f"_dist_Uniform_{self._get_dist_count('Uniform')}")
         else:
             a = dist.convert_from_torch(a)
             return self._create_proxy_for_dist(a)

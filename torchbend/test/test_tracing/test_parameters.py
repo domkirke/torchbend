@@ -2,7 +2,7 @@ import torch
 import torchbend as tb
 import pytest
 from torchbend.bending.parameter import BendingParameterException
-from test_modules.module_test_modules import modules_to_test, scriptable_modules_to_test 
+from test_modules import modules_to_test, scriptable_modules_to_test 
 
 @pytest.mark.parametrize("module_config", scriptable_modules_to_test)
 def test_int_parameter(module_config):

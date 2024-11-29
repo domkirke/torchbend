@@ -8,7 +8,7 @@ from functools import partial
 testpath = os.path.abspath((os.path.join(os.path.dirname(__file__), "..")))
 if testpath not in sys.path:
     sys.path.append(testpath)
-from test_modules.module_test_modules import modules_to_test, ModuleTestConfig
+from test_modules import modules_to_test, ModuleTestConfig
 
 
 @pytest.mark.parametrize('module_config', modules_to_test)
@@ -55,9 +55,9 @@ def test_capture_env(module_config, n = 4):
 def test_interpolation_env(module_config, n=8):
     mod = module_config.get_bended_module()
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:    
-        mod.reset()
         mod.trace(fn=method, **kwargs)
         for target in activation_targets:
+            mod.reset()
             cb = tb.InterpolationFromCapture()
             mod.bend(cb, target)
             args, kwargs, _, _ = module_config.get_method_args(method)

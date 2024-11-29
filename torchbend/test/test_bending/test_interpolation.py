@@ -7,7 +7,7 @@ from torchbend.tracing.utils import get_kwargs_from_gm
 testpath = os.path.abspath((os.path.join(os.path.dirname(__file__), "..")))
 if testpath not in sys.path:
     sys.path.append(testpath)
-from test_modules.module_test_modules import modules_to_test, ModuleTestConfig
+from test_modules import modules_to_test, ModuleTestConfig
 
 
 @pytest.mark.parametrize('module_config', modules_to_test)
@@ -27,10 +27,10 @@ def test_interpolation(module_config, n=8):
             outs = mod.get_activations(target, **kwargs, fn=method, _filter_bended=True)
             # unbatched
             interp = torch.randn(outs[target].shape[0])
-            outs_interpolated = mod.from_activations(*activation_targets, fn=method, **kwargs, **outs, interp_weights=interp)
+            outs_interpolated = mod.from_activations(target, fn=method, **kwargs, **outs, interp_weights=interp)
             # batched
             interp = torch.randn(4, outs[target].shape[0])
-            outs_interpolated = mod.from_activations(*activation_targets, fn=method, **kwargs, **outs, interp_weights=interp)
+            outs_interpolated = mod.from_activations(target, fn=method, **kwargs, **outs, interp_weights=interp)
 
         # full activations
         if len(activation_targets) > 1:

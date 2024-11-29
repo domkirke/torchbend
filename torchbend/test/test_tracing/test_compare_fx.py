@@ -4,7 +4,7 @@ from tabulate import tabulate
 import torch
 import torchbend as tb
 import pytest
-from test_modules.module_test_modules import modules_to_compare
+from test_modules import modules_to_compare
 
 
 printed_graph_out = os.path.join(os.path.dirname(__file__), "graphs")
@@ -26,7 +26,7 @@ def test_compare_with_fx(module_config):
 
     # torch.fx graph
     for method in module_config.get_methods():
-          args, kwargs = module_config.get_method_args(method)
+          args, kwargs = module_config.get_method_args(method)[:2]
           with open(os.path.join(printed_graph_out, test_name+"_tfx.txt"), 'w+') as f:
                try:
                     # trace with torch.fx
