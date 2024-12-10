@@ -16,15 +16,24 @@ class BendingConfigException(Exception):
 
 class BendingConfig(object):
     def __init__(self, *args, module=None):
-        self._bendings = []
-        self._cb_hash = {}
-        self._weight_hash = {}
-        self._module = module 
-        for a in args:
-            if not isinstance(a, tuple): raise BendingConfigException("BendingConfig arguments must be tuples (Callable, *str)")
-            self._bendings.append(a)
-        if module is not None:
-            self.bind(module)
+        if (len(args) == 1) and isinstance(args[0], BendingConfig):
+            self._import_config(args[0])
+        else:
+            self._bendings = []
+            self._cb_hash = {}
+            self._weight_hash = {}
+            self._module = module 
+            for a in args:
+                if not isinstance(a, tuple): raise BendingConfigException("BendingConfig arguments must be tuples (Callable, *str)")
+                self._bendings.append(a)
+            if module is not None:
+                self.bind(module)
+
+    def _import_config(self, config):
+        self._bendings = list(config._bendings)
+        self._cb_hash = dict(config._cb_hash)
+        self._weight_hash = dict(config._weight_hash)
+        self._module = config._module
 
     def __repr__(self):
         out = "BendingConfig("
@@ -52,6 +61,9 @@ class BendingConfig(object):
         if self.is_binded:
             self._bind_bending(bend)
 
+    def extend(self, bends):
+        for b in bends: self.append(b)
+
     @property
     def module(self):
         return self._module
@@ -60,20 +72,36 @@ class BendingConfig(object):
     def is_binded(self):
         return self._module is not None
 
-    def _bind_bending(self, bending):
+    @property
+    def binded_fn(self):
+        assert self.is_binded, "BendedConfig must be binded to provide binded_fn"
+        binded_fn =[]
+        for k in self._weight_hash.keys():
+            if ":" in k: 
+                fn, _ = k.split(':')
+                binded_fn.append(fn)
+        return binded_fn
+
+    def _bind_bending(self, bending, fn=None, bend_graph=True, bend_param=True):
         assert self.is_binded
         c, *w = bending
-        resolved_weights = sum([self.module.bendable_keys(w_tmp) for w_tmp in w], [])
-        for r_w in resolved_weights:
-            if not r_w in self._weight_hash: self._weight_hash[r_w] = []
+        resolved_keys = []
+        if bend_param:
+            resolved_keys.extend(sum([self.module.resolve_parameters(w_tmp) for w_tmp in w], []))
+        if bend_graph:
+            resolved_keys.extend(sum([self.module.resolve_activations(w_tmp, fn=fn, _with_fn=True) for w_tmp in w], []))
+        for r_w in resolved_keys:
+            if r_w not in self._weight_hash: self._weight_hash[r_w] = []
             self._weight_hash[r_w].append(c)
-        if not c in self._cb_hash: self._cb_hash[c] = []
-        self._cb_hash[c].extend(resolved_weights)
+        if c not in self._cb_hash: self._cb_hash[c] = []
+        self._cb_hash[c].extend(resolved_keys)
 
-    def bind(self, module):
+    def bind(self, module, **kwargs):
         self._module = module
+        self._cb_hash = {}
+        self._weight_hash = {}
         for b in self._bendings:
-            self._bind_bending(b)
+            self._bind_bending(b, **kwargs)
 
     def copy_and_bind(self, module):
         obj = copy.deepcopy(self)
@@ -89,7 +117,12 @@ class BendingConfig(object):
             raise TypeError('BendingConfig can only contain strings or callables.')
 
     def __iter__(self):
-        return iter(self._bendings)
+        if self.module: 
+            for k, v in self._cb_hash.items():
+                yield (k, *v)
+        else:
+            for b in self._bendings:
+                yield b
 
     def __eq__(self, obj):
         if not isinstance(obj, BendingConfig): raise TypeError("BendingConfig can be compared to BendingConfig, not %s"%(type(obj)))

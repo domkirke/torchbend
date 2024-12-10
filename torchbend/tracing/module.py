@@ -1,4 +1,5 @@
 from tabulate import tabulate
+from itertools import product
 from types import MethodType
 from io import TextIOWrapper
 import types
@@ -26,7 +27,6 @@ from ..bending import BendingCallback, CallbackChain, is_bending_callback, Bendi
 def _get_activations_properties(args):
     name, act_prop = args
     return [name, act_prop.op, act_prop.target, act_prop.type, act_prop.shape]
-
 
 def _get_wrapped_module_forward_call(fn, bend=True):
     def _wrapped_bended_module_forward_call(self, *args, **kwargs):
@@ -58,6 +58,24 @@ def _get_bended_activation_from_callaback(bended_activations, callback):
 def _copy_attrs(orig, new, attrs):
     for a in attrs:
         setattr(new, a, getattr(orig, a))
+
+
+class BendedModuleBendingEnv:
+    def __init__(self, module, config):
+        self.module = module
+        self.config = config
+        self._previous_bended_config = BendingConfig(
+            self.module.bending_config(self.config)
+        )
+
+    def __enter__(self):
+        # set current bending config to X
+        pass
+        # self.module.set_
+
+    def __exit__(self, *args):
+        # revert previous bending config 
+        self.module.save_config(self.config, self._previous_bended_config)
 
 
 class BendedModuleVersionEnv:
@@ -100,11 +118,13 @@ class BendedModuleCaptureContext(object):
 
 class BendedModule(object):
     _default_version_key = "_default"
+    _default_bending_key = "_default"
     _wrapped_methods = ['forward']
 
     __copy_attrs__ = [
         "_graphs", "_activations",
-        "_bending_callbacks", "_bended_params", "_bended_params_history", "_bended_activations",
+        "_bending_callbacks", "_bended_params", 
+        "_bended_params_history", "_bended_activations",
         "_interp_dict", "_interp_func",
         "_controllables", "_controllable_hash"
     ]
@@ -115,7 +135,9 @@ class BendedModule(object):
         self._module = module
         self._original_module = None
         self._version = self._default_version_key
-        self._param_dict = {'_default': {}}
+        self._param_dict = {self._default_version_key: {}}
+        self._config = self._default_bending_key
+        self._bconfig_dict = {self._default_bending_key: BendingConfig()}
         for k, v in self._module.state_dict().items():
             if isinstance(v, nn.Parameter):
                 self._param_dict[self._default_version_key][k] = v.data
@@ -146,6 +168,22 @@ class BendedModule(object):
     def _delversion_(self) -> NoReturn:
         self._version = self._default_version_key
     version = property(_getversion_, _setversion_, _delversion_)
+
+    # -- Config property --
+    def _getconfig_(self):
+        return str(self._config)
+    def _setconfig_(self, config): 
+        if config == None:
+            self.set_config(self._default_bending_key)
+        elif isinstance(config, str):
+            self.set_config(config)
+        else:
+            raise BendingError('Cannot set config to %s'%config)
+    def _delconfig_(self):
+        if self._config == self._default_bending_key:
+            raise BendingError("Cannot erase default bending configuration.")
+        self.set_config(self._default_bending_key)
+    config = property(_getconfig_, _setconfig_, _delconfig_)
 
     # -- init --
     def __init__(self, module, _wrapped_methods=[]):
@@ -277,18 +315,25 @@ class BendedModule(object):
             return self._param_dict[version]
 
     # -- activations --
-    def resolve_activations(self, *activations, fn="forward", _with_bended=True, _raise_notfound=False):
+    def resolve_activations(self, *activations, fn="forward", _with_fn=False, _with_bended=True, _raise_notfound=False):
         """get valid activation names from a regexp"""
         valid_acts = {}
+        if isinstance(fn, list): 
+            return sum([self.resolve_activations(*activations, fn=f, _with_fn=_with_fn, _with_bended=_with_bended, _raise_notfound=_raise_notfound) for f in fn], [])
+        if fn not in self._graphs: return []
         for act in self.activation_names(fn, _with_bended=_with_bended):
             for a in activations:
+                if ":" in a: 
+                    fn_a, a = a.split(':')
+                    if (fn_a != fn): continue
                 if re.match(a, act) is not None:
-                    if not a in valid_acts: valid_acts[a] = []
+                    if a not in valid_acts: valid_acts[a] = []
                     valid_acts[a].append(act)
         if _raise_notfound:
             for a in activations:
-                if not a in valid_acts: raise BendingError('request %s could not be found in graph for function %s'%(a, fn))
+                if a not in valid_acts: raise BendingError('request %s could not be found in graph for function %s'%(a, fn))
         valid_acts = list(set(sum(list(valid_acts.values()), [])))
+        if _with_fn: valid_acts = [f"{fn}:{v}" for v in valid_acts]
         return valid_acts
 
     @_import_to_interface
@@ -464,7 +509,7 @@ class BendedModule(object):
         return {k: list(v) for k, v in self._bended_params[self.version].items()}
 
     @_import_to_interface
-    def bended_activations(self, fn):
+    def bended_activations(self, fn="forward"):
         return {k: list(v) for k, v in self._bended_activations[fn].items()}
 
     @_import_to_interface
@@ -478,11 +523,13 @@ class BendedModule(object):
             return bended_params
 
     @_import_to_interface
-    def bending_config(self, fn="forward", version=None):
-        version = version or self.version
+    def bending_config(self, config=None):
+        config = config or self._config
+        assert config in self._bconfig_dict, BendingError('config %s not found in module'%config)
+        return self._bconfig_dict[config]
         #TODO reconstruct tree or ?
-        bending_config = _bending_config_from_dicts(self._bended_params[version], self._bended_activations.get(fn, {}), module=self)
-        return bending_config
+        # bending_config = _bending_config_from_dicts(self._bended_params[version], self._bended_activations.get(fn, {}), module=self)
+        # return bending_config
 
     def _bend_parameter(self, parameter, callback, version=None):
         version = version or self.version
@@ -493,17 +540,20 @@ class BendedModule(object):
         #TODO register parameter in callback
         callback.register_weight(self._module.get_parameter(parameter), name=parameter)
 
-    def _bend_activation(self, parameter, callback, fn="forward"):
-        if callback not in self._bending_callbacks:
-            self._bending_callbacks.append(callback)
-        if fn not in self._bended_activations: self._bended_activations[fn] = {}
-        self._bended_activations[fn][parameter] = self._bended_activations[fn].get(parameter, []) + [callback]
-        try: 
-            #TODO register activation shape
-            callback.register_activation(f"{fn}:{parameter}", shape=self.activation_shape(parameter, fn=fn))
-        except Exception as e:
-            print('Cannot bend activation %s with callback %s.\nException : %s\n Proceeding'%(parameter, callback, e))
-    
+    def _bend_activation(self, parameter, callback):
+        if ":" not in parameter:
+            for k in self._graphs.keys(): self._bend_activation(f"{k}:{parameter}", callback)
+        else:
+            fn, parameter = parameter.split(":")
+            if callback not in self._bending_callbacks:
+                self._bending_callbacks.append(callback)
+            if fn not in self._bended_activations: self._bended_activations[fn] = {}
+            self._bended_activations[fn][parameter] = self._bended_activations[fn].get(parameter, []) + [callback]
+            try: 
+                callback.register_activation(f"{fn}:{parameter}", shape=self.activation_shape(parameter, fn=fn))
+            except Exception as e:
+                print('Cannot bend activation %s with callback %s.\nException : %s\n Proceeding'%(parameter, callback, e))
+        
     @_import_to_interface
     def bend_module(self, fn="forward", version=None):
         version = version or self.version
@@ -535,26 +585,34 @@ class BendedModule(object):
         return BendedGraphModule(module, graph)
 
     @_import_to_interface
-    def bend(self, *args, fn=None, verbose=False, bend_param=True, bend_graph=True):
-        if len(args) == 1:
-            bended_config = args[0]
-            assert isinstance(bended_config, BendingConfig)
-            for c, *w in args[0]:
-                self.bend(c, *w)
-            return 
+    def _bend(self, *args, fn=None, verbose=False, bend_param=True, bend_graph=True):
+
         callback, *params = args
+        target_params = [] if not bend_param else self.resolve_parameters(*params)
+
+        # get default target functions
         assert is_bending_callback(callback), "callback must be a BendingCallback instance"
         if fn is None:
             fn = list(self._graphs.keys())
         else:
             fn = checklist(fn)
-        fn = list(filter(lambda x: x in self._graphs, fn))
+            fn = list(filter(lambda x: x in self._graphs, fn))
 
-        target_params = [] if not bend_param else self.resolve_parameters(*params)
-        target_activations = {method: [] if not bend_graph else self.resolve_activations(*params, fn=method, _with_bended=False) for method in fn}
+        # get activations
+        target_activations = []
+        if bend_graph:
+            for p in params:
+                if ":" in p: 
+                    act_fn, p = p.split(':')
+                    act_fn = [act_fn]
+                else:
+                    act_fn = fn
+                for f in act_fn: 
+                    target_activations.extend(self.resolve_activations(p, fn=f, _with_fn=True, _with_bended=False))
+
 
         # bend weights
-        if len(target_params) + sum(map(len, target_activations.values())) == 0:
+        if len(target_params) + len(target_activations) == 0:
             raise BendingError('Could not find bendable elements with specification %s'%params)
         for param in target_params:
             if verbose: 
@@ -562,34 +620,72 @@ class BendedModule(object):
             self._bend_parameter(param, callback)
 
         # bend activations
-        for method in fn:
-            for activation in target_activations[method]:
-                self._bend_activation(activation, callback, fn=method)
-                if verbose: 
-                    print('bending activation %s with %s...'%(activation, callback))
+        for target_act in target_activations:
+            self._bend_activation(target_act, callback)
+            if verbose: 
+                print('bending activation %s with %s...'%(target_act, callback))
+
         # extract controllables in case
         self._register_controllables(callback)
+        return target_params + target_activations
 
-    # @_import_to_interface
-    # def bend_(self, *args, fn="forward", **kwargs):
-    #     self.bend(*args, **kwargs)
-    #     self._module = self.bend_module()
-    #     if self._graphs.get(fn):
-    #         self._graphs[fn+"_orig"] = self._graphs[fn]
-    #         self._graphs[fn] = self.bend_graph(fn)
-    #     self._reset_bending()
+    def save_config_as(self, new_config_name, force: bool = False):
+        if (new_config_name in self._bconfig_dict) and (not force):
+            raise BendingError('configuration %s already exists. Provide force=True keyword to enforce.')
+        self._bconfig_dict[new_config_name] = BendingConfig(self.bending_config())
+    
+    def set_config(self, config_name, bend_graph=True, fn=None, bend_param=True):
+        assert config_name in self._bconfig_dict
+        self._config = config_name
+        self.reset_bending(_erase_config=False)
+        bended_config = BendingConfig(self._bconfig_dict[config_name])
+        # bended_config.bind(self, bend_graph=bend_graph, bend_param=bend_param)
+        for b in bended_config:
+            self._bend(*b, bend_graph=bend_graph, fn=fn, bend_param=bend_param)
 
-    def _reset_bending(self, version=None):
+    def save_config(self, config_name, bending_config):
+        assert isinstance(bending_config, BendingConfig)
+        self._bconfig_dict[config_name] = BendingConfig(bending_config)
+        if config_name == self._config:
+            self.set_config(config_name)
+
+    def _prepend_fn_to_acts(self, args, fn):
+        named_acts = []
+        for a, f in product(args, fn):
+            named_acts.append(f"{f}:{a}") 
+        return named_acts
+
+    def bend(self, *args, fn=None, config=None, **kwargs):
+        config = config or self._config
+        if fn is not None: fn = checklist(fn)
+
+        if len(args) == 1:
+            bended_config = args[0]
+            assert isinstance(args[0], BendingConfig)
+        else:
+            bended_config = BendingConfig(args)
+
+        bending_env = BendedModuleBendingEnv(self, config)
+        # bended_config.bind(self, fn=fn, bend_graph=bend_graph, bend_param=bend_param)
+        for b in bended_config:
+            _bended_keys = self._bend(*b, fn=fn, **kwargs)
+            self._bconfig_dict[config].append((b[0], *_bended_keys))
+        return bending_env
+
+    def reset_bending(self, version=None, _erase_config=True):
         version = version or self.version
         self._bending_callbacks = []
         self._bended_params[version] = {}
         self._bended_activations = {k: {} for k in self._bended_activations.keys()}
         self._controllables = {}
         self._controllables_hash = {}
+        if _erase_config:
+            self._bconfig_dict[self._config] = BendingConfig()
 
     @_import_to_interface
     def reset(self, version=None):
-        self._reset_bending(version=version)
+        self.reset_bending(version=version)
+        self._bconfig_dict = {self._default_bending_key: BendingConfig()}
         for fn in list(self._graphs.keys()):
             if  fn+"_orig" in self._graphs:
                 self._graphs[fn] = self._graphs[fn+"_orig"]
@@ -633,27 +729,6 @@ class BendedModule(object):
                 bended_activations.append(act)
         return bended_activations
 
-    # @_import_to_interface
-    # def split_graph(self, *activations, fn="forward", version=None, bended=True):
-    #     """split a given graphed method in two parts"""
-    #     if fn not in self._graphs:
-    #         raise BendingError('function %s does not exist, or has not been traced')
-    #     activations = self.resolve_activations(*activations, _raise_notfound=True)
-    #     if bended:
-    #         activations = self._get_bended_activations(activations, fn=fn)
-    #     version = version or self.version
-    #     graph = self.graph(fn, bended)
-    #     graph_before, graph_after = graph_split(graph, *activations)
-    #     if bended:
-    #         module = self.bend_module(fn=fn)
-    #         gm_before = torch.fx.GraphModule(module, graph_before)
-    #         gm_after = torch.fx.GraphModule(module, graph_after)
-    #     else: 
-    #         module = self.module
-    #         gm_before = torch.fx.GraphModule(module, graph_before)
-    #         gm_after = torch.fx.GraphModule(module, graph_after)
-    #     return gm_before, gm_after
-
     @_import_to_interface
     def _register_method_from_graph(self, graph, fn, method_name) -> NoReturn:
         self._graphs[method_name] = graph
@@ -667,7 +742,7 @@ class BendedModule(object):
                     pass
         for act, bendings in self._bended_activations[fn].items():
             for b in bendings:
-                self.bend(b, act)
+                self.bend(b, act, fn=method_name)
         setattr(self, method_name, types.MethodType(_get_method_from_graph(method_name), self))
 
     @_import_to_interface
@@ -692,28 +767,6 @@ class BendedModule(object):
         else:
             return outs
 
-    
-    # @_import_to_interface
-    # def from_activations(self, *activations, fn="forward", _return_graph=False, _save_as_method = None, **inputs):
-    #     """return target activations from given inputs."""
-    #     # bend modules and graphs
-    #     module = self.bend_module(fn=fn)
-    #     graph = self.bend_graph(fn=fn)
-    #     # retrieve activations
-    #     activations = self.resolve_activations(*activations, _raise_notfound=True)
-    #     new_graph = graph_from_activations(graph, activations)
-    #     # forward
-    #     gm = BendedGraphModule(module, new_graph)
-    #     outs = gm(**inputs)
-    #     # register as method in case
-    #     if _save_as_method: 
-    #         self._register_method_from_graph(graph, fn, _save_as_method)
-    #     # return
-    #     if _return_graph:
-    #         return outs, new_graph
-    #     else:
-    #         return outs
-
     @_import_to_interface
     def from_activations(self,
                                  *activations: Optional[Tuple[str]], 
@@ -731,6 +784,7 @@ class BendedModule(object):
                 if not isinstance(callback, BendingCallback): raise TypeError("callback must be a BendingCallback, got : %s"%(type(callback).__name__))
                 activations = _get_bended_activation_from_callaback(self._bended_activations[fn], callback)
                 assert len(activations) != 0, "given callback does not seem to be bending any activation for method %s.\nCallback : %s"%(fn, callback)
+
         graph = self.bend_graph(fn=fn)
         bended_activations = list(filter(lambda a: a in self._bended_activations[fn], activations))
         callbacks = {a: CallbackChain(*self._bended_activations[fn][a]) for a in bended_activations}
@@ -744,7 +798,6 @@ class BendedModule(object):
         else:
             return outs
         
-
     #  -- version & interpolation handling --
     def _write_bendings(self) -> None:
         # write weight bendings

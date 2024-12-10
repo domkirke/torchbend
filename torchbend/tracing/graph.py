@@ -142,34 +142,3 @@ def graph_from_activations(graph, activations, remove_placeholders=False, parse_
                 kwargs = new_kwargs
             env[n.name] = new_graph.create_node(n.op, n.target, args, kwargs, name = n.name)
     return new_graph
-
-
-# def graph_split(graph: torch.fx.Graph, *activations):
-#     """
-#     graph_split returns two graphs : 
-#     - one with outputs corresponding to activations, 
-#     - one with inputs corresponding to activations + other needed inputs.
-#     """
-#     graph_before = graph_get_activations(graph, activations)
-#     graph_after = graph_from_activations(graph, activations)
-#     return graph_before, graph_after
-
-
-
-    # assert activation in [n.name for n in graph.nodes], f"{activation} not present in given graph"
-    # graph_before = torch.fx.Graph()
-    # graph_after = torch.fx.Graph()
-    # env_before = {}
-    # env_after = {}
-
-    # current_graph = graph_before
-    # current_env = env_before
-    # for node in list(graph.nodes):
-    #     current_env[node.name] = current_graph.node_copy(node, lambda n, e = current_env: e[n.name])
-    #     if node.name == activation:
-    #         # create dict output 
-    #         current_graph.output(current_env[node.name])
-    #         current_graph = graph_after
-    #         current_env = env_after
-    #         current_env[node.name] = current_graph.placeholder(node.name)#, type_expr = node.type_expr)
-    # return graph_before, graph_after

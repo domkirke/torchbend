@@ -59,6 +59,7 @@ def test_bending_config(module_config):
         
         bending_config.bind(bended)
         recorded_config = bended.bending_config()
+        recorded_config.bind(bended)
         assert bending_config == recorded_config
 
 
@@ -116,11 +117,13 @@ def test_weight_bending(module_config):
     safely at call.
     """
     module, bended_module = module_config.get_modules()
-    for method in module_config.get_methods():
+    for i, method in enumerate(module_config.get_methods()):
+        bended_module.reset()
         # remote bending
         zero_callback = tb.Mask(0.)
         bended_module.bend(zero_callback, *module_config.weight_targets(method), verbose=True, fn=method)
         assert tb.compare_state_dict_tensors(state_dict(module), bended_module.state_dict()), "module's state dicts have been affected by bending."
+        # assert len(bended_module.bending_callbacks) == (i+1)
         assert len(bended_module.bending_callbacks) == 1
         assert len(bended_module.bended_params) != 0
         unbended_dict = bended_module.state_dict()
@@ -164,6 +167,7 @@ def test_versions(module_config):
             assert tb.compare_outs(bended_module.state_dict()[target], bended_module.state_dict('bended')[target])
         # revert to original version
         bended_module.version = None
+
         # remove bendings of original version
         bended_module.reset()
         assert tb.compare_outs(bended_module.state_dict()[target], bended_module.state_dict('_default')[target])
@@ -210,14 +214,12 @@ def test_activation_getter(module_config):
         targets = module_config.activation_targets(method)
         outs = bended_module.get_activations(*targets, **kwargs, fn=method)
         assert set(targets) == set(outs.keys()) 
-        bended_module.bend(cb, *targets)
+        bended_module.bend(cb, *targets, fn=method)
         outs_bended = bended_module.get_activations(*targets, **kwargs, fn=method, _save_as_method="getter") 
         outs_bended_2 = getattr(bended_module, "getter")(**kwargs)
         for t in targets:
             assert bool(tb.compare_outs(outs[t], outs_bended[t]))
             assert bool(tb.compare_outs(outs[t], outs_bended_2[t]))
-        #TODO bend and check
-        
 
 
 @pytest.mark.parametrize("module_config", modules_to_test)
@@ -273,53 +275,77 @@ def test_bending_callbacks_as_inputs(module_config):
         for t in bended_activations:
             bended_module.reset()
             bended_module.bend(cb1, t, fn=method, verbose=True)
-            bended_module.bend(cb2, t, fn=method)
-            acts = bended_module.get_activations(f"{t}$", fn=method, **kwargs)
+            bended_module.bend(cb2, t, fn=method, verbose=True)
+            acts = bended_module.get_activations(rf"{t}$", fn=method, **kwargs)
             out = bended_module.from_activations(t, fn=method, **acts, **kwargs, param1 = [1, 1], param2="coucou", param3="bonjour")
-            
+
+
+@pytest.mark.parametrize("module_config", modules_to_test)
+def test_bending_with_configs(module_config):
+    module, bended_module = module_config.get_modules()
+    cb1 = tb.Mask(tb.BendingParameter("mask", 0.0))
+
+    # default bended version
+    weight_bended = False
+    for method in module_config.get_methods():
+        args, kwargs, bw, ba = module_config.get_method_args(method)
+        bended_module.trace(method, *args, **kwargs)
+        # if not weight_bended: bended_module.bend(cb1, *bw); weight_bended = True
+        # bended_module.bend(cb1, *ba, fn=method)
+        bended_module.bend(cb1, *bw, *ba, fn=method)
+        
+    bended_module.save_config_as("bending_1")
+    bended_module.reset_bending()
+
+    cb2 = tb.Scale(tb.BendingParameter("scale", 4.))
+    for method in module_config.get_methods():
+        args, kwargs, bw, ba = module_config.get_method_args(method)
+        bended_module.bend(cb2, *bw, *ba, fn=method)
+    bended_module.save_config_as("bending_2")
+    bended_module.reset_bending()
+
+    for method in module_config.get_methods():
+        bended_module.config = None
+        args, kwargs, bw, ba = module_config.get_method_args(method)
+        out_orig = getattr(bended_module, method)(*args, **kwargs)
+        bended_module.config = "bending_1"
+        out_bended_1 = getattr(bended_module, method)(*args, **kwargs)
+        assert not bool(tb.compare_outs(out_orig, out_bended_1))
+        bended_module.config = "bending_2"
+        out_bended_2 = getattr(bended_module, method)(*args, **kwargs)
+        assert not bool(tb.compare_outs(out_orig, out_bended_2))
+        assert not bool(tb.compare_outs(out_bended_1, out_bended_2))
+
+
+
+@pytest.mark.parametrize("module_config", modules_to_test)
+def test_bending_as_environement(module_config):
+    module, bended_module = module_config.get_modules()
+    for method in module_config.get_methods():
+        bended_module.reset()
+        args, kwargs, bended_weights, bended_activations = module_config.get_method_args(method)
+        out_orig = getattr(bended_module, method)(*args, **kwargs)
+        # bend with first bending callback
+        cb1 = tb.Mask(tb.BendingParameter('mask2', 0.5))
+        bended_module.bend(cb1, *bended_weights, *bended_activations)
+        out_bend1 = getattr(bended_module, method)(*args, **kwargs)
+        # bend with environment
+        cb2 = tb.Mask(tb.BendingParameter('mask1', 0.))
+        with bended_module.bend(cb2, *bended_weights, *bended_activations):
+            out_bend2 = getattr(bended_module, method)(*args, **kwargs)
+        out_orig2 = getattr(bended_module, method)(*args, **kwargs)
+
+        assert bool(tb.compare_outs(out_bend1, out_orig2))
+        assert not bool(tb.compare_outs(out_orig, out_bend1))
+        assert not bool(tb.compare_outs(out_orig, out_bend2))
+        assert not bool(tb.compare_outs(out_bend1, out_bend2))
 
 # @pytest.mark.parametrize("module_config", modules_to_test)
-# def test_weight_bending_inplace(module_config):
-#     """
-#     In place bending bends in place the parameter dict, without altering the original module to enable bending reset.
-#     """
-#     for method in module_config.get_methods():
-#         module = module_config.get_module()
-#         bended_module = tb.BendedModule(module)
-#         args, kwargs, _, _ = module_config.get_method_args(method)
-#         out_orig = getattr(module, method)(*args, **kwargs)
-#         zero_callback = tb.Mask(0.)
+# def test_bending_range_exploration(module_config):
+#     module, bended_module = module_config.get_modules() 
 
-#         # in-place bending
-#         bended_module.bend_(zero_callback, 
-#                             *module_config.weight_targets(), 
-#                             *module_config.activation_targets()) 
+#     c1 = tb.BendingParameter("mask1", 0., range=[0., 1.])
+#     cb1 = tb.Mask(prob=c1)
 
-#         # compare parameters
-#         for k in bended_module.bended_params.keys():
-#             # bended module's state dict is not changed ; inner module is modified in place
-#             assert torch.allclose(v, bended_module.state_dict()[k])
-#             assert not torch.allclose(v, bended_module.module.state_dict()[k])
-#             assert torch.allclose(bended_module.bended_state_dict()[k], bended_module.module.state_dict()[k])
-#             assert not torch.allclose(bended_module.bended_state_dict()[k], bended_module.state_dict()[k])
-
-#         # try calls
-#         out_bended = getattr(bended_module, method)(*args, **kwargs)
-#         assert not bool(tb.compare_outs(out_orig, out_bended))
-
-#         # reset
-#         bended_module.reset()
-#         for k, v in module.state_dict().items():
-#             # if v.eq(0).all():
-#             #    continue 
-#             # bended module's state dict is not changed ; inner module is modified in place
-#             assert torch.allclose(v, bended_module.state_dict()[k])
-#             assert torch.allclose(v, bended_module.module.state_dict()[k])
-#             assert torch.allclose(bended_module.bended_state_dict()[k], bended_module.module.state_dict()[k])
-#             assert torch.allclose(bended_module.bended_state_dict()[k], bended_module.state_dict()[k])
-
-#         args, kwargs, _, _ = module_config.get_method_args(method)
-#         out_orig = getattr(module, method)(*args, **kwargs)
-#         out_bended = getattr(bended_module, method)(*args, **kwargs)
-#         assert bool(tb.compare_outs(out_orig, out_bended))
-
+#     c2 = tb.BendingParameter("mask2", 0., range=[0., 1.])
+#     cb2 = tb.Mask(prob=c2)
