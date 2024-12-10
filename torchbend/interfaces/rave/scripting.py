@@ -19,6 +19,82 @@ class DumbPrior(nn.Module):
         return x
 
 
+
+def script_rave_model(pretrained, **kwargs):
+    cc.use_cached_conv(True)
+    if isinstance(pretrained.encoder, rave.blocks.VariationalEncoder):
+        script_class = VariationalScriptedRAVE
+    elif isinstance(pretrained.encoder, rave.blocks.DiscreteEncoder):
+        script_class = DiscreteScriptedRAVE
+    elif isinstance(pretrained.encoder, rave.blocks.WasserteinEncoder):
+        script_class = WasserteinScriptedRAVE
+    elif isinstance(pretrained.encoder, rave.blocks.SphericalEncoder):
+        script_class = SphericalScriptedRAVE
+    else:
+        raise ValueError(f"Encoder type {type(pretrained.encoder)} "
+                        "not supported for export.")
+    scripted_model = script_class(pretrained=pretrained, **kwargs)
+    for m in pretrained.modules():
+        if hasattr(m, "weight_g"):
+            nn.utils.remove_weight_norm(m)
+    return scripted_model
+
+
+
+def post_process_variational(self, z):
+    z = z - self.model.latent_mean.unsqueeze(-1)
+    z = F.conv1d(z, self.model.latent_pca.unsqueeze(-1))
+    return z
+
+def pre_process_variational(self, z):
+    z = F.conv1d(z, self.model.latent_pca.T.unsqueeze(-1))
+    z = z + self.model.latent_mean.unsqueeze(-1)
+    return z
+
+def post_process_discrete(self, z):
+    z = self.model.encoder.rvq.encode(z)
+    return z.float()
+
+def pre_process_discrete(self, z):
+    z = torch.clamp(z, 0,
+                    self.encoder.rvq.layers[0].codebook_size - 1).long()
+    z = self.model.encoder.rvq.decode(z)
+    if self.model.encoder.noise_augmentation:
+        noise = torch.randn(z.shape[0], self.model.encoder.noise_augmentation,
+                            z.shape[-1]).type_as(z)
+        z = torch.cat([z, noise], 1)
+    return z
+
+def post_process_ws(self, z):
+    return z
+
+def pre_process_ws(self, z):
+    if self.model.encoder.noise_augmentation:
+        noise = torch.randn(z.shape[0], self.model.encoder.noise_augmentation,
+                            z.shape[-1]).type_as(z)
+        z = torch.cat([z, noise], 1)
+    return z
+
+def post_process_sph(self, z):
+    return rave.blocks.unit_norm_vector_to_angles(z)
+
+def pre_process_sph(self, z):
+    return rave.blocks.angles_to_unit_norm_vector(z)
+
+pre_process_fn = {rave.blocks.VariationalEncoder: pre_process_variational, 
+                  rave.blocks.DiscreteEncoder: pre_process_discrete, 
+                  rave.blocks.WasserteinEncoder: pre_process_ws, 
+                  rave.blocks.SphericalEncoder: pre_process_sph
+                 }
+
+post_process_fn = {rave.blocks.VariationalEncoder: post_process_variational, 
+                  rave.blocks.DiscreteEncoder: post_process_discrete, 
+                  rave.blocks.WasserteinEncoder: post_process_ws, 
+                  rave.blocks.SphericalEncoder: post_process_sph
+                 }            
+
+
+
 class ScriptedRAVE(nn_tilde.Module):
 
     def __init__(self,

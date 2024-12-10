@@ -827,6 +827,11 @@ class BendedModule(object):
     @_import_to_interface
     def capture(self, *callbacks):
         return BendedModuleCaptureContext(self, callbacks)
+
+    @_import_to_interface
+    def interpolate_bending(self, *bending_parameters, **inputs):
+        assert not False in [lambda x: x in self._controllables, bending_parameters]
+
         
 
 

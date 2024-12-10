@@ -1,4 +1,6 @@
 import torch
+from pathlib import Path
+import numpy as np
 from types import MethodType
 import copy
 import os
@@ -8,127 +10,123 @@ from typing import Union, Optional
 import rave as ravelib
 from ..base import Interface
 from ...tracing import BendedModule
-from .scripting import *
+from .scripting import pre_process_fn, post_process_fn, script_rave_model
 from .nntilde import ScriptableRAVE, _zero_cache
 import cached_conv as cc
 import gin
+
 
 class BendingRAVEException(Exception):
     pass
 
 
-def script_rave_model(pretrained, **kwargs):
-    cc.use_cached_conv(True)
-    if isinstance(pretrained.encoder, ravelib.blocks.VariationalEncoder):
-        script_class = VariationalScriptedRAVE
-    elif isinstance(pretrained.encoder, ravelib.blocks.DiscreteEncoder):
-        script_class = DiscreteScriptedRAVE
-    elif isinstance(pretrained.encoder, ravelib.blocks.WasserteinEncoder):
-        script_class = WasserteinScriptedRAVE
-    elif isinstance(pretrained.encoder, ravelib.blocks.SphericalEncoder):
-        script_class = SphericalScriptedRAVE
-    else:
-        raise ValueError(f"Encoder type {type(pretrained.encoder)} "
-                        "not supported for export.")
-    scripted_model = script_class(pretrained=pretrained, **kwargs)
-    for m in pretrained.modules():
-        if hasattr(m, "weight_g"):
-            nn.utils.remove_weight_norm(m)
-    return scripted_model
-
 def _scripted_model_to_nntilde(self):
     return ScriptableRAVE(self)
 
 
-def post_process_variational(self, z):
-    z = z - self.model.latent_mean.unsqueeze(-1)
-    z = F.conv1d(z, self.model.latent_pca.unsqueeze(-1))
-    return z
-
-def pre_process_variational(self, z):
-    z = F.conv1d(z, self.model.latent_pca.T.unsqueeze(-1))
-    z = z + self.model.latent_mean.unsqueeze(-1)
-    return z
-
-def post_process_discrete(self, z):
-    z = self.model.encoder.rvq.encode(z)
-    return z.float()
-
-def pre_process_discrete(self, z):
-    z = torch.clamp(z, 0,
-                    self.encoder.rvq.layers[0].codebook_size - 1).long()
-    z = self.model.encoder.rvq.decode(z)
-    if self.model.encoder.noise_augmentation:
-        noise = torch.randn(z.shape[0], self.model.encoder.noise_augmentation,
-                            z.shape[-1]).type_as(z)
-        z = torch.cat([z, noise], 1)
-    return z
-
-def post_process_ws(self, z):
-    return z
-
-def pre_process_ws(self, z):
-    if self.model.encoder.noise_augmentation:
-        noise = torch.randn(z.shape[0], self.model.encoder.noise_augmentation,
-                            z.shape[-1]).type_as(z)
-        z = torch.cat([z, noise], 1)
-    return z
+class BendedRAVEImportException(Exception):
+    def __init__(self, path, msg=None):
+        super().__init__()
+        self.path = path
+        self.msg = msg
+    def __repr__(self):
+        s = f"RAVEImportException(path={self.path}"
+        if self.reason is not None:
+            return s+f", reason={self.msg})"
+        else:
+            return s+"p)"
 
 
-def post_process_sph(self, z):
-    return rave.blocks.unit_norm_vector_to_angles(z)
+def _rave_get_model_paths_from_ckpt(path):
+    ckpt_path = path
+    ckpt_dir = Path(path).parent
+    if (ckpt_dir / "config.gin").exists(): 
+        return {'ckpt': str(ckpt_path), 'config': str(ckpt_dir / "config.gin")}
+    elif (ckpt_dir / ".." / "config.gin").exists(): 
+        return {'ckpt': str(ckpt_path), 'config': str(ckpt_dir / ".." / "config.gin")}
+    elif (ckpt_dir / ".." / ".." / "config.gin").exists(): 
+        return {'ckpt': str(ckpt_path), 'config': str(ckpt_dir / ".." / ".." / "config.gin")}
+    else:
+        raise BendedRAVEImportException(path, msg="config file not found")
+    
+def _rave_get_model_paths_from_folder(path):
+    # is it directly a folder containing checkpoints? 
+    path = Path(path)
+    ckpt_files = list(path.glob('*.ckpt')) + list(path.glob('checkpoints/*.ckpt'))
+    # version dirs
+    version_dirs = list(filter(lambda x: x.is_dir(), path.glob('version_*')))
+    version_dirs = list(filter(lambda x: re.match(r'version_\d+', x.name) is not None, version_dirs))
+    if len(ckpt_files):
+        ckpt_files.sort(key=lambda x: os.path.getmtime(x))
+        return _rave_get_model_paths_from_ckpt(ckpt_files[-1])
+    elif version_dirs:
+        # maybe it is a folder containing version
+        if len(version_dirs) == 0: raise BendedRAVEImportException(path, "could not fetch any checkpoint from path")
+        max_version = max([int(v.name.split('_')[-1]) for v in version_dirs])
+        return _rave_get_model_paths_from_folder(path / f"version_{max_version}")
+    else:
+        raise BendedRAVEImportException(path, "could not fin any checkpoint in dir %s"%path)
+    
 
-def pre_process_sph(self, z):
-    return rave.blocks.angles_to_unit_norm_vector(z)
-
-pre_process_fn = {rave.blocks.VariationalEncoder: pre_process_variational, 
-                  rave.blocks.DiscreteEncoder: pre_process_discrete, 
-                  rave.blocks.WasserteinEncoder: pre_process_ws, 
-                  rave.blocks.SphericalEncoder: pre_process_sph
-                 }
-
-post_process_fn = {rave.blocks.VariationalEncoder: post_process_variational, 
-                  rave.blocks.DiscreteEncoder: post_process_discrete, 
-                  rave.blocks.WasserteinEncoder: post_process_ws, 
-                  rave.blocks.SphericalEncoder: post_process_sph
-                 }            
-
+def rave_get_model_paths(path):
+    path = Path(path)
+    # is it directly a checkpoint? 
+    if path.is_file() and path.suffix in ['.ckpt']:
+        return _rave_get_model_paths_from_ckpt(path)
+    elif path.is_file():
+        raise BendedRAVEImportException(path)
+    else:
+        return _rave_get_model_paths_from_folder(path)
 
 
 class BendedRAVE(Interface):
     _imported_callbacks_ = []
     _proxied_buffers = ['.*pad', '.*cache', 'latent_mean', 'latent_pca']
 
-    def __init__(self, model_path, batch_size=4):
-        model = self.load_model(model_path)
+    def __init__(self, model_path, strict=True, batch_size=4):
+        model = self.load_model(model_path, strict=strict)
         self.batch_size = batch_size
-        model(torch.zeros(self.batch_size, 1, 8192))
+
+        # warmup model cache
+        model(torch.zeros(self.batch_size, model.n_channels, 8192))
+
         self.model = model
         self.pre_process_latent = MethodType(pre_process_fn[type(self.model.encoder)], self)
         self.post_process_latent = MethodType(post_process_fn[type(self.model.encoder)], self)
 
     @staticmethod
-    def load_model(model_path):
-        try:
-            if (not os.path.isfile(model_path)) or (os.path.splitext(model_path)[1] == ".ckpt"):
-                return BendedRAVE.load_checkpoint(model_path)
-            else:
-                return BendedRAVE.load_scripted(model_path)
-        except Exception:
-            raise BendingRAVEException("Could not load model %s ; does not seem to be a valid file."%model_path)
+    def is_loadable(path):
+        try: 
+            model_paths = rave_get_model_paths(path)
+            return True
+        except BendedRAVEImportException as e:
+            return False
 
     @staticmethod
-    def load_checkpoint(model_path):
+    def load_model(model_path, strict=True):
+        if (not os.path.isfile(model_path)) or (os.path.splitext(model_path)[1] == ".ckpt"):
+            return BendedRAVE.load_checkpoint(model_path, strict=strict)
+        else:
+            raise NotImplementedError
+            # return BendedRAVE.load_scripted(model_path)
+
+    @staticmethod
+    def load_checkpoint(model_path, strict=True):
+        assert BendedRAVE.is_loadable(model_path)
         cc.use_cached_conv(True)
-        config_path = ravelib.core.search_for_config(model_path)
+        paths = rave_get_model_paths(model_path)
+
+        config_path = paths['config']
         if config_path is None:
-            raise BendingRAVEException('config not found in folder %s'%model_path)
+            raise BendedRAVEImportException(model_path)
         gin.parse_config_file(config_path)
         model = ravelib.RAVE()
-        run = ravelib.core.search_for_run(model_path)
+        
+        run = paths['ckpt']
         if run is None:
-            raise BendingRAVEException("run not found in folder %s"%model_path)
-        model = model.load_from_checkpoint(run)
+            raise BendedRAVEImportException(model_path)
+        model = model.load_from_checkpoint(run, strict=strict)
+
         return model
 
     @staticmethod
@@ -149,6 +147,10 @@ class BendedRAVE(Interface):
         if sr != self._model.sr:
             audio = torchaudio.functional.resample(audio, sr, self.sample_rate)
         return audio
+
+    @property
+    def channels(self):
+        return self._model.n_channels
 
     @property
     def sample_rate(self):
@@ -173,10 +175,13 @@ class BendedRAVE(Interface):
     @property
     def discriminator(self):
         return BendedModule(self._model.discriminator)
-
     @property
     def latent_size(self):
         return self.model.latent_size
+
+    @property
+    def receptive_field(self):
+        return self._model.receptive_field
 
     def pre_process_latent(self, z):
         raise NotImplementedError 
