@@ -108,15 +108,13 @@ def test_tracing(model_path, batch_size):
         acts = model.get_activations(e_act, x=x, fn="encode")
         out = model.from_activations(e_act, **acts, x=x, fn="encode")
 
-    # for d_act in decode_acts:
-    #     acts = model.get_activations(d_act, z=z, fn="decode")
-    #     out = model.from_activations(d_act, **acts, z=z, fn="decode")
+    for d_act in decode_acts:
+        acts = model.get_activations(d_act, z=z, fn="decode")
+        out = model.from_activations(d_act, **acts, z=z, fn="decode")
 
-    # for f_act in decode_acts:
-    #     acts = model.get_activations(f_act, x=z, fn="forward")
-    #     out = model.from_activations(f_act, **acts, x=x, fn="forward")
-
-
+    for f_act in forward_acts:
+        acts = model.get_activations(f_act, x=x, fn="forward")
+        out = model.from_activations(f_act, **acts, x=x, fn="forward")
         
 
 def test_script():
