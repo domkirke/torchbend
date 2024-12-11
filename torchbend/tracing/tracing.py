@@ -10,7 +10,8 @@ from torch._C import ScriptObject  # type: ignore[attr-defined]
 from torch.fx._symbolic_trace import _proxyable_classes, Tracer, _Patcher, _autowrap_check, _patch_wrapped_functions
 from torch.fx.proxy import Proxy, TraceError, TracerBase, ParameterProxy
 from torch.fx.node import Argument, Node
-from torch.fx.graph import Graph
+from torch.fx.graph import Graph, _register_custom_builtin
+
 from .. import distributions as dist, DEBUG
 from .proxy import *
 from .input import Inputs
@@ -19,7 +20,12 @@ from .utils import dist_to_tensor
 
 _orig_module_call: Callable = torch.nn.Module.__call__
 _orig_module_getattr: Callable = torch.nn.Module.__getattr__
+_orig_tensor_getitem: Callable = torch.Tensor.__getitem__
+_orig_tensor_setitem: Callable = torch.Tensor.__setitem__
+_orig_tensor_repr: Callable = torch.Tensor.__repr__
+
 _is_fx_tracing_flag = False
+
 
 def is_fx_tracing():
     return _is_fx_tracing_flag
@@ -77,9 +83,15 @@ def wrapped_reversed(*args):
     if not hasattr(args[0], "__iter__"): TypeError("'%s' object is not reversible"%(type(args[0])))
     return reversed(list(iter(args[0])))
 
-def _patch_iterators(patcher: _Patcher, frame_dict: Dict[str, Any]):
+def tensor(*args):
+    return torch.tensor(*args)
+
+def _patch_tb_funcs(patcher: _Patcher, frame_dict: Dict[str, Any]):
     patcher.patch(frame_dict, "range", wrapped_range)
     patcher.patch(frame_dict, "reversed", wrapped_reversed)
+    if "tensor" not in frame_dict:
+        frame_dict['tensor'] = tensor
+        patcher.patch(frame_dict, "tensor", tensor)
 
 
 class FlowStep():
@@ -196,6 +208,7 @@ class BendingTracer(torch.fx.Tracer):
         self._concrete_flow_steps = []
 
         buffers = dict(root.named_buffers())
+        if proxied_buffers == True: proxied_buffers = list(dict(root.named_buffers()).keys())
         for p in proxied_buffers:
             buffers_to_proxy = list(filter(lambda x, u=p: re.match(u, x), buffers.keys()))
             self._proxied_buffers.extend(buffers_to_proxy)
@@ -874,7 +887,40 @@ class BendingTracer(torch.fx.Tracer):
                     getattr(getattr(mod, "forward", mod), "__globals__", {}),
                     self._autowrap_function_ids,
                 )
+                _patch_tb_funcs(patcher , getattr(getattr(mod, "forward", mod), "__globals__", {}))
                 return self.call_module(mod, forward, args, kwargs)
+            
+            @functools.wraps(_orig_tensor_getitem)
+            def tensor_getitem_wrapper(ts, item):
+                def _value_from_proxy_int(k):
+                    if isinstance(k, BendingProxyInt):
+                        if k.value is not None: k = int(k)
+                    elif isinstance(k, slice):
+                        k = slice(_value_from_proxy_int(k.start), _value_from_proxy_int(k.stop), _value_from_proxy_int(k.step))
+                    return k
+                if isinstance(item, tuple):
+                    item = tuple(map(_value_from_proxy_int, item))
+                else:
+                    item = _value_from_proxy_int(item)
+                return _orig_tensor_getitem(ts, item)
+
+            @functools.wraps(_orig_tensor_setitem)
+            def tensor_setitem_wrapper(ts, item, obj):
+                def _value_from_proxy_int(k):
+                    if isinstance(k, BendingProxyInt):
+                        if k.value is not None: k = int(k)
+                    elif isinstance(k, slice):
+                        k = slice(_value_from_proxy_int(k.start), _value_from_proxy_int(k.stop), _value_from_proxy_int(k.step))
+                    return k
+                if isinstance(item, tuple):
+                    item = tuple(map(_value_from_proxy_int, item))
+                else:
+                    item = _value_from_proxy_int(item)
+                return _orig_tensor_setitem(ts, item, obj)
+
+            @functools.wraps(_orig_tensor_repr)
+            def tensor_repr_wrapper(ts):
+                return "torch."+_orig_tensor_repr(ts)
 
             with _Patcher() as patcher:
                 # allow duplicate patches to support the case of nested calls
@@ -885,10 +931,29 @@ class BendingTracer(torch.fx.Tracer):
                     deduplicate=False,
                 )
                 patcher.patch_method(
+                    torch.Tensor,
+                    "__getitem__",
+                    tensor_getitem_wrapper,
+                    deduplicate=False
+                )
+                patcher.patch_method(
+                    torch.Tensor,
+                    "__setitem__",
+                    tensor_setitem_wrapper,
+                    deduplicate=False
+                )
+                patcher.patch_method(
+                    torch.Tensor,
+                    "__repr__",
+                    tensor_repr_wrapper,
+                    deduplicate=False
+                )
+
+                patcher.patch_method(
                     torch.nn.Module, "__call__", module_call_wrapper, deduplicate=False
                 )
                 _patch_wrapped_functions(patcher)
-                _patch_iterators(patcher, fn_globals)
+                _patch_tb_funcs(patcher, fn_globals)
                 _autowrap_check(patcher, fn_globals, self._autowrap_function_ids)
                 for module in self._autowrap_search:
                     _autowrap_check(

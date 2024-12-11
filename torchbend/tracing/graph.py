@@ -3,7 +3,7 @@ from collections import OrderedDict
 import inspect
 import torch
 from torch.fx import Graph
-from typing import List, Dict
+from typing import List, Dict, Any, Optional
 from .tracing import TraceError
 
 def graph_insert_callbacks(graph, callbacks, verbose=False, _fn_name="forward"):
@@ -39,6 +39,10 @@ def _get_new_node_args(env, node):
         return [_get_new_node_args(env, n) for n in node]
     elif isinstance(node, torch.fx.Node):
         return env[node.name]
+    elif isinstance(node, slice):
+        return slice(_get_new_node_args(env, node.start),
+                     _get_new_node_args(env, node.stop), 
+                     _get_new_node_args(env, node.step))
     else:
         return node
 
@@ -62,10 +66,10 @@ def graph_get_activations(graph: torch.fx.Graph, activations: List[str]):
 
 def get_single_users(node, out):
     for n in node.args:
+        if not isinstance(n, torch.fx.Node): continue
         if len(n.users) == 1:
             out.append(n)
             get_single_users(n, out)
-    
 
 def graph_from_activations(graph, activations, remove_placeholders=False, parse_inputs_from_callbacks=None):
     new_graph = torch.fx.Graph()
@@ -81,11 +85,11 @@ def graph_from_activations(graph, activations, remove_placeholders=False, parse_
     conflicting_nodes = set(activations).intersection(set(nodes_to_remove))
     if len(conflicting_nodes) > 0:
         raise TraceError('conflicting nodes found : %s. Could not parse new graph'%list(conflicting_nodes))
+
     # add placeholders
     ph_orig = list(filter(lambda x: x.op == "placeholder" and x.name not in nodes_to_remove, graph.nodes))
-
     for p in ph_orig: env[p.name] = new_graph.placeholder(p.name, p.type, *p.args)
-    for a in activations: env[a] = new_graph.placeholder(a, )
+    for a in activations: env[a] = new_graph.placeholder(a, Optional[Any], None) 
 
     # parse inputs
     additional_inputs = {}

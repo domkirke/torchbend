@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 from pathlib import Path
 import numpy as np
 from types import MethodType
@@ -103,15 +104,15 @@ class BendedRAVE(Interface):
             return False
 
     @staticmethod
-    def load_model(model_path, strict=True):
+    def load_model(model_path, strict=True, device="cpu"):
         if (not os.path.isfile(model_path)) or (os.path.splitext(model_path)[1] == ".ckpt"):
-            return BendedRAVE.load_checkpoint(model_path, strict=strict)
+            return BendedRAVE.load_checkpoint(model_path, strict=strict, device=device)
         else:
             raise NotImplementedError
             # return BendedRAVE.load_scripted(model_path)
 
     @staticmethod
-    def load_checkpoint(model_path, strict=True):
+    def load_checkpoint(model_path, strict=True, device="cpu"):
         assert BendedRAVE.is_loadable(model_path)
         cc.use_cached_conv(True)
         paths = rave_get_model_paths(model_path)
@@ -125,7 +126,11 @@ class BendedRAVE(Interface):
         run = paths['ckpt']
         if run is None:
             raise BendedRAVEImportException(model_path)
-        model = model.load_from_checkpoint(run, strict=strict)
+        model = model.load_from_checkpoint(run, strict=strict, map_location=device)
+
+        for m in model.modules():
+            if hasattr(m, "weight_g"):
+                nn.utils.remove_weight_norm(m)        
 
         return model
 
