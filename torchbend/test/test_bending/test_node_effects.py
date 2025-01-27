@@ -27,9 +27,10 @@ class NodeEffectsTester(nn.Module):
 
 @pytest.mark.parametrize("activation,cb_args", [
     ("linear1", {'target': 'linear2'}),
-    ("pow_1", {'target': globals()['__builtins__']['abs'], 'args': (tb.ChangeNodeTarget.tokens.copy,)}),
+    ("pow_1", {'target': globals()['__builtins__']['abs'], 'args': (tb.ChangeNodeTarget.copy,)}),
     ("sigmoid", {'target': 'linear2', 'op': 'call_module', 'name': 'linear2'}),
-    ("sigmoid", {'target': torch.split, 'op': 'call_function', 'args': (tb.ChangeNodeTarget.tokens.copy, 1), 'kwargs': {'dim': 0}, 'name': 'split'})
+    ("sigmoid", {'target': torch.split, 'op': 'call_function', 'args': (tb.ChangeNodeTarget.copy, 1), 'kwargs': {'dim': 0}, 'name': 'split'}),
+    ("mul", {'target': torch.mul, 'op': 'call_function', 'args': (tb.ChangeNodeTarget.copy, tb.ChangeNodeTarget.activation("pow_1"))})
 ])
 def test_node_change_target(activation, cb_args):
     module = NodeEffectsTester()

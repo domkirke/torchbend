@@ -8,11 +8,15 @@ class CopyArg():
 class ChangeNodeTargetTokens(enum.Enum):
     copy = 0
 
+class ChangeNodeActivationPointer(object):
+    def __init__(self, name):
+        self.name = name
+
 class ChangeNodeTarget(BendingCallback):
     activation_compatible = True 
     jit_compatible = True
     applied_to_node = True
-    tokens = ChangeNodeTargetTokens
+    copy = ChangeNodeTargetTokens.copy
     __valid_kwargs__ = {'op', 'target', 'args', 'kwargs', 'name'}
     __valid_ops__ = ['call_method', 'call_module', 'call_function', 'get_attr']
 
@@ -25,6 +29,10 @@ class ChangeNodeTarget(BendingCallback):
     @property
     def copy_arg(self):
         return CopyArg()
+
+    @staticmethod
+    def activation(name):
+        return ChangeNodeActivationPointer(name)
 
     def _check_input_kwargs(self, **kwargs):
         _unvalid_keys = []
@@ -62,6 +70,11 @@ class ChangeNodeTarget(BendingCallback):
             if self._is_kwarg_controllable(k, v): valid_params[k] = v
         return valid_params
 
+    def retrieve_activation_from_graph(self, graph, name):
+        for n in graph.nodes:
+            if n.name == name:
+                return n
+
     def apply_to_node(self, node):
         for k, v in self.kwargs.items():
             if k == "args":
@@ -70,6 +83,11 @@ class ChangeNodeTarget(BendingCallback):
                     if v_tmp == ChangeNodeTargetTokens.copy:
                         assert i < len(node.args), "tried to copy argument #%d, but got %d arguments in original node"%(i, len(node.args))
                         new_args[i] = node.args[i]
+                    elif isinstance(v_tmp, ChangeNodeActivationPointer):
+                        target_activation = self.retrieve_activation_from_graph(node.graph, v_tmp.name)
+                        if target_activation is None:
+                            raise BendingCallbackException('node %s not found in graph.'%v_tmp.name)
+                        new_args[i] = target_activation
                 v = new_args
             elif k == "kwargs":
                 new_kwargs = dict(v)
@@ -77,6 +95,11 @@ class ChangeNodeTarget(BendingCallback):
                     if v_tmp == ChangeNodeTargetTokens.copy:
                         assert k in node.kwargs, "tried to copy key %s, but absent from original nodes kwargs."%k_tmp
                         new_kwargs[k_tmp] = node.kwargs[k_tmp]
+                    elif isinstance(v_tmp, ChangeNodeActivationPointer):
+                        target_activation = self.retrieve_activation_from_graph(node.graph, v_tmp.name)
+                        if target_activation is None:
+                            raise BendingCallbackException('node %s not found in graph.'%v_tmp.name)
+                        new_kwargs[k_tmp] = target_activation
                 v = new_kwargs
             setattr(node, k, v)
         return node
