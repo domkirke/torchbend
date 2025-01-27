@@ -11,7 +11,6 @@ def graph_insert_callbacks(graph, callbacks, verbose=False, _fn_name="forward"):
     new_graph = torch.fx.Graph()
     env = {}
     bended_lookup = {}
-    name_hash = {}
     for node in graph.nodes:
         new_node = new_graph.node_copy(node, lambda x: env[x.name])
         # check arguments to replace by bended node in case
@@ -22,15 +21,17 @@ def graph_insert_callbacks(graph, callbacks, verbose=False, _fn_name="forward"):
                     new_args[i] = bended_lookup[arg.name]
         new_node.args = tuple(new_args)
         env[node.name] = new_node
-        #TODO using inserting_after??
         if node.name in callbacks:
             if verbose:
                 print('bending activation %s with function %s...'%(node.name, callbacks[node.name]))
-            bended_node_name = node.name+"_bended"
-            hack_obj_name = node.name + "_callback"
-            bended_node = new_graph.create_node("call_module", hack_obj_name, args=(new_node,), kwargs={'name': f"{_fn_name}:{node.name}"}, name=bended_node_name)
-            env[bended_node_name] = bended_node 
-            bended_lookup[node.name] = bended_node 
+            if callbacks[node.name].applied_to_node:
+               callbacks[node.name].apply_to_node(env[node.name])
+            if callbacks[node.name].needs_insertion:
+                bended_node_name = node.name+"_bended"
+                hack_obj_name = node.name + "_callback"
+                bended_node = new_graph.create_node("call_module", hack_obj_name, args=(env[node.name],), kwargs={'name': f"{_fn_name}:{node.name}"}, name=bended_node_name)
+                env[bended_node_name] = bended_node
+                bended_lookup[node.name] = bended_node
     return new_graph
 
 

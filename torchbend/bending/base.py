@@ -98,6 +98,7 @@ def _create_forward_function(additional_args):
 class BendingCallback(nn.Module):
     weight_compatible = False
     activation_compatible = False
+    applied_to_node = False
     jit_compatible = False
     nntilde_compatible = False
     controllable_params = {}
@@ -132,6 +133,10 @@ class BendingCallback(nn.Module):
     @property
     def is_ready(self) -> bool:
         return True
+
+    @property
+    def needs_insertion(self) -> bool:
+        return (self.activation_compatible) and (not self.applied_to_node)
 
     # capture and stop
     def capture(self) -> None:
@@ -229,8 +234,11 @@ class BendingCallback(nn.Module):
             raise BendingCallbackException('parameter with id %s not found in callback %s'%(parameter, self))
         self._bending_targets[parameter_idx] = new_parameter
 
-    
     # activations
+
+    def apply_to_node(self, node):
+        raise BendingCallbackException('apply_to_node called with callback of type %s, but not available'%type(self))
+
     def register_activation(self, name, shape):
         name = name.replace('.', '_')
         self._bending_shapes[name] = shape
@@ -276,7 +284,10 @@ class BendingCallback(nn.Module):
     def forward(self, x: torch.Tensor, name: Optional[str] = None):
         """applies transformation to an input (typically activations)"""
         if not self.is_ready: raise BendingCallbackException(self._not_ready_str)
-        return self.bend_input(x, name=name)
+        if self.applied_to_node:
+            return x
+        else:
+            return self.bend_input(x, name=name)
 
     # script
     def script(self):
@@ -330,6 +341,11 @@ class CallbackChain(nn.Module):
         for attr in ['weight', 'activation', 'jit', 'nntilde']:
             res = reduce(lambda x, y : x and y, [getattr(c, f"{attr}_compatible") for c in self.callbacks], True)
             setattr(self, f"{attr}_compatible", torch.jit.Attribute(res, bool))
+        self.applied_to_node = True in [c.applied_to_node for c in self.callbacks]
+
+    @property
+    def needs_insertion(self) -> bool:
+        return True in [c.needs_insertion for c in self.callbacks]
 
     @property
     def controllable_params(self) -> List[str]:
@@ -354,6 +370,11 @@ class CallbackChain(nn.Module):
     def update(self):
         for i, m in enumerate(self.callbacks):
             m.update()
+
+    def apply_to_node(self, node):
+        for i, m in enumerate(self.callbacks):
+            if m.applied_to_node:
+                m.apply_to_node(node)
 
     @torch.jit.export
     def apply(self, update: bool = True):

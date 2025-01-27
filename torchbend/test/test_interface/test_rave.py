@@ -69,12 +69,11 @@ def test_callbacks(model_path, batch_size):
 @pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
 @pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
 @pytest.mark.parametrize("batch_size", (1, 4)) 
-def test_tracing(model_path, batch_size):
+@pytest.mark.parametrize("scripted", (True, False)) 
+def test_tracing(model_path, batch_size, scripted):
     model = BendedRAVE(model_path, batch_size=batch_size, strict=RAVE_STRICT_LOADING)
-    assert "encode" in model._model._graphs
-    assert "decode" in model._model._graphs
-    assert "forward" in model._model._graphs
-
+    if scripted:
+        model = model.script()
 
     # test variable batch sizes
     batch_sizes = (1, 4)
@@ -116,9 +115,6 @@ def test_tracing(model_path, batch_size):
         acts = model.get_activations(f_act, x=x, fn="forward")
         out = model.from_activations(f_act, **acts, x=x, fn="forward")
         
-
-def test_script():
-    pass
 
 def test_export():
     pass

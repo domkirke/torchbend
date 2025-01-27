@@ -227,6 +227,14 @@ class ScriptedRAVE(nn_tilde.Module):
         else:
             self.prior_module = DumbPrior()
 
+    @property
+    def channels(self):
+        return self.n_channels
+
+    @property
+    def sample_rate(self):
+        return self.sr
+
     def post_process_latent(self, z):
         raise NotImplementedError
 
