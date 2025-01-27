@@ -28,7 +28,8 @@ class NodeEffectsTester(nn.Module):
 @pytest.mark.parametrize("activation,cb_args", [
     ("linear1", {'target': 'linear2'}),
     ("pow_1", {'target': globals()['__builtins__']['abs'], 'args': (tb.ChangeNodeTarget.tokens.copy,)}),
-    ("sigmoid", {'target': 'linear2', 'op': 'call_module', 'name': 'linear2'})
+    ("sigmoid", {'target': 'linear2', 'op': 'call_module', 'name': 'linear2'}),
+    ("sigmoid", {'target': torch.split, 'op': 'call_function', 'args': (tb.ChangeNodeTarget.tokens.copy, 1), 'kwargs': {'dim': 0}, 'name': 'split'})
 ])
 def test_node_change_target(activation, cb_args):
     module = NodeEffectsTester()
@@ -42,6 +43,8 @@ def test_node_change_target(activation, cb_args):
     bended.bend(cb, activation)
     out_bended = bended(x)
 
-    assert not torch.allclose(out, out_bended)
+    if torch.is_tensor(out_bended):
+        assert not torch.allclose(out, out_bended)
+    
 
 

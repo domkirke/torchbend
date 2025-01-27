@@ -71,6 +71,13 @@ class ChangeNodeTarget(BendingCallback):
                         assert i < len(node.args), "tried to copy argument #%d, but got %d arguments in original node"%(i, len(node.args))
                         new_args[i] = node.args[i]
                 v = new_args
+            elif k == "kwargs":
+                new_kwargs = dict(v)
+                for k_tmp, v_tmp in v.items():
+                    if v_tmp == ChangeNodeTargetTokens.copy:
+                        assert k in node.kwargs, "tried to copy key %s, but absent from original nodes kwargs."%k_tmp
+                        new_kwargs[k_tmp] = node.kwargs[k_tmp]
+                v = new_kwargs
             setattr(node, k, v)
         return node
 
