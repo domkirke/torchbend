@@ -27,10 +27,10 @@ class NodeEffectsTester(nn.Module):
 
 @pytest.mark.parametrize("activation,cb_args", [
     ("linear1", {'target': 'linear2'}),
-    ("pow_1", {'target': globals()['__builtins__']['abs'], 'args': (tb.ChangeNodeTarget.copy,)}),
+    ("pow_1", {'target': globals()['__builtins__']['abs'], 'args': (tb.ChangeNode.copy,)}),
     ("sigmoid", {'target': 'linear2', 'op': 'call_module', 'name': 'linear2'}),
-    ("sigmoid", {'target': torch.split, 'op': 'call_function', 'args': (tb.ChangeNodeTarget.copy, 1), 'kwargs': {'dim': 0}, 'name': 'split'}),
-    ("mul", {'target': torch.mul, 'op': 'call_function', 'args': (tb.ChangeNodeTarget.copy, tb.ChangeNodeTarget.activation("pow_1"))})
+    ("sigmoid", {'target': torch.split, 'op': 'call_function', 'args': (tb.ChangeNode.copy, 1), 'kwargs': {'dim': 0}, 'name': 'split'}),
+    ("mul", {'target': torch.mul, 'op': 'call_function', 'args': (tb.ChangeNode.copy, tb.ChangeNode.activation("pow_1"))})
 ])
 def test_node_change_target(activation, cb_args):
     module = NodeEffectsTester()
@@ -40,8 +40,9 @@ def test_node_change_target(activation, cb_args):
     bended = tb.BendedModule(module)
     bended.trace(x=x)
 
-    cb = tb.ChangeNodeTarget(**cb_args)
+    cb = tb.ChangeNode(**cb_args)
     bended.bend(cb, activation)
+    #TODO expression evaluation from activation, like "pow_1.shape"
     out_bended = bended(x)
 
     if torch.is_tensor(out_bended):

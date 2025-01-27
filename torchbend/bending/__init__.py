@@ -8,5 +8,5 @@ from .affine import *
 from .random import *
 from .permute import Permute
 from .interpolation import InterpolateActivation
-from .node_effects import ChangeNodeTarget
+from .node_effects import ChangeNode
 from .utils import import_hacks_from_file

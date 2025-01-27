@@ -5,18 +5,18 @@ from .base import BendingCallback, BendingCallbackException
 class CopyArg():
     pass
 
-class ChangeNodeTargetTokens(enum.Enum):
+class ChangeNodeTokens(enum.Enum):
     copy = 0
 
 class ChangeNodeActivationPointer(object):
     def __init__(self, name):
         self.name = name
 
-class ChangeNodeTarget(BendingCallback):
+class ChangeNode(BendingCallback):
     activation_compatible = True 
     jit_compatible = True
     applied_to_node = True
-    copy = ChangeNodeTargetTokens.copy
+    copy = ChangeNodeTokens.copy
     __valid_kwargs__ = {'op', 'target', 'args', 'kwargs', 'name'}
     __valid_ops__ = ['call_method', 'call_module', 'call_function', 'get_attr']
 
@@ -33,6 +33,11 @@ class ChangeNodeTarget(BendingCallback):
     @staticmethod
     def activation(name):
         return ChangeNodeActivationPointer(name)
+
+    @staticmethod
+    def expression(expression):
+        #TODO evaluation expression on target nodes.
+        raise NotImplementedError
 
     def _check_input_kwargs(self, **kwargs):
         _unvalid_keys = []
@@ -80,7 +85,7 @@ class ChangeNodeTarget(BendingCallback):
             if k == "args":
                 new_args = list(v)
                 for i, v_tmp in enumerate(v):
-                    if v_tmp == ChangeNodeTargetTokens.copy:
+                    if v_tmp == ChangeNodeTokens.copy:
                         assert i < len(node.args), "tried to copy argument #%d, but got %d arguments in original node"%(i, len(node.args))
                         new_args[i] = node.args[i]
                     elif isinstance(v_tmp, ChangeNodeActivationPointer):
@@ -92,7 +97,7 @@ class ChangeNodeTarget(BendingCallback):
             elif k == "kwargs":
                 new_kwargs = dict(v)
                 for k_tmp, v_tmp in v.items():
-                    if v_tmp == ChangeNodeTargetTokens.copy:
+                    if v_tmp == ChangeNodeTokens.copy:
                         assert k in node.kwargs, "tried to copy key %s, but absent from original nodes kwargs."%k_tmp
                         new_kwargs[k_tmp] = node.kwargs[k_tmp]
                     elif isinstance(v_tmp, ChangeNodeActivationPointer):
