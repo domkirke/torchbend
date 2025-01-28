@@ -1,11 +1,12 @@
 import re, copy
+from dataclasses import dataclass
 from enum import Enum
 import inspect
 import sys
 import torch
 import functools
 from types import FunctionType
-from typing import Union, Union,  Callable, Optional, Any, Dict, List, Type
+from typing import Union, Union,  Callable, Optional, Any, Dict, List, Type, Iterable
 from torch._C import ScriptObject  # type: ignore[attr-defined]
 from torch.fx._symbolic_trace import _proxyable_classes, Tracer, _Patcher, _autowrap_check, _patch_wrapped_functions
 from torch.fx.proxy import Proxy, TraceError, TracerBase, ParameterProxy
@@ -13,7 +14,7 @@ from torch.fx.node import Argument, Node
 from torch.fx.graph import Graph, _register_custom_builtin
 
 from .. import distributions as dist, DEBUG
-from .proxy import *
+from .proxy import BendingProxy, BendingProxyInt, CodePosition, ShapeAttribute, TracingState, get_code_pos_from_frame
 from .input import Inputs
 from ..utils import checklist, checktuple
 from .utils import dist_to_tensor
@@ -118,15 +119,15 @@ class LoopFlowStep(FlowStep):
     def __repr__(self):
         return f"LoopFlowStep(name={self.obj.node.name}, file={get_code_pos_from_frame(self.frame)})"
         
-
+@dataclass
 class ActivationProperties():
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-        self.__objs = list(kwargs.keys())
-    def __repr__(self):
-        return "ActivationProperties(" + ", ".join([(k, getattr(self, k)) for k in self.__objs]) + ")"
-
+    name: int
+    op: str
+    fn: str = "forward"
+    shape: Optional[Iterable[int]] = None
+    target: Optional[Any] = None
+    type: Optional[Any] = None
+    code: Optional[CodePosition] = None
 
 class TracingContext():
     
@@ -528,8 +529,8 @@ class BendingTracer(torch.fx.Tracer):
 
         self._values[node.name] = out
         shape = self._get_shape(out)
-        self._activations[node.name] = ActivationProperties(op=node.op, shape=shape, target=node.target, type=node.type)
         proxy = proxy_type(node, self, value=out, type_expr=type_expr)
+        self._activations[node.name] = ActivationProperties(op=node.op, shape=shape, target=node.target, type=node.type, name=node.name, code=proxy._code_pos, fn=self.traced_func_name)
         return proxy
 
     def dynamic_shape_proxy(self, node: Node) -> 'ShapeAttribute':
@@ -542,8 +543,8 @@ class BendingTracer(torch.fx.Tracer):
 
         self._values[node.name] = out
         shape = self._get_shape(out)
-        self._activations[node.name] = ActivationProperties(op=node.op, shape=shape)
         proxy = ShapeAttribute(node, self, value=out)
+        self._activations[node.name] = ActivationProperties(name=node.name, op=node.op, shape=shape, code=proxy._code_pos, fn=self.traced_func_name)
         return proxy
 
     def getattr(self, attr: str, attr_val: Any, parameter_proxy_cache: Dict[str, Any]):

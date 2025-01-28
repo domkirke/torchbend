@@ -104,10 +104,10 @@ def test_graph(module_config):
             for i, o in enumerate(out_bended):
                 is_equal = tb.compare_outs(out[i], o)
                 assert bool(is_equal), "outputs are not equal for method %s ; got %s"%(method, is_equal)
-            for act in bended_module.activation_names(method):
+            for act in bended_module.activation_names(fn=method):
                 shape = bended_module.activation_shape(act, fn=method)
             log_to_file(f, "graph", graph)
-            log_to_file(f, "activations", bended_module.print_activations(method))
+            log_to_file(f, "activations", bended_module.print_activations(fn=method))
 
 
 @pytest.mark.parametrize("module_config", modules_to_test)
@@ -235,7 +235,7 @@ def test_activation_bending(module_config):
     for method in module_config.get_methods():
         args, kwargs, _, bended_activations = module_config.get_method_args(method)
         bended_module.trace(method, *args, **kwargs)
-        bended_module.print_activations(method)
+        bended_module.print_activations(fn=method)
 
         for t in bended_activations:
             bended_module.bend(zero_callback, t, fn=method, verbose=True)

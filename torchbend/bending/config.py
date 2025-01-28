@@ -87,9 +87,9 @@ class BendingConfig(object):
         c, *w = bending
         resolved_keys = []
         if bend_param:
-            resolved_keys.extend(sum([self.module.resolve_parameters(w_tmp) for w_tmp in w], []))
+            resolved_keys.extend(sum([list(self.module.weights(w_tmp).keys()) for w_tmp in w], []))
         if bend_graph:
-            resolved_keys.extend(sum([self.module.resolve_activations(w_tmp, fn=fn, _with_fn=True) for w_tmp in w], []))
+            resolved_keys.extend(sum([list(self.module.activations(w_tmp, fn=fn, _with_fn=True).keys()) for w_tmp in w], []))
         for r_w in resolved_keys:
             if r_w not in self._weight_hash: self._weight_hash[r_w] = []
             self._weight_hash[r_w].append(c)

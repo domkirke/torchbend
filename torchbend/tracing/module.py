@@ -1,4 +1,5 @@
 from tabulate import tabulate
+from collections import OrderedDict
 from itertools import product
 from types import MethodType
 from io import TextIOWrapper
@@ -16,11 +17,11 @@ from .. import get_output, TorchbendOutput
 from . import interp
 from .input import Inputs
 from .graphmodule import BendedGraphModule
-from .tracing import BendingTracer
+from .tracing import BendingTracer, ActivationProperties
 from .utils import BendingError, get_model_copy, _get_weight_properties
 from .graph import graph_insert_callbacks, graph_get_activations, graph_from_activations, graph_transform_nodes
 from .utils import _import_to_interface, make_graph_jit_compatible, clone_parameters, _bending_config_from_dicts, display_table_for_jupyter, get_kwargs_from_gm
-from ..utils import checklist, get_parameter, print_tensor_ids
+from ..utils import checklist, checktuple, get_parameter, print_tensor_ids
 from ..bending import BendingCallback, CallbackChain, is_bending_callback, BendingConfig
 
 
@@ -215,7 +216,7 @@ class BendedModule(object):
             attr = getattr(self._module, attr_name)
             if isinstance(attr, types.MethodType):
                 _is_bended = (attr.__name__ in self._wrapped_methods) or (attr.__name__ in getattr(type(self._module), "__bended_methods__", []))
-                self._register_forward_call(attr_name, _with_bended=_is_bended)
+                self._register_forward_call(attr_name, with_bended=_is_bended)
                 return super(BendedModule, self).__getattribute__(attr_name)
             else:
                 return attr
@@ -243,19 +244,21 @@ class BendedModule(object):
                 obj._param_dict[k][kk] = vv.to(*args, **kwargs)
         return obj
 
-    # -- parameters & weights --
-    def resolve_parameters(self, *weights):
-        """get valid weight names from a regexp"""
-        valid_weights = []
-        for weight in self.weight_names:
-            current_weight = []
-            for w in weights:
-                if re.match(w, weight) is not None:
-                    current_weight.append(weight)
-            if len(current_weight) > 0:
-                valid_weights.extend(current_weight)
-        return valid_weights
 
+    # -- parameters & weights --
+    def weights(self, *flt, exclude=None):
+        """get valid weight names from a regexp"""
+        parameters = OrderedDict(self.named_parameters())
+        valid_parameters = {}
+        if len(flt) > 0:
+            for f in flt:
+                valid_parameters.update(dict(filter(lambda x, r=f: re.match(r, x[0]) is not None, parameters.items())))
+        else:
+            valid_parameters = parameters
+        if exclude is not None:
+            for e in checklist(exclude):
+                valid_parameters = dict(filter(lambda x, r=e: re.match(r, x[0]) is None, valid_parameters.items())) 
+        return valid_parameters
 
     @property
     @_import_to_interface
@@ -270,15 +273,9 @@ class BendedModule(object):
         return self._module.state_dict()[param].shape
 
     @_import_to_interface
-    def print_weights(self, flt=r".*", exclude=None, out=None) -> str:
+    def print_weights(self, *flt, exclude=None, out=None) -> str:
         """print / export weights"""
-        parameters = dict(self.named_parameters())
-        if flt is not None:
-            for f in checklist(flt):
-                parameters = dict(filter(lambda x, r=f: re.match(r, x[0]) is not None, parameters.items()))
-        if exclude is not None:
-            for e in checklist(exclude):
-                parameters = dict(filter(lambda x, r=e: re.match(r, x[0]) is None, parameters.items())) 
+        parameters = self.weights(*flt, exclude=exclude)
         pretty_weights = list(map(_get_weight_properties, parameters.items()))
         pretty_weights_txt = tabulate(pretty_weights, headers=['name', 'shape', 'dtype', 'min', 'max', 'mean', 'stddev'])
         if out is None:
@@ -295,6 +292,7 @@ class BendedModule(object):
                 f.write(pretty_weights_txt)
         return pretty_weights_txt
 
+    # -- overrides from nn.Module -- 
     @_import_to_interface
     def parameters(self):
         """return model parameters"""
@@ -315,51 +313,91 @@ class BendedModule(object):
             return self._param_dict[version]
 
     # -- activations --
-    def resolve_activations(self, *activations, fn="forward", _with_fn=False, _with_bended=True, _raise_notfound=False):
-        """get valid activation names from a regexp"""
-        valid_acts = {}
-        if isinstance(fn, list): 
-            return sum([self.resolve_activations(*activations, fn=f, _with_fn=_with_fn, _with_bended=_with_bended, _raise_notfound=_raise_notfound) for f in fn], [])
-        if fn not in self._graphs: return []
-        for act in self.activation_names(fn, _with_bended=_with_bended):
-            for a in activations:
-                if ":" in a: 
-                    fn_a, a = a.split(':')
-                    if (fn_a != fn): continue
-                if re.match(a, act) is not None:
-                    if a not in valid_acts: valid_acts[a] = []
-                    valid_acts[a].append(act)
-        if _raise_notfound:
-            for a in activations:
-                if a not in valid_acts: raise BendingError('request %s could not be found in graph for function %s'%(a, fn))
-        valid_acts = list(set(sum(list(valid_acts.values()), [])))
-        if _with_fn: valid_acts = [f"{fn}:{v}" for v in valid_acts]
-        return valid_acts
 
     @_import_to_interface
-    def activations(self, fn="forward", op=None, flt=None, exclude=None):
-        activations = self._activations[fn] 
-        if op is not None:
-            op = checklist(op)
-            activations = dict(filter(lambda obj: obj[1].op in op, activations.items()))
-        if flt is not None:
-            for f in checklist(flt):
-                activations = dict(filter(lambda x, r=f: re.match(r, x[0]) is not None, activations.items())) 
-        if exclude is not None:
-            for e in checklist(exclude):
-                activations = dict(filter(lambda x, r=e: re.match(r, x[0]) is None, activations.items())) 
+    def all_activations(self, with_bended: bool = True):
+        activations = {}
+        for n, v in self._activations.items():
+            activations.update({f"{n}:{k}": v_tp for k, v_tp in v.items()})
+        if with_bended:
+            for n, v in self._bended_activations.items():
+                activations.update({f"{n}:{k}_bended": ActivationProperties(name=k+"_bended", op="bended", fn=n) for k, v_tp in v.items()})
         return activations
 
     @_import_to_interface
-    def activation_names(self, fn="forward", _with_bended=True):
-        names = list(self._activations[fn].keys()) 
-        if _with_bended:
-            names += list(map(lambda x: f"{x}_bended", self._bended_activations[fn].keys()))
+    def activations(self, *flt, fn="forward", op=None, exclude=None, with_bended: bool = True, _with_fn: bool = False, _raise_notfound: bool = False):
+        if exclude is not None: 
+            exclude = checklist(exclude)
+        if isinstance(fn, (tuple, list)) or fn is None:
+            if not _with_fn: raise BendingError("_with_fn keyword should be set to True when multiple functions are given to activations().")
+        
+        # add callback to regexp if needed
+        if fn is None:
+            if len(self._activations) == 0: return {}
+            fn = list(self._activations.keys())
+        fn = checklist(fn)
+        flt = list(flt)
+        for i, f in enumerate(flt):
+            if ":" not in f: flt[i] = f"({'|'.join(fn)}):{f}"
+        if exclude:
+            for i, e in enumerate(exclude):
+                if ":" not in f: flt[i] = f"({'|'.join(exclude)}):{e}"
+
+        activations = self.all_activations(with_bended=with_bended)
+        if op is not None:
+            op = checklist(op)
+            activations = dict(filter(lambda obj: obj[1].op in op, activations.items()))
+
+        valid_activations = {}
+        if len(flt) > 0:
+            for f in checklist(flt):
+                valid_activations.update(dict(filter(lambda x, r=f: re.match(r, x[0]) is not None, activations.items())))
+        else:
+            valid_activations = activations
+        if exclude is not None:
+            for e in checklist(exclude):
+                valid_activations = dict(filter(lambda x, r=e: re.match(r, x[0]) is None, valid_activations.items())) 
+                
+        if len(valid_activations) == 0 and _raise_notfound:
+            raise BendingError(f"No corresponding key have been found for flt={flt}, fn={fn}, op={op}, exclude={exclude}")
+
+        if not _with_fn:
+            valid_activations = {k.split(':')[1]: v for k, v in valid_activations.items()}
+        return valid_activations
+
+    @_import_to_interface
+    def activation_names(self, **kwargs):
+        names = list(self.activations(**kwargs).keys()) 
         return names
+
+    # def resolve_activations(self, *activations, fn="forward", exclude=None, _with_fn=False, with_bended=True, _raise_notfound=False):
+    #     """get valid activation names from a regexp"""
+    #     valid_acts = OrderedDict()
+    #     if isinstance(fn, list): 
+    #         assert _with_fn, "resolving activations for several callbacks needs the _with_fn keyword to be True to avoid name conflicts."
+    #         return sum([self.resolve_activations(*activations, fn=f, _with_fn=_with_fn, with_bended=with_bended, _raise_notfound=_raise_notfound) for f in fn], [])
+    #     if fn not in self._graphs: raise BendingError("function %s not traced yet, or not present in module. Please trace before resolving activations"%fn)
+    #     for act in self.activation_names(fn, with_bended=with_bended):
+    #         for a in activations:
+    #             if ":" in a: 
+    #                 fn_a, a = a.split(':')
+    #                 if (fn_a != fn): continue
+    #             if re.match(a, act) is not None:
+    #                 if a not in valid_acts: valid_acts[a] = []
+    #                 valid_acts[a].append(act)
+    #     if _raise_notfound:
+    #         for a in activations:
+    #             if a not in valid_acts: raise BendingError('request %s could not be found in graph for function %s'%(a, fn))
+    #     valid_acts = list(set(sum(list(valid_acts.values()), [])))
+    #     if _with_fn: valid_acts = [f"{fn}:{v}" for v in valid_acts]
+    #     return valid_acts
 
     @_import_to_interface
     def activation_shape(self, param, fn="forward"):
-        return self.activations(fn)[param].shape
+        if ":" in param:
+            fn, param = param.split(":")
+        if fn not in self._activations: raise BendingError("function %s does not exist or not traced yet"%(fn))
+        return self._activations[fn][param].shape
 
     @_import_to_interface
     def print_graph(self, fn="forward", op=None, flt=r".*", exclude=None, out=None) -> str:
@@ -392,8 +430,8 @@ class BendedModule(object):
         return graph_txt
 
     @_import_to_interface
-    def print_activations(self, fn="forward", op=None, flt=None, exclude=None, out=None) -> str:
-        activations = self.activations(fn, op=op, flt=flt, exclude=exclude)
+    def print_activations(self, *flt, fn="forward", op=None, exclude=None, out=None) -> str:
+        activations = self.activations(*flt, fn=fn, op=op, exclude=exclude)
         act_parsed = list(map(_get_activations_properties, activations.items()))
         
         act_txt = tabulate(act_parsed)
@@ -415,8 +453,8 @@ class BendedModule(object):
     def is_traced(self, fn):
         return fn in self._graphs
 
-    def _register_forward_call(self, func, _with_bended=False):
-        setattr(self, func, types.MethodType(_get_wrapped_module_forward_call(func, _with_bended), self))
+    def _register_forward_call(self, func, with_bended=False):
+        setattr(self, func, types.MethodType(_get_wrapped_module_forward_call(func, with_bended), self))
 
     def trace(self, fn="forward", *args, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
         """Updates inner graph with the target method and inputs"""
@@ -482,12 +520,12 @@ class BendedModule(object):
         return self._interp_func(self, dicts)
     
     @_import_to_interface
-    def bendable_keys(self, *request, fn="forward", return_weights=True, return_activations=True):
+    def bendable_keys(self, *flt, exclude=None, fn="forward", return_weights=True, return_activations=True):
         keys = []
         if return_weights:
-            keys = self.resolve_parameters(*request)
+            keys = self.weights(*flt, exclude=exclude)
         if self.is_traced(fn) and return_activations:
-            keys = keys + self.resolve_activations(*request, fn=fn)
+            keys = keys + self.activations(*flt, fn=fn, exclude=exclude)
         return keys
 
     @_import_to_interface
@@ -552,7 +590,7 @@ class BendedModule(object):
             try: 
                 callback.register_activation(f"{fn}:{parameter}", shape=self.activation_shape(parameter, fn=fn))
             except Exception as e:
-                print('Cannot bend activation %s with callback %s.\nException : %s\n Proceeding'%(parameter, callback, e))
+                raise BendingError('Cannot bend activation %s with callback %s.\nException : %s\n Proceeding'%(parameter, callback, e))
         
     @_import_to_interface
     def bend_module(self, fn="forward", version=None):
@@ -575,7 +613,7 @@ class BendedModule(object):
     def bend_graph(self, fn="forward"):
         callbacks = {k: CallbackChain(*v) for k, v in self._bended_activations[fn].items()}
         graph = graph_transform_nodes(self._graphs[fn], callbacks)
-        # graph = graph_insert_callbacks(graph, callbacks, _fn_name=fn)
+        graph = graph_insert_callbacks(graph, callbacks, _fn_name=fn)
         return graph
 
     @_import_to_interface
@@ -591,7 +629,7 @@ class BendedModule(object):
     def _bend(self, *args, fn=None, verbose=False, bend_param=True, bend_graph=True):
 
         callback, *params = args
-        target_params = [] if not bend_param else self.resolve_parameters(*params)
+        target_params = [] if not bend_param else list(self.weights(*params).keys())
 
         # get default target functions
         assert is_bending_callback(callback), "callback must be a BendingCallback instance"
@@ -611,8 +649,7 @@ class BendedModule(object):
                 else:
                     act_fn = fn
                 for f in act_fn: 
-                    target_activations.extend(self.resolve_activations(p, fn=f, _with_fn=True, _with_bended=False))
-
+                    target_activations.extend(self.activations(p, fn=f, _with_fn=True, with_bended=False))
 
         # bend weights
         if len(target_params) + len(target_activations) == 0:
@@ -755,7 +792,7 @@ class BendedModule(object):
         module = self.bend_module(fn=fn)
         graph = self.bend_graph(fn=fn)
 
-        activations = self.resolve_activations(*activations, _raise_notfound=True, fn=fn, _with_bended = not _filter_bended)
+        activations = self.activations(*activations, _raise_notfound=True, fn=fn, with_bended = not _filter_bended)
         # if bended:
         #     activations = self._get_bended_activations(activations, fn=fn)
         new_graph = graph_get_activations(graph, activations)
