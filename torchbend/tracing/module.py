@@ -18,7 +18,7 @@ from .input import Inputs
 from .graphmodule import BendedGraphModule
 from .tracing import BendingTracer
 from .utils import BendingError, get_model_copy, _get_weight_properties
-from .graph import graph_insert_callbacks, graph_get_activations, graph_from_activations
+from .graph import graph_insert_callbacks, graph_get_activations, graph_from_activations, graph_transform_nodes
 from .utils import _import_to_interface, make_graph_jit_compatible, clone_parameters, _bending_config_from_dicts, display_table_for_jupyter, get_kwargs_from_gm
 from ..utils import checklist, get_parameter, print_tensor_ids
 from ..bending import BendingCallback, CallbackChain, is_bending_callback, BendingConfig
@@ -573,7 +573,10 @@ class BendedModule(object):
 
     @_import_to_interface
     def bend_graph(self, fn="forward"):
-        return graph_insert_callbacks(self._graphs[fn], {k: CallbackChain(*v) for k, v in self._bended_activations[fn].items()}, _fn_name=fn)
+        callbacks = {k: CallbackChain(*v) for k, v in self._bended_activations[fn].items()}
+        graph = graph_transform_nodes(self._graphs[fn], callbacks)
+        # graph = graph_insert_callbacks(graph, callbacks, _fn_name=fn)
+        return graph
 
     @_import_to_interface
     def graph_module(self, fn="forward", module=None, make_jit_compatible: bool = False):

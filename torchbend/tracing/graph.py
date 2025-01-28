@@ -6,11 +6,33 @@ from torch.fx import Graph
 from typing import List, Dict, Any, Optional
 from .tracing import TraceError
 
+
+def graph_transform_nodes(graph, callbacks, verbose=False):
+    new_graph = torch.fx.Graph()
+    env = {}
+    # then insert
+    for node in graph.nodes:
+        # check arguments to replace by bended node in case
+        new_node = new_graph.node_copy(node, lambda x: env[x.name])
+        env[node.name] = new_node
+        if node.name in callbacks and callbacks[node.name].applied_to_node:
+            if verbose:
+                print('bending activation %s with function %s...'%(node.name, callbacks[node.name]))
+            with new_graph.inserting_before(new_node):
+                callbacks[node.name].apply_to_node(new_node)
+    try:
+        new_graph.lint()
+    except RuntimeError as e:
+        raise TraceError("Lint failed after node transformation. Caught error : %s"%(e))
+    return new_graph
+
+
 def graph_insert_callbacks(graph, callbacks, verbose=False, _fn_name="forward"):
     """inserts bending operation into a graph"""
     new_graph = torch.fx.Graph()
     env = {}
     bended_lookup = {}
+    # then insert
     for node in graph.nodes:
         new_node = new_graph.node_copy(node, lambda x: env[x.name])
         # check arguments to replace by bended node in case
@@ -24,8 +46,6 @@ def graph_insert_callbacks(graph, callbacks, verbose=False, _fn_name="forward"):
         if node.name in callbacks:
             if verbose:
                 print('bending activation %s with function %s...'%(node.name, callbacks[node.name]))
-            if callbacks[node.name].applied_to_node:
-               callbacks[node.name].apply_to_node(env[node.name])
             if callbacks[node.name].needs_insertion:
                 bended_node_name = node.name+"_bended"
                 hack_obj_name = node.name + "_callback"

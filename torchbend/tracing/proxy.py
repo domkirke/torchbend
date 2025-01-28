@@ -5,6 +5,9 @@ from torch.fx.proxy import Attribute, Proxy, TraceError
 from enum import Enum
 from torch.fx.node import Argument, Node
 
+class BendingProxyException(Exception):
+    pass
+
 
 
 class CodePosition():
