@@ -24,8 +24,9 @@ def test_piping(test_modules, callbacks, is_equal):
         out_orig = getattr(module, m)(*args, **kwargs)
 
         pipe = callbacks[0] >> callbacks[1]
-        # bended.bend(pipe, *act_targets, *weight_targets)
-        bended.bend(pipe, bended.bendable_keys(weight_targets[0])[1])
+        
+        bending_targets = bended.bendable_keys(*weight_targets, *act_targets).keys()
+        bended.bend(pipe, *bending_targets)
         out_bended = getattr(bended, m)(*args, **kwargs)
 
         assert bool(tb.compare_outs(out_orig, out_bended, allow_almost_equal=True)) == is_equal

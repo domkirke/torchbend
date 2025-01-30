@@ -359,6 +359,10 @@ class CallbackChain(nn.Module):
         return needs_insertion
 
     @property
+    def controllables(self):
+        return self._controllables
+
+    @property
     def controllable_params(self) -> List[str]:
         return self._controllable_params
 

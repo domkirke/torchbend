@@ -525,7 +525,11 @@ class BendedModule(object):
         if return_weights:
             keys = self.weights(*flt, exclude=exclude)
         if self.is_traced(fn) and return_activations:
-            keys = keys + self.activations(*flt, fn=fn, exclude=exclude)
+            acts = self.activations(*flt, fn=fn, exclude=exclude)
+            common_keys = set(keys.keys()).intersection(set(acts.keys()))
+            if len(common_keys):
+                raise BendingError('found common keys between activations and weights : %s. Please specify better your request'%(common_keys))
+            keys.update(acts) 
         return keys
 
     @_import_to_interface
