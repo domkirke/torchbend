@@ -5,10 +5,13 @@ from .tracing import *
 from .module import *
 from .interp import * 
 
-from .script import *
+from .nntilde import *
 def script_method(self, script=True, export_for_nn: bool = False, **kwargs):
-    mod = self if not hasattr(self, "get_scriptable") else self.get_scriptable(**kwargs)
-    mod = ScriptedBendedModule(self, for_nntilde=export_for_nn)
+    # mod = self if not hasattr(self, "get_scriptable") else self.get_scriptable(**kwargs)
+    if export_for_nn:
+        mod = NNBendedModule(self)
+    else:
+        mod = ScriptedBendedModule(self)
     # for m in checklist(methods):
     #     setattr(mod, m, torch.jit.export(getattr(mod, m)))
     if script: 
@@ -18,5 +21,4 @@ def script_method(self, script=True, export_for_nn: bool = False, **kwargs):
 BendedModule.script = script_method
 
 from .wrapper import *
-# from .nntilde import BendableNNTildeModule
 

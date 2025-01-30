@@ -24,6 +24,7 @@ def get_scriptable_methods(module):
 
 @pytest.mark.parametrize("module_config", scriptable_modules_to_test)
 def test_scripting(module_config):
+    """test if module (without bending) is scripted"""
     module = module_config.get_module()
     scriptable = module.script()
     scripted = torch.jit.script(scriptable)
@@ -35,14 +36,15 @@ def test_scripting(module_config):
 
 
 @pytest.mark.parametrize("module_config", scriptable_modules_to_test)
-def test_automatic_scripting(module_config):
+def test_bendable_scripting(module_config):
+    """test if bended modules can be scripted"""
     module, bended = module_config.get_modules()
     # trace scriptable methods
     for method in get_scriptable_methods(module):
         args, kwargs, _, _ = module_config.get_method_args(method)
         bended.trace(fn=method, *args, **kwargs)
     # script module
-    scripted = bended.script()
+    scripted = bended.script(export_for_nn = False)
     # compare outs
     for method in get_scriptable_methods(module):
         out_orig = getattr(module, method)(*args, **kwargs)

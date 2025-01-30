@@ -101,10 +101,12 @@ class BendingCallback(nn.Module):
     applied_to_node = False
     jit_compatible = False
     nntilde_compatible = False
+    compatibility_attributes_keys = ['weight', 'activation', 'jit', 'nntilde']
     controllable_params = {}
 
     def __init__(self, seed=None):
         super().__init__()
+        self._init_compatibility_attributes()
         # controllables points to the dynamic controls used. 
         self._controllables = nn.ModuleDict()
         # targets and shapes are used for weight activation ; copies internally 
@@ -119,6 +121,12 @@ class BendingCallback(nn.Module):
 
         # stochasticity management
         self._seed = seed
+
+    def _init_compatibility_attributes(self):
+        for attr in self.compatibility_attributes_keys:
+            attr_name = f"{attr}_compatible"
+            setattr(self, attr_name, getattr(type(self), attr_name, False))
+        setattr(self, "applied_to_node", getattr(type(self), "applied_to_node", False))
 
     def __contains__(self, i: BendingParameter):
         """checks if a parameter is used by the callback instance"""
@@ -338,14 +346,17 @@ class CallbackChain(nn.Module):
         return additional_args
 
     def _init_compatibility_attributes(self):
-        for attr in ['weight', 'activation', 'jit', 'nntilde']:
+        for attr in BendingCallback.compatibility_attributes_keys:
             res = reduce(lambda x, y : x and y, [getattr(c, f"{attr}_compatible") for c in self.callbacks], True)
             setattr(self, f"{attr}_compatible", torch.jit.Attribute(res, bool))
         self.applied_to_node = True in [c.applied_to_node for c in self.callbacks]
 
     @property
     def needs_insertion(self) -> bool:
-        return True in [c.needs_insertion for c in self.callbacks]
+        needs_insertion = False
+        for c in self.callbacks:
+            needs_insertion = needs_insertion or c.needs_insertion
+        return needs_insertion
 
     @property
     def controllable_params(self) -> List[str]:

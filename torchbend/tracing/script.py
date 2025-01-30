@@ -47,22 +47,26 @@ def _template_from_param(param: BendingParameter, **kwargs):
         kwargs['type_expr'] = kwargs.get('type_expr', "int")
         return _resolve_code(attribute_template, **kwargs)
 
-class ScriptedBendedModule(nn_tilde.Module):
+class ScriptedBendedModule(nn.Module):
 
-    def __init__(self, model, for_nntilde: bool = False):
-        nn.Module.__init__(self)
+    def __init__(self, model):
+        """
+        NNBendedModule is a extension of the nntile.Module that allows : 
+        - automatic scripting / graphing of traced methods
+        - automatic parsing of BendingParameters, and making attribute callbacks
+        - automatic import of BendingCallbacks and corresponding parameters / attributes. 
+
+        To allow dynamic registering of attributes with jit, temporary files are created to export the code in TorchScript.
+        """
+        super().__init__()
         self._methods = ListAttribute([], List[str])
         self._attributes = ListAttribute([], List[str])
-        self._nntilde = for_nntilde
 
         if not hasattr(self, "scripted_methods"):
             setattr(self, "scripted_methods", list(model._graphs.keys()))
         self._import_model(model)
         self._import_bending(model) 
-        if for_nntilde:
-            if getattr(getattr(self, "_register_methods"), "__isabstractmethod__", False):
-                raise ScriptedBendedException('_register_methods is not defined for class %s'%type(self))
-            self._register_methods(model)
+            
 
     def _set_attribute_callbacks(self, param: BendingParameter) -> Dict[str, Callable]:
         codes = _template_from_param(param, cls_self=type(self).__name__)
@@ -102,17 +106,19 @@ class ScriptedBendedModule(nn_tilde.Module):
                     param_dict[k] = v
         return param_dict
 
+    def _register_controllable(self, controllable, controllables_hash):
+        for i, b in enumerate(self._bending_callbacks):
+            if controllable in b:
+                controllables_hash.value[controllable.name] = controllables_hash.value.get(controllable.name, []) + [i]
+        self._set_attribute_callbacks(controllable)
+
     def _import_bending_ops(self, model):
         self._controllables = nn.ModuleList(model.controllables.values())
         self._bending_callbacks = nn.ModuleList([m.script() for m in model._bending_callbacks])
-        self._controllables_hash = torch.jit.Attribute({}, Dict[str, List[int]])
+        _controllables_hash = torch.jit.Attribute({}, Dict[str, List[int]])
         for v in self._controllables:
-            for i, b in enumerate(self._bending_callbacks):
-                if v in b:
-                    self._controllables_hash.value[v.name] = self._controllables_hash.value.get(v.name, []) + [i]
-            self._set_attribute_callbacks(v)
-            if self._nntilde:
-                self.register_attribute(v.name, v.get_python_value())
+            self._register_controllable(v, _controllables_hash)
+        self._controllables_hash = _controllables_hash
                 
     def _update_bended_weights(self, model):
         param_dict = self._full_param_dict()
