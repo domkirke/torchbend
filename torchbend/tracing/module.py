@@ -349,11 +349,9 @@ class BendedModule(object):
             activations = dict(filter(lambda obj: obj[1].op in op, activations.items()))
 
         valid_activations = {}
-        if len(flt) > 0:
-            for f in checklist(flt):
-                valid_activations.update(dict(filter(lambda x, r=f: re.match(r, x[0]) is not None, activations.items())))
-        else:
-            valid_activations = activations
+        if len(flt) == 0: flt = [f"{f}:" for f in fn]
+        for f in checklist(flt):
+            valid_activations.update(dict(filter(lambda x, r=f: re.match(r, x[0]) is not None, activations.items())))
         if exclude is not None:
             for e in checklist(exclude):
                 valid_activations = dict(filter(lambda x, r=e: re.match(r, x[0]) is None, valid_activations.items())) 
@@ -796,14 +794,17 @@ class BendedModule(object):
         module = self.bend_module(fn=fn)
         graph = self.bend_graph(fn=fn)
 
-        activations = self.activations(*activations, _raise_notfound=True, fn=fn, with_bended = not _filter_bended)
+        activations = list(self.activations(*activations, _raise_notfound=True, fn=fn, with_bended = not _filter_bended).keys())
         # if bended:
         #     activations = self._get_bended_activations(activations, fn=fn)
         new_graph = graph_get_activations(graph, activations)
 
         # forward
         gm = BendedGraphModule(module, new_graph)
-        outs = gm(**inputs)
+        try:
+            outs = gm(**inputs)
+        except Exception as e:
+            raise BendingError('Error by forwarding graph module. Caught error: \n %s')
         if _save_as_method: 
             self._register_method_from_graph(new_graph, fn, _save_as_method)
         if _return_graph:
@@ -829,6 +830,7 @@ class BendedModule(object):
                 activations = _get_bended_activation_from_callaback(self._bended_activations[fn], callback)
                 assert len(activations) != 0, "given callback does not seem to be bending any activation for method %s.\nCallback : %s"%(fn, callback)
 
+        activations = list(self.activations(*activations, _raise_notfound=True, fn=fn, with_bended = False).keys())
         graph = self.bend_graph(fn=fn)
         bended_activations = list(filter(lambda a: a in self._bended_activations[fn], activations))
         callbacks = {a: CallbackChain(*self._bended_activations[fn][a]) for a in bended_activations}

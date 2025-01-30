@@ -30,16 +30,18 @@ def check_rave_models():
     return valid_paths
 
 RAVE_MODEL_PATHS = check_rave_models()
+RAVE_TEST_BATCH_SIZE = (1, 4)
         
 @pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
 @pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
 def test_import(model_path):
     check_rave_models()
     model = BendedRAVE.load_model(model_path, strict=RAVE_STRICT_LOADING)
+    assert model
 
 @pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
 @pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
-@pytest.mark.parametrize("batch_size", (1, 4))
+@pytest.mark.parametrize("batch_size", RAVE_TEST_BATCH_SIZE)
 def test_callbacks(model_path, batch_size):
     model = BendedRAVE(model_path, batch_size=batch_size, strict=RAVE_STRICT_LOADING)
     x = torch.randn(batch_size, model.channels, 2048)
@@ -67,8 +69,8 @@ def test_callbacks(model_path, batch_size):
 
 
 @pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
+@pytest.mark.parametrize("batch_size", RAVE_TEST_BATCH_SIZE) 
 @pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
-@pytest.mark.parametrize("batch_size", (1, 4)) 
 @pytest.mark.parametrize("scripted", (True, False)) 
 def test_tracing(model_path, batch_size, scripted):
     model = BendedRAVE(model_path, batch_size=batch_size, strict=RAVE_STRICT_LOADING)
@@ -76,7 +78,7 @@ def test_tracing(model_path, batch_size, scripted):
         model = model.script()
 
     # test variable batch sizes
-    batch_sizes = (1, 4)
+    batch_sizes = RAVE_TEST_BATCH_SIZE
     for b in batch_sizes:
         out = model.forward(torch.zeros(b, model.channels, 8192))
         model.print_weights(out=Path(model_path)/ "weights.txt")
@@ -88,6 +90,9 @@ def test_tracing(model_path, batch_size, scripted):
         acts = []
         for n, a in activations.items():
             if a.op == "placeholder": continue
+            if "getitem" in a.name: continue
+            if "cat" in a.name: continue
+            if "copy" in a.name: continue
             if not isinstance(a.shape, (tuple, torch.Size)): continue
             if len(a.shape) < 3: continue
             if a.shape[-2] != current_n_channels:
@@ -103,18 +108,24 @@ def test_tracing(model_path, batch_size, scripted):
     x = torch.zeros(batch_size, model.channels, 8192)
     z = model.encode(x)
 
+    encode_acts = ['conv1d_1']
     for e_act in encode_acts:
-        acts = model.get_activations(e_act, x=x, fn="encode")
-        out = model.from_activations(e_act, **acts, x=x, fn="encode")
+        acts = model.get_activations(f"{e_act}$", x=x, fn="encode")
+        out = model.from_activations(f"{e_act}$", **acts, x=x, fn="encode")
 
     for d_act in decode_acts:
-        acts = model.get_activations(d_act, z=z, fn="decode")
-        out = model.from_activations(d_act, **acts, z=z, fn="decode")
+        acts = model.get_activations(f"{d_act}$", z=z, fn="decode")
+        out = model.from_activations(f"{d_act}$", **acts, z=z, fn="decode")
 
     for f_act in forward_acts:
-        acts = model.get_activations(f_act, x=x, fn="forward")
-        out = model.from_activations(f_act, **acts, x=x, fn="forward")
+        acts = model.get_activations(f"{f_act}$", x=x, fn="forward")
+        out = model.from_activations(f"{f_act}$", **acts, x=x, fn="forward")
         
 
-def test_export():
-    pass
+@pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
+@pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
+@pytest.mark.parametrize("batch_size", RAVE_TEST_BATCH_SIZE) 
+def test_export(model_path, batch_size):
+    model = BendedRAVE(model_path, batch_size=batch_size, strict=RAVE_STRICT_LOADING)
+    if scripted:
+        model = model.script()

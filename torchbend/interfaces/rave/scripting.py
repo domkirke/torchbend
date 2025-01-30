@@ -280,6 +280,7 @@ class ScriptedRAVE(nn_tilde.Module):
             x = self.resampler.to_model_sampling_rate(x)
 
         batch_size = x.shape[:-2]
+
         if self.input_mode == "pqmf":
             x = x.reshape(-1, 1, x.shape[-1])
             x = self.pqmf(x)

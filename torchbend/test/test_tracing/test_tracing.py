@@ -22,6 +22,7 @@ def test_dynamic_shape(module, method):
     with open(get_log_file(), 'w+') as f:
         log_to_file(f, "out", out)
         log_to_file(f, "graph", graph)
+    gm = module.graph_module(fn=method)(**getattr(module, f'{method}_inputs'))
     return True
 
 @pytest.mark.parametrize("module,method", ttm.LogicalFlowFoo.tests())
@@ -35,6 +36,7 @@ def test_logical_flow(module, method):
             log_to_file(f, "out", out)
             log_to_file(f, "graph", graph)
             log_to_file(f, "flow", graph.flow_steps)
+            gm = module.graph_module(fn=method)(**inp)
     return True
 
 

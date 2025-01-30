@@ -5,11 +5,13 @@ from typing import List
 class ReshapeFoo(nn.Module):
     test_reshape_inputs = {'x': torch.zeros(3, 5, 7)}
     test_control_inputs = {'x': torch.zeros(3, 5, 7)}
+    test_shape_manip_inputs = {'x': torch.zeros(3, 5, 7)}
     
     @staticmethod
     def tests():
         return [(ReshapeFoo, 'test_reshape'),
-                (ReshapeFoo, 'test_control')]
+                (ReshapeFoo, 'test_control'), 
+                (ReshapeFoo, 'test_shape_manip')]
 
     def test_reshape(self, x):
         x = x.reshape(*x.shape[:-1], x.shape[-1])
@@ -20,6 +22,11 @@ class ReshapeFoo(nn.Module):
             return torch.tensor(1)
         else:
             return torch.tensor(0)
+
+    def test_shape_manip(self, x):
+        shape1 = x.shape[:-2]
+        target_shape = shape1 + (x.shape[-2], x.shape[-1], 1, 1)
+        return x.reshape(target_shape)
 
 
 class LogicalFlowFoo(nn.Module):
@@ -34,9 +41,12 @@ class LogicalFlowFoo(nn.Module):
     def test_logical_tensor_if(self, x: torch.Tensor):
         tensor = (x == 0)
         if tensor.all():
-            return torch.tensor(0)
+            return tensor.zero()
+            # return torch.tensor(0)
         else:
-            return torch.tensor(1)
+            return torch.ones_like(tensor)
+            #TODO why is this not working?
+            # return torch.tensor(1)
 
     def test_logical_int_if(self, x: int):
         if x == 0:

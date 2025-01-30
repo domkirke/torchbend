@@ -57,7 +57,7 @@ def graph_insert_callbacks(graph, callbacks, verbose=False, _fn_name="forward"):
 
 def _get_new_node_args(env, node):
     if isinstance(node, (list, tuple)):
-        return [_get_new_node_args(env, n) for n in node]
+        return type(node)([_get_new_node_args(env, n) for n in node])
     elif isinstance(node, torch.fx.Node):
         return env[node.name]
     elif isinstance(node, slice):
