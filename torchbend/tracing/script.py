@@ -61,7 +61,6 @@ class ScriptedBendedModule(nn.Module):
         super().__init__()
         self._methods = ListAttribute([], List[str])
         self._attributes = ListAttribute([], List[str])
-
         if not hasattr(self, "scripted_methods"):
             setattr(self, "scripted_methods", list(model._graphs.keys()))
         self._import_model(model)

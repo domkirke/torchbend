@@ -16,7 +16,7 @@ class ScriptableRAVE(NNBendedModule):
     scripted_methods = ['encode', 'decode', 'forward']
 
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, for_nntilde=True, **kwargs)
+        super().__init__(*args, **kwargs)
 
     def _import_model(self, model):
         super()._import_model(model)

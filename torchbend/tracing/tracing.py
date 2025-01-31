@@ -530,7 +530,13 @@ class BendingTracer(torch.fx.Tracer):
         self._values[node.name] = out
         shape = self._get_shape(out)
         proxy = proxy_type(node, self, value=out, type_expr=type_expr)
-        self._activations[node.name] = ActivationProperties(op=node.op, shape=shape, target=node.target, type=node.type, name=node.name, code=proxy._code_pos, fn=self.traced_func_name)
+        self._activations[node.name] = ActivationProperties(op=node.op, 
+                                                            shape=shape, 
+                                                            target=node.target, 
+                                                            type=node.type, 
+                                                            name=node.name, 
+                                                            code=proxy._code_pos, 
+                                                            fn=self.traced_func_name)
         return proxy
 
     def dynamic_shape_proxy(self, node: Node) -> 'ShapeAttribute':

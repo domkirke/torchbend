@@ -227,5 +227,8 @@ class BendedRAVE(Interface):
         setattr(module, "nntilde", MethodType(_scripted_model_to_nntilde, module))
         return module
 
+    def nntilde(self):
+        return self.script().nntilde()
+
 
 __all__ = ['BendedRAVE', 'script_rave_model']

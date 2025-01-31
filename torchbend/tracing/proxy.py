@@ -73,12 +73,12 @@ class ShapeAttribute(Attribute):
 
     def __getitem__(self, *args):
         if isinstance(args[0], (slice, list, tuple)):
-            type_expr = list 
+            type_expr = tp.List[int] 
         else:
             type_expr = int
         # static_shape = None if self._static_shape is None else self._static_shape.__getitem__(*args)
         return self.tracer.create_proxy('call_function', getitem, (self, *args), {},
-                                        name=self.tracer.graph._target_to_str(getitem), type_expr=tp.List[int])
+                                        name=self.tracer.graph._target_to_str(getitem), type_expr=type_expr)
         #                                 proxy_factory_fn=self.tracer.dynamic_shape_proxy)
         # return ShapeAttribute(self.root, self.attr, static_shape=self._static_shape, _sub_idxs=args)
 

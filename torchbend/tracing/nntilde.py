@@ -3,8 +3,10 @@ from .script import ScriptedBendedModule, ScriptedBendedException
 
 class NNBendedModule(ScriptedBendedModule, nn_tilde.Module):
     def __init__(self, model):
+        self._methods = []
+        self._attributes = ["none"]
+
         ScriptedBendedModule.__init__(self, model)
-        nn_tilde.Module.__init__(self)
         if getattr(getattr(self, "register_methods"), "__isabstractmethod__", False):
             raise ScriptedBendedException('register_methods is not defined for class %s'%type(self))
         self.register_methods(model)

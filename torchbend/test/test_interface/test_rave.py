@@ -86,7 +86,7 @@ def test_tracing(model_path, batch_size, scripted):
             model.print_activations(fn=method, out=Path(model_path) / f"activations_{method}.txt")
 
     def locate_channel_amount_change(activations, init_channels=1):
-        current_n_channels = 1
+        current_n_channels = init_channels
         acts = []
         for n, a in activations.items():
             if a.op == "placeholder": continue
@@ -108,7 +108,6 @@ def test_tracing(model_path, batch_size, scripted):
     x = torch.zeros(batch_size, model.channels, 8192)
     z = model.encode(x)
 
-    encode_acts = ['conv1d_1']
     for e_act in encode_acts:
         acts = model.get_activations(f"{e_act}$", x=x, fn="encode")
         out = model.from_activations(f"{e_act}$", **acts, x=x, fn="encode")
@@ -127,5 +126,5 @@ def test_tracing(model_path, batch_size, scripted):
 @pytest.mark.parametrize("batch_size", RAVE_TEST_BATCH_SIZE) 
 def test_export(model_path, batch_size):
     model = BendedRAVE(model_path, batch_size=batch_size, strict=RAVE_STRICT_LOADING)
-    if scripted:
-        model = model.script()
+    model = model.nntilde()
+    scripted = torch.jit.script(model)
