@@ -1,24 +1,28 @@
+import torch
+CONTROLLABLE_TYPES = int | bool | float | torch.Tensor
+
 from .input import *
 from .proxy import *
 from .graph import *
 from .tracing import *
 from .module import *
+from .module import _import_to_interface
 from .interp import * 
-
+from .script import *
 from .nntilde import *
-def script_method(self, script=True, export_for_nn: bool = False, **kwargs):
-    # mod = self if not hasattr(self, "get_scriptable") else self.get_scriptable(**kwargs)
-    if export_for_nn:
-        mod = NNBendedModule(self)
-    else:
-        mod = ScriptedBendedModule(self)
-    # for m in checklist(methods):
-    #     setattr(mod, m, torch.jit.export(getattr(mod, m)))
-    if script: 
-        return torch.jit.script(mod)
-    else: 
-        return mod
-BendedModule.script = script_method
+
+
+def script_method(self, script=True):
+    mod = ScriptedBendedModule(self)
+    if script: mod = torch.jit.script(mod)
+    return mod
+BendedModule.script = _import_to_interface(script_method)
+
+def script_method_for_nntilde(self, script=True):
+    mod = NNBendedModule(self)
+    if script: mod = torch.jit.script(mod)
+    return mod
+BendedModule.nntilde = _import_to_interface(script_method_for_nntilde)
 
 from .wrapper import *
 

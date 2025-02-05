@@ -1,10 +1,11 @@
 import inspect
-
-from typing import List, Dict, Callable
+from abc import abstractmethod
+from typing import List, Dict, Callable, Optional
 from types import MethodType
 import torch, torch.nn as nn
 from ..bending import BendingParameter, get_param_type, BendingCallback, CallbackChain
 from .module import BendedModule
+from . import CONTROLLABLE_TYPES
 from ..utils import _resolve_code, _import_defs_from_tmpfile
 import nn_tilde
 
@@ -13,8 +14,8 @@ class ScriptedBendedException(Exception):
 
 method_template = """
 @torch.jit.export
-def {{NAME}}{{SIGNATURE}}:
-    return self._{{NAME}}{{OUTS}}
+def {{METHOD_NAME}}{{SIGNATURE}}:
+    return self._{{CALLBACK_NAME}}{{OUTS}}
 """
 
 attribute_template = """
@@ -51,7 +52,7 @@ class ScriptedBendedModule(nn.Module):
 
     def __init__(self, model):
         """
-        NNBendedModule is a extension of the nntile.Module that allows : 
+        ScriptedBendedModule is a extension of the nntile.Module that allows : 
         - automatic scripting / graphing of traced methods
         - automatic parsing of BendingParameters, and making attribute callbacks
         - automatic import of BendingCallbacks and corresponding parameters / attributes. 
@@ -59,57 +60,55 @@ class ScriptedBendedModule(nn.Module):
         To allow dynamic registering of attributes with jit, temporary files are created to export the code in TorchScript.
         """
         super().__init__()
-        self._methods = ListAttribute([], List[str])
-        self._attributes = ListAttribute([], List[str])
+        assert isinstance(model, BendedModule), "ScriptedBendedModule must be initialized with a BendedModule"
+        self._original_class = type(model).__name__
+        # self._methods = ListAttribute([], List[str])
+        # self._attributes = ListAttribute([], List[str])
         if not hasattr(self, "scripted_methods"):
             setattr(self, "scripted_methods", list(model._graphs.keys()))
         self._import_model(model)
         self._import_bending(model) 
-            
 
-    def _set_attribute_callbacks(self, param: BendingParameter) -> Dict[str, Callable]:
-        codes = _template_from_param(param, cls_self=type(self).__name__)
-        funcs = _import_defs_from_tmpfile(codes, gl=globals(), lo=locals())
-        setattr(self, "set_"+param.name, MethodType(funcs["set_"+param.name], self))
-        setattr(self, "get_"+param.name, MethodType(funcs["get_"+param.name], self))
-
-    def _register_imported_methods(self, methods: List[str]):
-        codes = []
-        for m in methods:
-            signature = inspect.signature(getattr(self, "_"+m).forward)
-            signature_str = "(self, " + str(signature)[1:]
-            outs = "(" + ",".join([f"{i}={i}" for i in signature.parameters]) + ")"
-            codes.append(_resolve_code(method_template, name=m, signature=signature_str, outs=outs))
-        codes = "\n".join(codes)
-        methods_defs = _import_defs_from_tmpfile(codes, gl=globals())
-        for k, v in methods_defs.items():
-            setattr(self, k, MethodType(v, self))
-
+    def __repr__(self):
+        return f"{type(self).__name__}(original_class={self._original_class}, methods={self._methods}, attributes={self._attributes})"
+    
     def _import_model(self, model):
+        """Import all the registered methods of a BendedModule into GraphModule calls."""
         self._bended_modules = []
         for method in model._graphs.keys():
             bended_module = model.bend_module(fn=method)
             module = model.graph_module(method, module=bended_module, make_jit_compatible=True)
             setattr(self, f"_{method}", module)
             self._bended_modules.append(getattr(self, f"_{method}"))
+        for attr in dir(model):
+            if hasattr(getattr(model, attr), "_export_to_module"):
+                assert attr not in dir(self)
+                setattr(self, attr, getattr(model, attr))
         self._register_imported_methods(model._graphs.keys())
+    
+    def _make_method(self, method_name: str, callback_name: Optional[str] = None):
+        callback_name = callback_name or method_name
+        signature = inspect.signature(getattr(self, "_"+callback_name).forward)
+        signature_str = "(self, " + str(signature)[1:]
+        outs = "(" + ",".join([f"{i}={i}" for i in signature.parameters]) + ")"
+        return _resolve_code(method_template, method_name=method_name, callback_name=callback_name, signature=signature_str, outs=outs)
 
-    def _full_param_dict(self):
-        param_dict = {}
-        for module in self._bended_modules:
-            for k, v in dict(module.named_parameters()).items():
-                if k in param_dict:
-                    if id(param_dict[k]) != id(v):
-                        print('[Warning] param %s does not coincide between modules')
-                else:
-                    param_dict[k] = v
-        return param_dict
-
-    def _register_controllable(self, controllable, controllables_hash):
-        for i, b in enumerate(self._bending_callbacks):
-            if controllable in b:
-                controllables_hash.value[controllable.name] = controllables_hash.value.get(controllable.name, []) + [i]
-        self._set_attribute_callbacks(controllable)
+    def _register_imported_methods(self, methods: List[str]):
+        codes = []
+        for m in methods:
+            codes.append(self._make_method(m))
+            if m == "forward":
+                codes.append(self._make_method("__call__", m))
+        codes = "\n".join(codes)
+        methods_defs = _import_defs_from_tmpfile(codes, gl=globals())
+        for k, v in methods_defs.items():
+            setattr(self, k, MethodType(v, self))
+    
+    def _import_bending(self, model):
+        """parse and registerbending callbacks and controllables for attribute registereing"""
+        self._import_bending_ops(model)
+        self._update_bended_weights(model)
+        self._update_bended_activations(model)
 
     def _import_bending_ops(self, model):
         self._controllables = nn.ModuleList(model.controllables.values())
@@ -136,10 +135,29 @@ class ScriptedBendedModule(nn.Module):
                 if isinstance(v, (CallbackChain, BendingCallback)):
                     getattr(self, f"_{s}")._modules.__setitem__(k, v.script())
 
-    def _import_bending(self, model):
-        self._import_bending_ops(model)
-        self._update_bended_weights(model)
-        self._update_bended_activations(model)
+    def _register_controllable(self, controllable, controllables_hash):
+        for i, b in enumerate(self._bending_callbacks):
+            if controllable in b:
+                controllables_hash.value[controllable.name] = controllables_hash.value.get(controllable.name, []) + [i]
+        self._set_attribute_callbacks(controllable)
+    
+    def _set_attribute_callbacks(self, param: BendingParameter) -> Dict[str, Callable]:
+        codes = _template_from_param(param, cls_self=type(self).__name__)
+        funcs = _import_defs_from_tmpfile(codes, gl=globals(), lo=locals())
+        setattr(self, "set_"+param.name, MethodType(funcs["set_"+param.name], self))
+        setattr(self, "get_"+param.name, MethodType(funcs["get_"+param.name], self))
+    
+    def _full_param_dict(self):
+        param_dict = {}
+        for module in self._bended_modules:
+            for k, v in dict(module.named_parameters()).items():
+                if k in param_dict:
+                    if id(param_dict[k].data) != id(v.data):
+                        print('[Warning] param %s does not coincide between graph modules.'%k)
+                else:
+                    param_dict[k] = v
+        return param_dict
+
 
     # ____________________________________________________________
     # operational methods
@@ -164,8 +182,12 @@ class ScriptedBendedModule(nn.Module):
         raise ModuleNotFoundError("No bending control named %s in model %s"%(name, self))
 
     @torch.jit.export
-    def _set_bending_control(self, name: str, value: torch.Tensor) -> int:
+    def _set_bending_control(self, name: str, value: CONTROLLABLE_TYPES) -> int:
         """set a bending control with name and value"""
+        if isinstance(value, (int, float)):
+            value = torch.full((1,), value)
+        elif isinstance(value, bool):
+            value = torch.full((1,), int(value)).to(torch.bool)
         for v in self._controllables:
             if v.name == name:
                 v.set_value(value)

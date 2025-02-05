@@ -123,14 +123,14 @@ def dist_to_tensor(target):
 def _get_weight_properties(args):
     name, value = args
     try:
-       minval = value.min()
-       maxval = value.max() 
+       minval = value.min().item()
+       maxval = value.max().item()
     except ValueError:
        minval = torch.nan
        maxval = torch.nan
        
-    meanval = value.float().mean()
-    stdval = torch.nan if value.numel() == 1 else value.float().std() 
+    meanval = value.float().mean().item()
+    stdval = torch.nan if value.numel() == 1 else value.float().std().item()
     return [name, value.shape, value.dtype, minval, maxval, meanval, stdval]
 
 
@@ -317,5 +317,5 @@ def display_table_for_jupyter(table, columns=None, max_height=300, display=False
     # Display with CSS
     obj = HTML(scroll_css + html)
     if display: 
-        ipython_display(obj)
+        ipython_display.display(obj)
     return obj

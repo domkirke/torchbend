@@ -6,7 +6,7 @@ import sys
 import torch
 import functools
 from types import FunctionType
-from typing import Union, Union,  Callable, Optional, Any, Dict, List, Type, Iterable
+from typing import Union, Callable, Optional, Any, Dict, List, Type, Iterable, Tuple
 from torch._C import ScriptObject  # type: ignore[attr-defined]
 from torch.fx._symbolic_trace import _proxyable_classes, Tracer, _Patcher, _autowrap_check, _patch_wrapped_functions
 from torch.fx.proxy import Proxy, TraceError, TracerBase, ParameterProxy
@@ -126,6 +126,8 @@ class ActivationProperties():
     fn: str = "forward"
     shape: Optional[Iterable[int]] = None
     target: Optional[Any] = None
+    args: Optional[Tuple[Any]] = None
+    kwargs: Optional[Dict[str, Any]] = None
     type: Optional[Any] = None
     code: Optional[CodePosition] = None
 
@@ -190,7 +192,7 @@ class BendingTracer(torch.fx.Tracer):
         root: Union[torch.nn.Module, Callable[..., Any]],
         inputs: Inputs, 
         concrete_args: Optional[Dict[str, Any]] = {},
-        proxied_buffers = [],
+        proxied_buffers = None,
         return_out: bool = False, 
         **kwargs
     ):
@@ -203,6 +205,7 @@ class BendingTracer(torch.fx.Tracer):
 
         self._model = root
         self._activations = {}
+        proxied_buffers = proxied_buffers or list(dict(root.named_buffers()).keys())
         self._proxied_buffers = []
         self._values = {k.replace('.', '_'): v.data for k, v in root.named_parameters()}
         # concrete_flow_steps is used for boolean control flow that stay fixed during tracing.
@@ -486,6 +489,7 @@ class BendingTracer(torch.fx.Tracer):
         else:
             node = super(BendingTracer, self).create_node(kind, target, args, kwargs, name=name, type_expr = type_expr)
         node.concrete_value = concrete_value
+        
         return node
 
     ## ____________________________________________________________________________________________________________________
@@ -536,6 +540,8 @@ class BendingTracer(torch.fx.Tracer):
                                                             type=node.type, 
                                                             name=node.name, 
                                                             code=proxy._code_pos, 
+                                                            args=node.args,
+                                                            kwargs=node.kwargs,
                                                             fn=self.traced_func_name)
         return proxy
 

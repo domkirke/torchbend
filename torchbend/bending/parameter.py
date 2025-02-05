@@ -12,8 +12,9 @@ class BendingParameterException(Exception):
     pass
 
 
-_VALID_PARAM_TYPES = Union[float, int, bool, complex, torch.Tensor]
-_VALID_PARAM_NATIVE_TYPES = Union[float, int, str, bool, complex]
+_VALID_PARAM_TYPES = Union[float, int, bool, torch.Tensor]
+_VALID_PARAM_NATIVE_TYPES = Union[float, int, str, bool]
+
 
 class BendingParamType():
 
@@ -46,6 +47,7 @@ class BendingParamType():
             elif obj.dtype in [torch.int, torch.int8, torch.int16, torch.int32, torch.int64]:
                 return BendingParamType.param_types()['int']
             elif obj.dtype in [torch.complex, torch.complex32, torch.complex64, torch.complex128]:
+                raise NotImplementedError
                 return BendingParamType.param_types()['complex']
             elif obj.dtype in [torch.bool]:
                 return BendingParamType.param_types()['bool']
@@ -58,6 +60,7 @@ class BendingParamType():
         elif isinstance(obj, numbers.Real):
             return BendingParamType.param_types()['float']
         elif isinstance(obj, numbers.Complex):
+            raise NotImplementedError
             return BendingParamType.param_types()['complex']
         elif isinstance(obj, str):
             return BendingParamType.param_types()['str']
@@ -82,6 +85,7 @@ class BendingParamType():
             elif (param_type == BendingParamType.param_types()['int']):
                 return value.int()
             elif (param_type == BendingParamType.param_types()['complex']):
+                raise NotImplementedError
                 return torch.view_as_complex(value)
             else:
                 raise BendingParameterException('Wrong ParamType: %s'%param_type)
@@ -102,6 +106,7 @@ class BendingParamType():
                 else:
                     raise BendingParameterException('Cannot make int tensor out of %s'%value)
             elif (param_type == BendingParamType.param_types()['complex']):
+                raise NotImplementedError
                 if isinstance(value, (int, float, complex)):
                     return torch.tensor(complex(value))
                 else:
@@ -118,6 +123,7 @@ class BendingParamType():
         elif tensor.dtype in [torch.float, torch.float16, torch.float32, torch.float64]:
             return float(tensor)
         elif tensor.dtype in [torch.complex, torch.complex32, torch.complex64, torch.complex128]: 
+            raise NotImplementedError
             return complex(tensor)
         else:
             raise TypeError('cannot parse tensor %s as a native python value'%tensor)
@@ -185,10 +191,11 @@ class BendingParameter(nn.Module):
         self._callbacks[cb] = name
 
     def get_value(self) -> torch.Tensor:
+        value = self.value.data
         if self.clamp:
-            return self._clamp(self.value * self.weight + self.bias)
+            return self._clamp(value * self.weight.to(value) + self.bias.to(value))
         else:
-            return self.value
+            return value * self.weight.to(value) + self.bias.to(value)
 
     def get_python_value(self) -> _VALID_PARAM_NATIVE_TYPES:
         return BendingParamType._from_tensor(self.get_value())
@@ -227,7 +234,7 @@ class BendingParameter(nn.Module):
             return torch.clamp(value, self.min_clamp, self.max_clamp)
 
     def _to_tensor(self, obj: _VALID_PARAM_TYPES) -> torch.Tensor:
-        if isinstance(obj, (int, float, bool, complex, torch.Tensor, torch.nn.Parameter)):
+        if isinstance(obj, (int, float, bool, torch.Tensor, torch.nn.Parameter)):
             return BendingParamType._to_tensor(obj, self.param_type)
         else:
             raise TypeError('BendingParameter values can only be int or float')

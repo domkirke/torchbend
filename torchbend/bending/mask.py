@@ -38,23 +38,23 @@ class Mask(BendingCallback):
     def __repr__(self):
         return f"Mask(prob={float(self.prob):.3f})"
 
-    def _get_mask_shape(self, shape: List[int]):
+    def _get_mask_shape(self, shape: List[int]) -> List[int]:
         dim = self.dim
         if dim is None:
             return shape
         if len(shape) == 0:
-            return tuple()
+            return []
         mask_shape = [1] * len(shape)
         if isinstance(dim, int):
-            mask_shape[dim] = shape[dim]
+            mask_shape[dim] = int(shape[dim])
         elif isinstance(dim, list):
             for d in dim:
-                mask_shape[d] = shape[d]
+                mask_shape[d] = int(shape[d])
         return mask_shape
     
     def _init_mask(self, shape: List[int]):
         #TODO generator not scriptable
-        prob = self.get('prob')
+        prob = float(self.get('prob'))
         mask_shape = self._get_mask_shape(shape)
         if torch.jit.is_scripting():
             mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob)).requires_grad_(False)#, generator=self.generator)

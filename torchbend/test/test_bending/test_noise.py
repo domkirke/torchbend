@@ -12,7 +12,7 @@ from test_modules import modules_to_test, ModuleTestConfig
 
 @pytest.mark.parametrize('cb_class', [tb.Normal])
 @pytest.mark.parametrize('module_config', modules_to_test)
-def test_mask_weight(cb_class, module_config):
+def test_noise_weight(cb_class, module_config):
     mod = module_config.get_bended_module()
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:
@@ -33,7 +33,7 @@ def test_mask_weight(cb_class, module_config):
 
 @pytest.mark.parametrize('cb_class', [tb.Normal])
 @pytest.mark.parametrize('module_config', modules_to_test)
-def test_mask_activations(cb_class, module_config):
+def test_noise_activations(cb_class, module_config):
     mod = module_config.get_bended_module()
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:
@@ -55,7 +55,8 @@ def test_mask_activations(cb_class, module_config):
 
 @pytest.mark.parametrize('cb_class', [tb.Normal])
 @pytest.mark.parametrize('module_config', modules_to_test)
-def test_mask_script(cb_class, module_config):
+@pytest.mark.parametrize('jit', [True, False])
+def test_noise_script(cb_class, module_config, jit):
     mod = module_config.get_bended_module()
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:
@@ -68,6 +69,6 @@ def test_mask_script(cb_class, module_config):
         mod.bend(mask_callback, *activation_targets)
         out_orig = getattr(mod, method)(*args, **kwargs)
         
-        scripted = mod.script(script=True)
+        scripted = mod.script(script=jit)
         out_scripted = getattr(scripted, method)(*args, **kwargs)
         assert bool(tb.compare_outs(out_orig, out_scripted))

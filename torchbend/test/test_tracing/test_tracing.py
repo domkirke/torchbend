@@ -62,4 +62,10 @@ def test_graph_split(module):
         out_mid = module.get_activations(t, **kwargs)
         out, graph = module.from_activations(t, **kwargs, **out_mid, _return_graph=True)
 
+@pytest.mark.parametrize("module", ttm.buffer_trace_test_modules)
+def test_buffer_trace(module):
+    module = tb.BendedModule(module)
+    kwargs = module.forward_inputs
+    module.trace(**kwargs, )
+    module.graph_module()(**kwargs)
 

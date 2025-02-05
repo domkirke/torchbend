@@ -58,7 +58,8 @@ def test_mask_activation(cb_class, module_config):
 
 @pytest.mark.parametrize('cb_class', [tb.Mask, partial(tb.Mask, dim=-2), tb.OrderedMask, partial(tb.OrderedMask, dim=-2)])
 @pytest.mark.parametrize('module_config', modules_to_test)
-def test_mask_script(cb_class, module_config):
+@pytest.mark.parametrize('jit', [True, False])
+def test_mask_script(cb_class, module_config, jit):
     mod = module_config.get_bended_module()
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config.scriptable():
@@ -70,7 +71,7 @@ def test_mask_script(cb_class, module_config):
         mask_callback = cb_class(prob=prob)
 
         mod.bend(mask_callback, *weight_targets, *activation_targets)
-        mod_scripted = mod.script(script=False)
+        mod_scripted = mod.script(script=jit)
         mod_scripted._set_bending_control('mask', 1.)
         out_scripted = getattr(mod_scripted, method)(*args, **kwargs)
         assert bool(tb.compare_outs(out_orig, out_scripted))

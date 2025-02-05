@@ -95,7 +95,7 @@ post_process_fn = {rave.blocks.VariationalEncoder: post_process_variational,
 
 
 
-class ScriptedRAVE(nn_tilde.Module):
+class ScriptedRAVE(nn.Module):
 
     def __init__(self,
                  pretrained: rave.RAVE,
@@ -112,7 +112,7 @@ class ScriptedRAVE(nn_tilde.Module):
         self.input_mode = pretrained.input_mode
         self.output_mode = pretrained.output_mode
         self.n_channels = pretrained.n_channels
-        self.target_channels = channels or self.n_channels
+        self.target_channels = channels or self.channels
         self.stereo_mode = False
 
         if target_sr is not None:
@@ -127,17 +127,15 @@ class ScriptedRAVE(nn_tilde.Module):
             if isinstance(m, rave.blocks.AdaptiveInstanceNormalization):
                 self.is_using_adain = True
                 break
-        if self.is_using_adain and (self.n_channels != self.target_channels):
+        if self.is_using_adain and (self.channels != self.target_channels):
             raise ValueError("AdaIN requires the original number of channels")
 
-        self.register_attribute("learn_target", False)
-        self.register_attribute("reset_target", False)
-        self.register_attribute("learn_source", False)
-        self.register_attribute("reset_source", False)
 
         self.register_buffer("latent_pca", pretrained.latent_pca)
         self.register_buffer("latent_mean", pretrained.latent_mean)
         self.register_buffer("fidelity", pretrained.fidelity)
+        self.register_buffer("receptive_field", pretrained.receptive_field)
+        # self.register_buffer("channels", pretrained.n_channels)
 
         if isinstance(pretrained.encoder, rave.blocks.VariationalEncoder):
             latent_size = max(
@@ -165,75 +163,18 @@ class ScriptedRAVE(nn_tilde.Module):
         self.encoder = pretrained.encoder
         self.decoder = pretrained.decoder
         x_len = 2**14
-        x = torch.zeros(1, self.n_channels, x_len)
+        x = torch.zeros(1, self.channels, x_len)
         z = self.encode(x)
-        ratio_encode = x_len // z.shape[-1]
+        self.ratio_encode = x_len // z.shape[-1]
 
         # configure encoder
         if (pretrained.input_mode == "pqmf") or (pretrained.output_mode == "pqmf"):
             # scripting fails if cached conv is not initialized
             self.pqmf(torch.zeros(1, 1, x_len))
 
-        encode_shape = (pretrained.n_channels, 2**14) 
-
-        self.register_method(
-            "encode",
-            in_channels=self.n_channels,
-            in_ratio=1,
-            out_channels=self.latent_size,
-            out_ratio=ratio_encode,
-            input_labels=['(signal) Channel %d'%d for d in range(1, self.n_channels+1)],
-            output_labels=[
-                f'(signal) Latent dimension {i + 1}'
-                for i in range(self.latent_size)
-            ],
-        )
-        self.register_method(
-            "decode",
-            in_channels=self.latent_size,
-            in_ratio=ratio_encode,
-            out_channels=self.target_channels,
-            out_ratio=1,
-            input_labels=[
-                f'(signal) Latent dimension {i+1}'
-                for i in range(self.latent_size)
-            ],
-            output_labels=['(signal) Channel %d'%d for d in range(1, self.target_channels+1)]
-        )
-
-        self.register_method(
-            "forward",
-            in_channels=self.n_channels,
-            in_ratio=1,
-            out_channels=self.target_channels,
-            out_ratio=1,
-            input_labels=['(signal) Channel %d'%d for d in range(1, self.n_channels + 1)],
-            output_labels=['(signal) Channel %d'%d for d in range(1, self.target_channels+1)]
-        )
-
         # init prior in case
-        self._has_prior = False
-        
-        if prior is not None:
-            self._has_prior = True
-            self.prior_module = prior
-            self.register_method(
-                "prior",
-                in_channels=1,
-                in_ratio=prior.ratio,
-                out_channels = self.latent_size,
-                out_ratio=prior.ratio
-            )
-        else:
-            self.prior_module = DumbPrior()
-
-    @property
-    def channels(self):
-        return self.n_channels
-
-    @property
-    def sample_rate(self):
-        return self.sr
+        self.has_prior = prior is not None
+        self.prior_module = prior if self.has_prior else DumbPrior()
 
     def post_process_latent(self, z):
         raise NotImplementedError
@@ -260,17 +201,24 @@ class ScriptedRAVE(nn_tilde.Module):
         self.reset_source = False,
         self.reset_target = False,
 
+    @property
+    def channels(self) -> int:
+        return self.n_channels
+
+    @property
+    def sample_rate(self) -> int:
+        return self.sr
 
     @torch.jit.export
     def set_stereo_mode(self, stereo):
         self.stereo_mode = bool(stereo);
 
     @torch.jit.export
-    def encode(self, x):
+    def encode(self, x, postprocess: bool = True):
         if self.stereo_mode:
-            if self.n_channels == 1:
+            if self.channels == 1:
                 x = x[:, 0].unsqueeze(0)
-            elif self.n_channels > 2:
+            elif self.channels > 2:
                 raise RuntimeError("stereo mode is not available when n_channels > 2")
 
         if self.is_using_adain:
@@ -292,42 +240,44 @@ class ScriptedRAVE(nn_tilde.Module):
             else:
                 raise RuntimeError()
         z = self.encoder(x)
-        z = self.post_process_latent(z)
+        if postprocess:
+            z = self.post_process_latent(z)
         return z
 
 
     @torch.jit.export
-    def decode(self, z, from_forward: bool = False):
+    def decode(self, z, from_forward: bool = False, preprocess: bool = True):
         if self.is_using_adain and not from_forward:
             self.update_adain()
         n_batch = z.shape[0]
         if self.stereo_mode:
             n_batch = int(n_batch / 2)
 
-        if self.target_channels > self.n_channels:
-            z = z.repeat(math.ceil(self.target_channels / self.n_channels), 1, 1)[:self.target_channels]
+        if self.target_channels > self.channels:
+            z = z.repeat(math.ceil(self.target_channels / self.channels), 1, 1)[:self.target_channels]
 
-        z = self.pre_process_latent(z)
+        if preprocess:
+            z = self.pre_process_latent(z)
         y = self.decoder(z)
 
         batch_size = z.shape[:-2]
         if self.output_mode == "pqmf":
-            y = y.reshape(y.shape[0] * self.n_channels, -1, y.shape[-1])
+            y = y.reshape(y.shape[0] * self.channels, -1, y.shape[-1])
             y = self.pqmf.inverse(y)
-            y = y.reshape(batch_size+(self.n_channels, -1))
+            y = y.reshape(batch_size+(self.channels, -1))
 
         if self.resampler is not None:
             y = self.resampler.from_model_sampling_rate(y)
 
         # if (output-) padding is scrambled
-        if y.shape[-1] > z.shape[-1] * self.decode_params[1]:
-            y = y[..., :z.shape[-1] * self.decode_params[1]]
+        if y.shape[-1] > z.shape[-1] * self.ratio_encode:
+            y = y[..., :z.shape[-1] * self.ratio_encode]
 
         if self.stereo_mode:
             y = torch.cat([y[:n_batch], y[n_batch:]], 1)
-        elif self.target_channels > self.n_channels:
+        elif self.target_channels > self.channels:
             y = torch.cat(y.chunk(self.target_channels, 0), 1)
-        elif self.target_channels < self.n_channels:
+        elif self.target_channels < self.channels:
             y = y[:, :self.target_channels]
         return y
 
@@ -376,6 +326,7 @@ class ScriptedRAVE(nn_tilde.Module):
             return self.prior_module.forward(temp)
         else:
             return torch.tensor(0)
+
         
 @torch.fx.wrap
 def get_noise(z: torch.Tensor, full_latent_size: int):

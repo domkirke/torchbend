@@ -18,10 +18,11 @@ class ReshapeFoo(nn.Module):
         return x
 
     def test_control(self, x):
+        out = len(x.shape) > 2
         if (len(x.shape) > 2):
-            return torch.tensor(1)
+            return int(out)
         else:
-            return torch.tensor(0)
+            return float(out)
 
     def test_shape_manip(self, x):
         shape1 = x.shape[:-2]
@@ -41,11 +42,10 @@ class LogicalFlowFoo(nn.Module):
     def test_logical_tensor_if(self, x: torch.Tensor):
         tensor = (x == 0)
         if tensor.all():
-            return tensor.zero()
-            # return torch.tensor(0)
+            return tensor.float() * 3
         else:
-            return torch.ones_like(tensor)
-            #TODO why is this not working?
+            return tensor.float()
+            #TODO why creating tensors on the fly is not possible? How to fix that?
             # return torch.tensor(1)
 
     def test_logical_int_if(self, x: int):
@@ -152,5 +152,23 @@ class SplitTestModule(nn.Module):
 
 split_graph_test_modules = [
     SplitTestModule()
+]
+
+class BufferTestModule(nn.Module):
+    forward_inputs = {'x': torch.zeros(4, 10)}
+
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("a", torch.tensor(34))
+        self.register_buffer("b", torch.LongTensor([1, 2, 3, 4]))
+    
+    def forward(self, x):
+        x = x + self.a
+        for item in self.b:
+            x = x * item
+        return x
+
+buffer_trace_test_modules = [
+    BufferTestModule()
 ]
         

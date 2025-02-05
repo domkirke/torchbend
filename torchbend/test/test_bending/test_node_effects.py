@@ -25,6 +25,9 @@ class NodeEffectsTester(nn.Module):
         out = torch.sigmoid(out)
         return out
 
+    def script(self):
+        return self
+
 @pytest.mark.parametrize("activation,cb_args", [
     ("linear1", {'target': 'linear2'}),
     ("pow_1", {'target': globals()['__builtins__']['abs'], 'args': (tb.ChangeNode.copy,)}),
@@ -33,7 +36,8 @@ class NodeEffectsTester(nn.Module):
     ("mul", {'target': torch.mul, 'op': 'call_function', 'args': (tb.ChangeNode.copy, tb.ChangeNode.activation("pow_1"))}),
     ("pow_1", {'target': torch.mul, 'op': 'call_function', 'args': (tb.ChangeNode.expression("linear1 ** 2 - linear1.mean()"), 1)})
 ])
-def test_node_change_target(activation, cb_args):
+@pytest.mark.parametrize("jit", [True, False])
+def test_node_change_target(activation, cb_args, jit):
     module = NodeEffectsTester()
     x = torch.randn(16, 10)
 
@@ -47,6 +51,11 @@ def test_node_change_target(activation, cb_args):
 
     if torch.is_tensor(out_bended):
         assert not torch.allclose(out, out_bended)
+
+    scripted = bended.script(script=jit)
+    out_scripted = scripted(x)
+    if torch.is_tensor(out_bended):
+        assert not torch.allclose(out, out_scripted)
+        assert torch.allclose(out_bended, out_scripted)
+
     
-
-

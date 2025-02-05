@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import itertools
 import torch
@@ -34,27 +35,29 @@ RAVE_TEST_BATCH_SIZE = (1, 4)
         
 @pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
 @pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
-def test_import(model_path):
+@pytest.mark.parametrize("scriptable", [True, False])
+def test_import(model_path, scriptable):
     check_rave_models()
-    model = BendedRAVE.load_model(model_path, strict=RAVE_STRICT_LOADING)
+    model = BendedRAVE.load_model(model_path, scriptable=scriptable, strict=RAVE_STRICT_LOADING)
     assert model
 
 @pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
 @pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
 @pytest.mark.parametrize("batch_size", RAVE_TEST_BATCH_SIZE)
-def test_callbacks(model_path, batch_size):
-    model = BendedRAVE(model_path, batch_size=batch_size, strict=RAVE_STRICT_LOADING)
+@pytest.mark.parametrize("scriptable", [True, False])
+def test_callbacks(model_path, batch_size, scriptable):
+    model = BendedRAVE(model_path, scriptable=scriptable, strict=RAVE_STRICT_LOADING)
     x = torch.randn(batch_size, model.channels, 2048)
 
     # test attributes
-    sample_rate = model.sample_rate
-    channels = model.channels
+    assert model.sample_rate
+    assert model.channels
 
     # test interface methods
-    z = model.encode(x)
+    z = model.encode(x, postprocess=True)
     z_nopostprocess = model.encode(x, postprocess=False)
 
-    x_rec = model.decode(z)
+    x_rec = model.decode(z, preprocess=True)
     x_rec_nopreprocess = model.decode(z_nopostprocess, preprocess=False)
 
     # test helper methods
@@ -69,21 +72,20 @@ def test_callbacks(model_path, batch_size):
 
 
 @pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
-@pytest.mark.parametrize("batch_size", RAVE_TEST_BATCH_SIZE) 
 @pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
-@pytest.mark.parametrize("scripted", (True, False)) 
-def test_tracing(model_path, batch_size, scripted):
-    model = BendedRAVE(model_path, batch_size=batch_size, strict=RAVE_STRICT_LOADING)
-    if scripted:
-        model = model.script()
+@pytest.mark.parametrize("scriptable", (True, False)) 
+def test_tracing(model_path, scriptable):
+    model = BendedRAVE(model_path, scriptable=scriptable, strict=RAVE_STRICT_LOADING)
 
     # test variable batch sizes
     batch_sizes = RAVE_TEST_BATCH_SIZE
     for b in batch_sizes:
         out = model.forward(torch.zeros(b, model.channels, 8192))
-        model.print_weights(out=Path(model_path)/ "weights.txt")
-        for method in rave_test_activations: 
-            model.print_activations(fn=method, out=Path(model_path) / f"activations_{method}.txt")
+
+    # print weights & activations
+    model.print_weights(out=Path(model_path)/ "weights.txt")
+    for method in rave_test_activations: 
+        model.print_activations(fn=method, out=Path(model_path) / f"activations_{method}.txt")
 
     def locate_channel_amount_change(activations, init_channels=1):
         current_n_channels = init_channels
@@ -105,7 +107,7 @@ def test_tracing(model_path, batch_size, scripted):
     decode_acts = locate_channel_amount_change(model.activations(fn="decode"), model.latent_size)
     forward_acts = locate_channel_amount_change(model.activations(fn="forward"))
 
-    x = torch.zeros(batch_size, model.channels, 8192)
+    x = torch.zeros(1, model.channels, 8192)
     z = model.encode(x)
 
     for e_act in encode_acts:
@@ -123,8 +125,30 @@ def test_tracing(model_path, batch_size, scripted):
 
 @pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
 @pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
-@pytest.mark.parametrize("batch_size", RAVE_TEST_BATCH_SIZE) 
-def test_export(model_path, batch_size):
-    model = BendedRAVE(model_path, batch_size=batch_size, strict=RAVE_STRICT_LOADING)
-    model = model.nntilde()
-    scripted = torch.jit.script(model)
+def test_script_export(model_path):
+    model = BendedRAVE(model_path, scriptable=True, strict=RAVE_STRICT_LOADING)
+    x = torch.zeros(1, model.channels, 8192)
+    model = model.script(script=True)
+    torch.jit.save(model, '.test.ts')
+    os.remove('.test.ts')
+
+    out = model(x)
+    out = model.forward(x)
+    z = model.encode(x)
+    out = model.decode(z)
+
+
+@pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
+@pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
+def test_nntilde_export(model_path):
+    model = BendedRAVE(model_path, scriptable=True, strict=RAVE_STRICT_LOADING)
+    x = torch.zeros(1, model.channels, 8192)
+    model = model.nntilde(script=True)
+    torch.jit.save(model, '.test.ts')
+    os.remove('.test.ts')
+
+    out = model(x)
+    out = model.forward(x)
+    z = model.encode(x)
+    out = model.decode(z)
+

@@ -8,7 +8,9 @@ from ..tracing.proxy import BendingProxy
 
 
 class CopyArg():
-    pass
+    def __init__(self):
+        """adding empty method for TorchScript"""
+        pass
 
 class ChangeNodeTokens(enum.Enum):
     copy = 0
