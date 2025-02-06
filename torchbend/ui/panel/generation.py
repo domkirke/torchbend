@@ -161,6 +161,7 @@ def panel_generation_ui(
         max_columns=None,
         max_image_columns=None,
         max_rows=None,
+        context = None,
         **kwargs
 ):
     controllables = bended_module.controllables

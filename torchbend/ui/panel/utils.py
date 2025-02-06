@@ -18,6 +18,7 @@ def get_widget_from_controllable(ctrl):
                 name = ctrl.name,
                 start = ctrl.min_clamp,
                 end = ctrl.max_clamp,
+                step = (ctrl.max_clamp - ctrl.min_clamp) / 1000,
                 value = ctrl.get_python_value()
         )
     elif widget_type == "int":
@@ -73,6 +74,7 @@ def tensor_to_image(input_tensor, filename=None, upscale=None):
     image = transform(tensor)
 
     # Save Image
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
     image.save(filename)
     return filename
 

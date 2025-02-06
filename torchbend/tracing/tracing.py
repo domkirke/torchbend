@@ -131,6 +131,10 @@ class ActivationProperties():
     type: Optional[Any] = None
     code: Optional[CodePosition] = None
 
+    @staticmethod
+    def _default_panel_fields():
+        return ['name', 'op', 'target', 'args', 'kwargs', 'shape']
+
 class TracingContext():
     
     count = 0

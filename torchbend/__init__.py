@@ -37,3 +37,4 @@ from .ui import panel
 if panel is not None:
     BendedModule.panel_generation_ui = _import_to_interface(panel.panel_generation_ui)
     BendedModule.panel_search_ui = _import_to_interface(panel.panel_search_ui)
+    BendedModule.panel_ui = _import_to_interface(panel.panel_ui)
