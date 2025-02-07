@@ -28,14 +28,6 @@ def set_{{NAME}}(self, value: {{TYPE_EXPR}}) -> int:
     return self._set_bending_control(\"{{NAME}}\", torch.tensor(value, dtype={{DTYPE}}))
 """
 
-class ListAttribute(torch.jit.Attribute):
-
-    def __getitem__(self, item):
-        self.value.__getitem__(item)
-
-    def append(self, x): 
-        self.value.append(x)
-
 
 def _template_from_param(param: BendingParameter, **kwargs):
     kwargs['name'] = kwargs.get('name', param.name)
@@ -62,8 +54,7 @@ class ScriptedBendedModule(nn.Module):
         super().__init__()
         assert isinstance(model, BendedModule), "ScriptedBendedModule must be initialized with a BendedModule"
         self._original_class = type(model).__name__
-        # self._methods = ListAttribute([], List[str])
-        # self._attributes = ListAttribute([], List[str])
+
         if not hasattr(self, "scripted_methods"):
             setattr(self, "scripted_methods", list(model._graphs.keys()))
         self._import_model(model)

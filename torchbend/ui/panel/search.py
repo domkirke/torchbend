@@ -18,14 +18,12 @@ def get_fn_filters_from_module(bended_module):
 def get_activation_names(bended_module, fn):
     with_fn = (len(fn) >= 2)
     if len(fn) == 1: fn = fn[0]
-    print("fn", fn, with_fn)
     activations = bended_module.activations(fn=fn, _with_fn=with_fn)
     return list(activations.keys())
 
 
 def get_filter_from_module(bended_module, fn_checkboxes):
     fn_checkboxes = fn_checkboxes.value
-    print(fn_checkboxes, len(fn_checkboxes))
     if len(fn_checkboxes) == 0:
         return pn.widgets.TextInput(disabled=True)
     activations = get_activation_names(bended_module, fn=fn_checkboxes)
@@ -54,14 +52,13 @@ def get_activation_list(fn_checkboxes, filter_input, bended_module=None, fields=
 
 def update_activation_list(data_frame, fn_checkboxes, *args, **kwargs):
     if len(fn_checkboxes.value) == 0:
-        data_frame.param.update(object=pd.DataFrame())
+        data_frame.param.update(value=pd.DataFrame())
     else:
         activations = get_activation_list(fn_checkboxes, *args, **kwargs)
-        data_frame.param.update(object=activations)
+        data_frame.param.update(value=activations)
 
 def update_code_editor(activation, code_editor):
     code = activation.code
-    print(code.code)
     filename = code.code.co_filename
     with open(filename, 'r') as f:
         code = f.read()
@@ -71,7 +68,6 @@ def update_code_editor(activation, code_editor):
 def click_list_callback(event, bended_module=None, data_frame=None, code_editor=None):
     assert bended_module is not None
     assert data_frame is not None
-    print(event, event.row)
     clicked_activation = data_frame.value['name'][event.row]
     activation = bended_module.activations(clicked_activation)[clicked_activation]
     if code_editor:
@@ -98,6 +94,11 @@ def update_search(bended_module, fn_checkboxes, filter_input, data_frame, event)
     elif event.obj == data_frame:
         pass
 
+js_callback = """
+editor.setSelection({line: 140, ch: 0});
+editor.focus();
+"""
+
 def panel_search_ui(
         bended_module, 
         context = None
@@ -109,7 +110,7 @@ def panel_search_ui(
     # make watchers
     update_callback = partial(update_search, bended_module, fn_checkboxes, filter_input, activations_frame)
     fn_checkboxes.param.watch(update_callback, ['value'], onlychanged=True)
-    filter_input.param.watch(update_callback, ['value_input'], onlychanged=True)
+    filter_input.param.watch(update_callback, ['value', 'value_input'], onlychanged=True)
 
     # activations_frame.watch(click_list_callback, ['selection'], onlychanged=True)
 
@@ -117,17 +118,21 @@ def panel_search_ui(
     # w1 = pn.widgets.CodeEditor(width = 200, height = 300)
     # w1 = "Hello!"
 
-    code_editor = pn.widgets.CodeEditor(sizing_mode='stretch_width', readonly=True, language='python', width = 500, height=300)
+    code_editor = pn.widgets.CodeEditor(readonly=True, language='python', width = 500, height=300)
     config = {"headerControls": {"close": "remove"}, "theme": "light"}
     floatpanel = pn.layout.FloatPanel(code_editor, name='code', margin=20, config=config)
 
     activations_frame.on_click(partial(click_list_callback, bended_module=bended_module, data_frame=activations_frame, code_editor=code_editor))
+
+    set_cursor_button = pn.widgets.Button(name='Set Cursor to Line 140')
+    set_cursor_button.js_on_click(args={'editor': code_editor}, code=js_callback)
 
     return pn.Column(
         fn_checkboxes, 
         filter_input, 
         activations_frame, 
         floatpanel,
+        set_cursor_button,
         height=600, 
         sizing_mode="stretch_width"
     ).servable()

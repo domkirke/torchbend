@@ -1,7 +1,19 @@
-import nn_tilde
+import torch
+from typing import List
 from types import MethodType
+import nn_tilde
 from .module import BendedModule
 from .script import ScriptedBendedModule, ScriptedBendedException
+
+
+class ListAttribute(torch.jit.Attribute):
+
+    def __getitem__(self, item):
+        self.value.__getitem__(item)
+
+    def append(self, x): 
+        self.value.append(x)
+
 
 class NNBendedModuleException(Exception):
     pass
@@ -9,7 +21,8 @@ class NNBendedModuleException(Exception):
 class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
     def __init__(self, model):
         assert isinstance(model, BendedModule), "NNBendedModule must be initialized with a BendedModule"
-
+        self._methods = ListAttribute([], List[str])
+        self._attributes = ListAttribute([], List[str])
         self._get_set_candidates = {}
         ScriptedBendedModule.__init__(self, model)
         self._search_for_getter_and_setters(model.module)

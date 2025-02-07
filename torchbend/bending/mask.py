@@ -57,16 +57,15 @@ class Mask(BendingCallback):
         prob = float(self.get('prob'))
         mask_shape = self._get_mask_shape(shape)
         if torch.jit.is_scripting():
-            mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob)).requires_grad_(False)#, generator=self.generator)
+            mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob))
         else:
-            mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob)).requires_grad_(False)
+            mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob))
         return mask
 
     def _add_mask(self, name, shape):
         mask = self._init_mask(shape)
         self._masks.append(mask)
         # disable gradient
-        self._masks[-1].requires_grad_(False)
         self._mask_names.append(name)
         self._mask_shapes.value.append(shape)
 
