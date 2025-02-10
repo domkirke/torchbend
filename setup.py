@@ -23,7 +23,7 @@ with open("requirements.txt", "r") as requirements:
 setup(name='torchbend',
       version='0.1',
       description='Machine learning experimental library for model dissection and bending',
-      author='Axel Chemla--Romeu-Santos',
+      author='Axel Chemla--Romeu-Santos & David Genova',
       python_requires="==3.11.*",
       packages=find_packages(),
       install_requires=requirements, 

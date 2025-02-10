@@ -1,43 +1,22 @@
 import torch
+import inspect
 import typing as tp
 from operator import setitem, getitem
 from typing import Union, Optional, Iterable, Any, Dict
 from torch.fx.proxy import Attribute, Proxy, TraceError
 from enum import Enum
 from torch.fx.node import Argument, Node
+from .code import CodePosition, get_code_pos_from_frame
 
 class BendingProxyException(Exception):
     pass
 
-class CodePosition():
-    def __init__(self, frame):
-        self.frame = frame
-
-    @property
-    def code(self):
-        return self.frame.f_code
-
-    @property
-    def description(self):
-        code = self.code
-        desc = f"{code.co_filename}:"
-        desc += f"{code.co_name}"
-        desc += f".{code.co_firstlineno})"
-        return desc
-
-    def __repr__(self):
-        return self.description
-
-def get_code_pos_from_frame(frame):
-    return CodePosition(frame).description
 
 class TracingState(Enum):
     TRACING = 0
     RUNNING = 1
 
 class ShapeAttribute(Attribute):
-    #TODO make several behaviors for this.
-        
     def __init__(self, root: Proxy, attr: str, static_shape=None, _sub_idxs=None):
         super().__init__(root, attr)
         self._sub_idxs = _sub_idxs
@@ -98,7 +77,7 @@ class ShapeAttribute(Attribute):
 class BendingProxy(torch.fx.Proxy):
     def __init__(self, node: Node, tracer = None, value: Optional[Any] = None, type_expr=None):
         super(BendingProxy, self).__init__(node, tracer)
-        self._code_pos = CodePosition(self.tracer._find_user_frame())
+        self._code_pos = CodePosition(inspect.currentframe(), tracer=tracer, node=node)
         self._value = value
         self._type_expr = type_expr
 

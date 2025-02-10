@@ -24,6 +24,7 @@ _orig_module_getattr: Callable = torch.nn.Module.__getattr__
 _orig_tensor_getitem: Callable = torch.Tensor.__getitem__
 _orig_tensor_setitem: Callable = torch.Tensor.__setitem__
 _orig_tensor_repr: Callable = torch.Tensor.__repr__
+_orig_param_init: Callable = torch.nn.Parameter.__init__
 
 _is_fx_tracing_flag = False
 
@@ -884,11 +885,21 @@ class BendingTracer(torch.fx.Tracer):
                 str, Proxy
             ] = {}  # Reduce number of get_attr calls
 
+            def attach_code(parameter, frame):
+                if not hasattr(parameter, "__torchbend_trace__"):
+                    parameter.__torchbend_trace__ = {self.traced_func_name: []}
+                else:
+                    if  self.traced_func_name not in parameter.__torchbend_trace__:
+                        parameter.__torchbend_trace__[self.traced_func_name] = []
+                parameter.__torchbend_trace__[self.traced_func_name].append(frame)
+
             # Method dispatch on parameters is not recorded unless it's directly used.
             # Thus, we need to insert a proxy when __getattr__ requests a parameter.
             @functools.wraps(_orig_module_getattr)
             def module_getattr_wrapper(mod, attr):
                 attr_val = _orig_module_getattr(mod, attr)
+                if isinstance(attr_val, torch.nn.Parameter):
+                    attach_code(attr_val, inspect.currentframe())
                 if self.get_current_context_state() == TracingState.RUNNING:
                     return attr_val
                 else:

@@ -103,9 +103,9 @@ def test_tracing(model_path, scriptable):
         return acts
 
     # test encode
-    encode_acts = locate_channel_amount_change(model.activations(fn="encode"))
-    decode_acts = locate_channel_amount_change(model.activations(fn="decode"), model.latent_size)
-    forward_acts = locate_channel_amount_change(model.activations(fn="forward"))
+    encode_acts = locate_channel_amount_change(model.activations(fn="encode"))[:2]
+    decode_acts = locate_channel_amount_change(model.activations(fn="decode"), model.latent_size)[:2]
+    forward_acts = locate_channel_amount_change(model.activations(fn="forward"))[:2]
 
     x = torch.zeros(1, model.channels, 8192)
     z = model.encode(x)
@@ -121,6 +121,7 @@ def test_tracing(model_path, scriptable):
     for f_act in forward_acts:
         acts = model.get_activations(f"{f_act}$", x=x, fn="forward")
         out = model.from_activations(f"{f_act}$", **acts, x=x, fn="forward")
+
         
 
 @pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")

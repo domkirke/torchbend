@@ -16,6 +16,7 @@ from .scripting import pre_process_fn, post_process_fn, script_rave_model
 import cached_conv as cc
 import gin
 
+_VALID_AUDIO_EXT = ['.wav', '.aif', '.aiff', '.mp3']
 
 class BendingRAVEException(Exception):
     pass
@@ -155,11 +156,45 @@ class BendedRAVE(Interface):
         latent_out = model.encoder.reparametrize(decoder_out)[:2][0]
         model.trace("decode", z=latent_out, _proxied_buffers=self._proxied_buffers)
 
-    def load_audio(self, path: str):
+    def _load_single_audio(self, path: str):
         audio, sr = torchaudio.load(path)
         if sr != self._model.sr:
             audio = torchaudio.functional.resample(audio, sr, self.sample_rate)
+        if audio.shape[0] >= self.channels:
+            audio = audio[:self.channels]
+        else:
+            raise BendingRAVEException("model needs at least %d channels, but %s seems to have only %d"%(self.channels, path, audio.shape[0]))
         return audio
+
+    def _stack_audio(self, path_list, **kwargs):
+        stack = kwargs.get('stack', False)
+        audios = [self._load_single_audio(p) for p in path_list]
+        if stack:
+            max_length = max([a.shape[-1] for a in audios])
+            for i, a in enumerate(audios):
+                if a.shape[-1] < max_length:
+                    a = torch.nn.functional.pad(a, max_length - a.shape[-1], mode="constant", value=0.)
+                    audios[i] = a
+            audios = torch.stack(audios)
+        return audios
+
+    def load_audio(self, path: str, return_files=False, **kwargs):
+        if os.path.isfile(path):
+            audios = self._load_single_audio(path)
+            paths = path
+        elif os.path.isdir(path):
+            valid_audio_files = []
+            for r, d, f in os.walk(path):
+                f = list(filter(lambda x: os.path.splitext(x)[1] in _VALID_AUDIO_EXT, f))
+                f = list(map(lambda x, root=r: os.path.join(root, x), f))
+                valid_audio_files.extend(f)
+            audios = self._stack_audio(valid_audio_files, **kwargs)
+            paths = valid_audio_files
+        if return_files:
+            return audios, paths
+        else:
+            return audios
+            
 
     @property
     def channels(self):

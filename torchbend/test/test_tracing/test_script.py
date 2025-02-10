@@ -36,7 +36,8 @@ def test_scripting(module_config):
 
 
 @pytest.mark.parametrize("module_config", scriptable_modules_to_test)
-def test_bendable_scripting(module_config):
+@pytest.mark.parametrize("nntilde", [False])
+def test_bendable_scripting(module_config, nntilde: bool):
     """test if bended modules can be scripted"""
     module, bended = module_config.get_modules()
     # trace scriptable methods
@@ -44,7 +45,10 @@ def test_bendable_scripting(module_config):
         args, kwargs, _, _ = module_config.get_method_args(method)
         bended.trace(fn=method, *args, **kwargs)
     # script module
-    scripted = bended.script(export_for_nn = False)
+    if nntilde: 
+        scripted = bended.nntilde()
+    else:
+        scripted = bended.script()
     # compare outs
     for method in get_scriptable_methods(module):
         out_orig = getattr(module, method)(*args, **kwargs)
@@ -53,7 +57,8 @@ def test_bendable_scripting(module_config):
 
 
 @pytest.mark.parametrize("module_config", scriptable_modules_to_test)
-def test_bended_scripting(module_config):
+@pytest.mark.parametrize("nntilde", [False])
+def test_bended_scripting(module_config, nntilde: bool):
     module, bended = module_config.get_modules()
     # trace scriptable methods
     for method in get_scriptable_methods(module):
@@ -64,7 +69,11 @@ def test_bended_scripting(module_config):
         bended.bend(cb, fn=method, *bended_weights, *bended_acts)
 
     # script module
-    scripted = bended.script()
+    if nntilde: 
+        scripted = bended.nntilde()
+    else:
+        scripted = bended.script()
+    
     # compare outs
     for method in get_scriptable_methods(module):
         out_orig = getattr(module, method)(*args, **kwargs)
@@ -91,6 +100,8 @@ def test_controlled_bended_scripting(module_config):
     # script module
     scripted = bended.script()
     # compare outs
+
+    torch.set_grad_enabled(False)
     for method in get_scriptable_methods(module):
         # compare with unmasked weights & activations
         param.set_value(1.)

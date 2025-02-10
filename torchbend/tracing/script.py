@@ -42,7 +42,7 @@ def _template_from_param(param: BendingParameter, **kwargs):
 
 class ScriptedBendedModule(nn.Module):
 
-    def __init__(self, model):
+    def __init__(self, model: BendedModule, enable_grad: bool = False):
         """
         ScriptedBendedModule is a extension of the nntile.Module that allows : 
         - automatic scripting / graphing of traced methods
@@ -59,6 +59,8 @@ class ScriptedBendedModule(nn.Module):
             setattr(self, "scripted_methods", list(model._graphs.keys()))
         self._import_model(model)
         self._import_bending(model) 
+        if not enable_grad:
+            self._disable_parameter_grad()
 
     def __repr__(self):
         return f"{type(self).__name__}(original_class={self._original_class}, methods={self._methods}, attributes={self._attributes})"
@@ -148,6 +150,11 @@ class ScriptedBendedModule(nn.Module):
                 else:
                     param_dict[k] = v
         return param_dict
+
+    def _disable_parameter_grad(self):
+        for gm in self._bended_modules:
+            for param in gm.parameters():
+                param.requires_grad_(False)
 
 
     # ____________________________________________________________
