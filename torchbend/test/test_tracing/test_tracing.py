@@ -69,3 +69,15 @@ def test_buffer_trace(module):
     module.trace(**kwargs, )
     module.graph_module()(**kwargs)
 
+
+@pytest.mark.parametrize("module", ttm.MarkTestModule.tests())
+def test_mark_trace(module):
+    module, callback, aliases = module
+    module = tb.BendedModule(module())
+    kwargs = getattr(module, f"{callback}_inputs")
+    module.trace(**kwargs, fn=callback)
+    assert hasattr(module.graph(callback), "aliases")
+    current_aliases = module.graph(callback).aliases
+    for a in aliases:
+        assert a in current_aliases
+        activations = module.activations(f"#{a}", fn=callback)

@@ -282,7 +282,8 @@ class ScriptedRAVE(nn.Module):
         return y
 
     def forward(self, x):
-        return self.decode(self.encode(x), from_forward=True)
+        return self.decode(self.encode(x), from_forward=True)[..., :x.shape[-1]]
+
 
     @torch.jit.export
     def get_learn_target(self) -> bool:

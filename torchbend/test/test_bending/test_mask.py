@@ -13,6 +13,7 @@ from test_modules import modules_to_test, ModuleTestConfig
 @pytest.mark.parametrize('cb_class', [tb.Mask, partial(tb.Mask, dim=-1), tb.OrderedMask, partial(tb.OrderedMask, dim=-1)])
 @pytest.mark.parametrize('module_config', modules_to_test)
 def test_mask_weight(cb_class, module_config):
+    torch.set_grad_enabled(False)
     mod = module_config.get_bended_module()
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:
@@ -36,6 +37,7 @@ def test_mask_weight(cb_class, module_config):
 @pytest.mark.parametrize('cb_class', [tb.Mask, partial(tb.Mask, dim=-1), tb.OrderedMask, partial(tb.OrderedMask, dim=-1)])
 @pytest.mark.parametrize('module_config', modules_to_test)
 def test_mask_activation(cb_class, module_config):
+    torch.set_grad_enabled(False)
     mod = module_config.get_bended_module()
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:

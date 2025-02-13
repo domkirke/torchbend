@@ -22,15 +22,16 @@ def test_interpolation(module_config, n=8):
         # single activations
         for target in activation_targets:
             cb = tb.InterpolateActivation()
+            # TODO when graph is retained with from_activations, remove it if bending dependencies are removed
             mod.reset()
             mod.bend(cb, target)
             outs = mod.get_activations(target, **kwargs, fn=method, _filter_bended=True)
             # unbatched
             interp = torch.randn(outs[target].shape[0])
-            outs_interpolated = mod.from_activations(target, fn=method, **kwargs, **outs, interp_weights=interp)
+            outs_interpolated = mod.from_activations(target, fn=method, **outs, **kwargs, interp_weights=interp)
             # batched
             interp = torch.randn(4, outs[target].shape[0])
-            outs_interpolated = mod.from_activations(target, fn=method, **kwargs, **outs, interp_weights=interp)
+            outs_interpolated = mod.from_activations(target, fn=method, **outs, **kwargs, interp_weights=interp)
 
         # full activations
         if len(activation_targets) > 1:

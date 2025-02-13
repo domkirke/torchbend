@@ -173,6 +173,7 @@ class BendingTracer(torch.fx.Tracer):
         super(BendingTracer, self).__init__(*args, **kwargs)
         self._no_tensor_for_args = _no_tensor_for_args if _no_tensor_for_args is not None else self._no_tensor_for_args
         self.traced_func_name = func 
+        self._aliases = {}
         self._active_contexts = []
         self._current_context = None
 
@@ -191,6 +192,14 @@ class BendingTracer(torch.fx.Tracer):
                 print('[Warning] found value for input %s, but not in signature for function %s'%(i, self.traced_func_name))
         return inputs
 
+    def register_alias(
+            self, 
+            node, 
+            name = None
+    ):
+        name = name or node.name
+        if name not in self._aliases: self._aliases[name] = []
+        self._aliases[name].append(node.name)
 
     def trace(
         self,
@@ -226,6 +235,8 @@ class BendingTracer(torch.fx.Tracer):
 
         graph = self._trace(root, concrete_args)
         graph.flow_steps = self._concrete_flow_steps
+        graph.activations = self._activations
+        graph.aliases = self._aliases
 
         if return_out:
             out_node = list(filter(lambda x: x.op == "output", self.graph.nodes))[0]

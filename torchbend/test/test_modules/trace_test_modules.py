@@ -1,4 +1,5 @@
 import torch, torch.nn as nn
+import torchbend as tb
 from typing import List
 
 
@@ -172,3 +173,36 @@ buffer_trace_test_modules = [
     BufferTestModule()
 ]
         
+
+
+
+class MarkTestModule(nn.Module):
+    forward_1_inputs = {'x': torch.zeros(4, 10)}
+    forward_2_inputs = {'x': torch.zeros(4, 10)}
+
+    def __init__(self):
+        super().__init__()
+        self.linear1 = nn.Linear(10, 10)
+        self.linear2 = nn.Linear(10, 10)
+        self.linear3 = nn.Linear(10, 10)
+
+    @staticmethod
+    def tests():
+        return [(MarkTestModule, 'forward_1', ['crumble']), 
+                (MarkTestModule, 'forward_2', ['crumble'])] 
+
+    
+    def forward_1(self, x):
+        out1 = self.linear1(x)
+        out2 = tb.mark(self.linear2(out1), "crumble")
+        out3 = self.linear3(out2)
+        return out3
+
+    def forward_2(self, x):
+        out1 = self.linear1(x)
+        out2 = tb.mark(self.linear2(out1), "crumble")
+        return out2
+
+mark_test_modules = [
+    MarkTestModule()
+]

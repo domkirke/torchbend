@@ -248,7 +248,6 @@ class BendedModule(object):
                 obj._param_dict[k][kk] = vv.to(*args, **kwargs)
         return obj
 
-
     # -- parameters & weights --
     def weights(self, *flt, exclude=None):
         """get valid weight names from a regexp"""
@@ -328,6 +327,27 @@ class BendedModule(object):
                 activations.update({f"{n}:{k}_bended": ActivationProperties(name=k+"_bended", op="bended", fn=n) for k, v_tp in v.items()})
         return activations
 
+    def _parse_aliases(self, flt):
+        methods, name = flt.split(':')
+        if not name.startswith("#"): 
+            return flt 
+        if not methods.startswith('('): methods = f"({methods})"%methods
+        methods = re.match(r"\(?(\w*)\)?$", methods).groups()[0].split(',')
+        flt_out = []
+        for fn_tmp in methods:
+            graph = self._graphs[fn_tmp]
+            if not hasattr(graph, "aliases"): 
+                print('[Warning] aliases not found for function %s'%fn)
+            method, name = flt.split(':')
+            if name.startswith("#"):
+                name = name[1:]
+                if name not in graph.aliases: continue
+                flt = list(map(lambda x, m=method: f"{m}:{x}", graph.aliases[name]))
+                flt_out.extend(flt)
+            else:
+                flt_out.append(flt)
+        return flt
+
     @_import_to_interface
     def activations(self, *flt, fn="forward", op=None, exclude=_DEFAULT_ACT_EXCLUDE_LIST, with_bended: bool = True, _with_fn: bool = False, _raise_notfound: bool = False):
         if exclude is not None: 
@@ -346,6 +366,9 @@ class BendedModule(object):
         if exclude:
             for i, e in enumerate(exclude):
                 if ":" not in e: exclude[i] = f"({'|'.join(fn)}):{e}"
+        flt = sum([self._parse_aliases(f) for f in flt], [])
+        #TODO
+        # exclude = sum([self._parse_aliases(f) for f in exclude], [])
 
         activations = self.all_activations(with_bended=with_bended)
         if op is not None:
@@ -494,7 +517,7 @@ class BendedModule(object):
             clone_parameters(state_dict, [k])
             if k in self._bended_params[version]:
                 for bc in self._bended_params[version][k]:
-                    state_dict[k] = bc(v, name=k.replace(".", "_"))
+                    state_dict[k] = bc(state_dict[k], name=k.replace(".", "_"))
         return state_dict
 
     def _bended_state_dict_from_interp(self):
@@ -759,8 +782,7 @@ class BendedModule(object):
             else:
                 bended_activations.append(act)
         return bended_activations
-
-    @_import_to_interface
+    
     def _register_method_from_graph(self, graph, fn, method_name) -> NoReturn:
         self._graphs[method_name] = graph
         self._activations[method_name] = {}
@@ -777,7 +799,14 @@ class BendedModule(object):
         setattr(self, method_name, types.MethodType(_get_method_from_graph(method_name), self))
 
     @_import_to_interface
-    def get_activations(self, *activations, fn="forward", _return_graph=False, _save_as_method=None, _filter_bended=False, **inputs):
+    def get_activations(self, 
+                        *activations, 
+                        fn="forward", 
+                        _return_graph=False, 
+                        _save_as_method=None, 
+                        _filter_bended=False,
+                        _return_as_dict=True,
+                        **inputs):
         """return target activations from given inputs."""
         # modify graph
         module = self.bend_module(fn=fn)
@@ -794,8 +823,13 @@ class BendedModule(object):
             outs = gm(**inputs)
         except Exception as e:
             raise BendingError('Error by forwarding graph module. Caught error: \n %s')
+
+        if _return_as_dict:
+            outs = checktuple(outs)
+            outs = {activations[i]: outs[i] for i in range(len(outs))}
         if _save_as_method: 
             self._register_method_from_graph(new_graph, fn, _save_as_method)
+
         if _return_graph:
             return outs, new_graph
         else:
@@ -824,6 +858,7 @@ class BendedModule(object):
         bended_activations = list(filter(lambda a: a in self._bended_activations[fn], activations))
         callbacks = {a: CallbackChain(*self._bended_activations[fn][a]) for a in bended_activations}
         new_graph = graph_from_activations(graph, activations, remove_placeholders=True, parse_inputs_from_callbacks=callbacks)
+        new_graph.__original_func = fn
         gm =  BendedGraphModule(self.bend_module(fn=fn), new_graph)
         outs = gm(**get_kwargs_from_gm(gm, **inputs))
         if _save_as_method:

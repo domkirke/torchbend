@@ -151,8 +151,8 @@ class BendedRAVE(Interface):
         return model
 
     def _bend_model(self, model):
-        model.trace("forward", x=torch.zeros(4, 1, 48000),  _proxied_buffers=self._proxied_buffers)
-        _, (decoder_out,) = model.trace("encode", x=torch.zeros(4, 1, 48000), _proxied_buffers=self._proxied_buffers, _return_out=True)
+        model.trace("forward", x=torch.zeros(4, 1, 65536),  _proxied_buffers=self._proxied_buffers)
+        _, (decoder_out,) = model.trace("encode", x=torch.zeros(4, 1, 65536), _proxied_buffers=self._proxied_buffers, _return_out=True)
         latent_out = model.encoder.reparametrize(decoder_out)[:2][0]
         model.trace("decode", z=latent_out, _proxied_buffers=self._proxied_buffers)
 

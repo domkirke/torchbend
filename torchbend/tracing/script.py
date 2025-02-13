@@ -15,7 +15,7 @@ class ScriptedBendedException(Exception):
 method_template = """
 @torch.jit.export
 def {{METHOD_NAME}}{{SIGNATURE}}:
-    return self._{{CALLBACK_NAME}}{{OUTS}}
+    return self._{{CALLBACK_NAME}}{{INS}}
 """
 
 attribute_template = """
@@ -28,19 +28,20 @@ def set_{{NAME}}(self, value: {{TYPE_EXPR}}) -> int:
     return self._set_bending_control(\"{{NAME}}\", torch.tensor(value, dtype={{DTYPE}}))
 """
 
-
-def _template_from_param(param: BendingParameter, **kwargs):
+def _template_from_param(param: BendingParameter, template=attribute_template, **kwargs):
     kwargs['name'] = kwargs.get('name', param.name)
     if param.param_type == get_param_type("float"):
         kwargs['dtype'] = kwargs.get('dtype', torch.float32)
         kwargs['type_expr'] = kwargs.get('type_expr', "float")
-        return _resolve_code(attribute_template, **kwargs)
+        return _resolve_code(template, **kwargs)
     elif param.param_type == get_param_type("int"):
         kwargs['dtype'] = kwargs.get('dtype', torch.int64)
         kwargs['type_expr'] = kwargs.get('type_expr', "int")
-        return _resolve_code(attribute_template, **kwargs)
+        return _resolve_code(template, **kwargs)
 
 class ScriptedBendedModule(nn.Module):
+    method_template = method_template
+    attribute_template = attribute_template
 
     def __init__(self, model: BendedModule, enable_grad: bool = False):
         """
@@ -58,7 +59,7 @@ class ScriptedBendedModule(nn.Module):
         if not hasattr(self, "scripted_methods"):
             setattr(self, "scripted_methods", list(model._graphs.keys()))
         self._import_model(model)
-        self._import_bending(model) 
+        self._import_bending(model)
         if not enable_grad:
             self._disable_parameter_grad()
 
@@ -68,11 +69,13 @@ class ScriptedBendedModule(nn.Module):
     def _import_model(self, model):
         """Import all the registered methods of a BendedModule into GraphModule calls."""
         self._bended_modules = []
+        self._available_methods = []
         for method in model._graphs.keys():
             bended_module = model.bend_module(fn=method)
             module = model.graph_module(method, module=bended_module, make_jit_compatible=True)
             setattr(self, f"_{method}", module)
             self._bended_modules.append(getattr(self, f"_{method}"))
+            self._available_methods.append(method)
         for attr in dir(model):
             if hasattr(getattr(model, attr), "_export_to_module"):
                 assert attr not in dir(self)
@@ -82,9 +85,24 @@ class ScriptedBendedModule(nn.Module):
     def _make_method(self, method_name: str, callback_name: Optional[str] = None):
         callback_name = callback_name or method_name
         signature = inspect.signature(getattr(self, "_"+callback_name).forward)
+        new_params = dict(signature.parameters)
+        for k, v in dict(new_params).items():
+            if hasattr(v.annotation, "__module__"):
+                if v.annotation.__module__ == "typing":
+                    v._annotation = str(v.annotation)
+                    new_params[k] = v
+        signature._parameters = new_params
+            
         signature_str = "(self, " + str(signature)[1:]
-        outs = "(" + ",".join([f"{i}={i}" for i in signature.parameters]) + ")"
-        return _resolve_code(method_template, method_name=method_name, callback_name=callback_name, signature=signature_str, outs=outs)
+        ins = "(" + ",".join([f"{i}={i}" for i in signature.parameters]) + ")"
+
+
+        return _resolve_code(self.method_template,
+                             method_name=method_name, 
+                             callback_name=callback_name, 
+                             signature=signature_str, 
+                             ins=ins, 
+                             _import_modules=['typing'])
 
     def _register_imported_methods(self, methods: List[str]):
         codes = []
@@ -95,6 +113,7 @@ class ScriptedBendedModule(nn.Module):
         codes = "\n".join(codes)
         methods_defs = _import_defs_from_tmpfile(codes, gl=globals())
         for k, v in methods_defs.items():
+            if not callable(v): continue
             setattr(self, k, MethodType(v, self))
     
     def _import_bending(self, model):
@@ -135,7 +154,7 @@ class ScriptedBendedModule(nn.Module):
         self._set_attribute_callbacks(controllable)
     
     def _set_attribute_callbacks(self, param: BendingParameter) -> Dict[str, Callable]:
-        codes = _template_from_param(param, cls_self=type(self).__name__)
+        codes = _template_from_param(param, template=self.attribute_template, cls_self=type(self).__name__)
         funcs = _import_defs_from_tmpfile(codes, gl=globals(), lo=locals())
         setattr(self, "set_"+param.name, MethodType(funcs["set_"+param.name], self))
         setattr(self, "get_"+param.name, MethodType(funcs["get_"+param.name], self))
@@ -156,6 +175,17 @@ class ScriptedBendedModule(nn.Module):
             for param in gm.parameters():
                 param.requires_grad_(False)
 
+    def _get_graph_for_method(self, method):
+        assert method in self._available_methods
+        method_idx = self._available_methods.index(method)
+        method_graph = self._bended_modules[method_idx].graph
+        return method_graph
+
+    def _get_placeholders_for_method(self, method):
+        method_graph = self._get_graph_for_method(method)
+        if not getattr(method_graph, "activations", None): raise ScriptedBendedException("Cannot extract activations from graph for method %s"%method)
+        input_placeholders = list(filter(lambda x: x.op == "placeholder", method_graph.nodes))
+        return input_placeholders
 
     # ____________________________________________________________
     # operational methods

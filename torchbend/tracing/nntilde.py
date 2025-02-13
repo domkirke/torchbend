@@ -1,10 +1,29 @@
 import torch
-from typing import List
+import math
+import inspect
+import math
+from typing import List, Optional
 from types import MethodType
 import nn_tilde
 from .module import BendedModule
 from .script import ScriptedBendedModule, ScriptedBendedException
+from ..utils import _resolve_code
 
+
+method_template = """
+@torch.jit.export
+def {{METHOD_NAME}}{{SIGNATURE}}:
+    return self._{{CALLBACK_NAME}}({{INS}})
+"""
+
+# specific method templates that split a single input to multi-input.
+method_template_n_args = """
+@torch.jit.export
+def {{METHOD_NAME}}{{SIGNATURE}}:
+    {{INS}} = torch.split(x, {{SECTIONS}}, dim=-2)
+    {{SR_CONVERSION}}
+    return self._{{CALLBACK_NAME}}({{INS}})
+"""
 
 class ListAttribute(torch.jit.Attribute):
 
@@ -19,23 +38,156 @@ class NNBendedModuleException(Exception):
     pass
 
 class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
-    def __init__(self, model):
+    def __init__(self, model, enable_grad: bool = False, force_default: bool = False):
         assert isinstance(model, BendedModule), "NNBendedModule must be initialized with a BendedModule"
         self._methods = ListAttribute([], List[str])
         self._attributes = ListAttribute([], List[str])
         self._get_set_candidates = {}
-        ScriptedBendedModule.__init__(self, model)
+        ScriptedBendedModule.__init__(self, model, enable_grad=enable_grad)
         self._search_for_getter_and_setters(model.module)
 
-        if getattr(getattr(model, "register_nntilde_attributes"), "__isabstractmethod__", False):
-            raise ScriptedBendedException('nntilde_register_attributes is not defined for class %s'%type(model))
-        model.register_nntilde_attributes(self)
+        if not getattr(getattr(model, "register_nntilde_attributes"), "__isabstractmethod__", False):
+            model.register_nntilde_attributes(self)
 
-        if getattr(getattr(model, "register_nntilde_methods"), "__isabstractmethod__", False):
-            raise ScriptedBendedException('register_nntilde_methods is not defined for class %s'%type(model))
-        model.register_nntilde_methods(self)
+        if not getattr(getattr(model, "register_nntilde_methods"), "__isabstractmethod__", False):
+            if not force_default:
+                model.register_nntilde_methods(self)
 
+        self._default_register_methods(force_default)
         self._reset_get_set_candidates()
+
+    def _check_input_type_for_export(self, x):
+        return (x.type is None) or issubclass(x.type, torch.Tensor)
+
+    @torch.jit.export
+    def _adjust_sr(self, x, factor: Optional[float] = 1.):
+        return torch.nn.functional.interpolate(x, scale_factor=factor)
+
+    def method_template(self, n_args=1):
+        if n_args == 1:
+            return method_template
+        else:
+            return method_template_n_args
+
+    def _make_method(self, method_name: str, callback_name: Optional[str] = None):
+        callback_name = callback_name or method_name
+        signature = inspect.signature(getattr(self, "_"+callback_name).forward)
+        new_params = dict(signature.parameters)
+        for k, v in dict(new_params).items():
+            if hasattr(v.annotation, "__module__"):
+                if v.annotation.__module__ == "typing":
+                    v._annotation = str(v.annotation)
+                    new_params[k] = v
+        signature._parameters = new_params
+        signature_str = "(self, x)"
+
+        # parse channel split
+        channel_split = [s[-2] for s in self._get_input_shapes_from_method(callback_name)]
+        ins = ", ".join([f"in{i}" for i in range(len(channel_split))])
+        sections = "(" + ", ".join([str(sp) for sp in channel_split]) + ",)"
+
+        # parse upsampling 
+        n_samples = [s[-1] for s in self._get_input_shapes_from_method(callback_name)]
+        sr_conversion = []
+        for i, n in enumerate(n_samples):
+            if i == 0: continue
+            if n > n_samples[0] or n < n_samples[0]:
+                # factor = n_samples[0] / n
+                factor = n / n_samples[0]
+                sr_conversion.append(f"in{i} = self._adjust_sr(in{i}, {factor})")
+        sr_conversion = "\n".join(sr_conversion)
+
+        n_inputs = len(channel_split)
+        code = _resolve_code(self.method_template(n_inputs),
+                             method_name=method_name, 
+                             callback_name=callback_name, 
+                             signature=signature_str, 
+                             ins=ins if n_inputs > 1 else "x", 
+                             sr_conversion=sr_conversion,
+                             sections=sections,
+                             _import_modules=['typing']) 
+        return code
+
+    
+    def _get_input_shapes_from_method(self, method):
+        input_placeholders = self._get_placeholders_for_method(method)
+        input_placeholders = list(filter(lambda x: self._check_input_type_for_export(x), input_placeholders))
+        method_graph = self._get_graph_for_method(method)
+        input_shapes = [method_graph.activations.get(i.name).shape for i in input_placeholders]
+        return input_shapes
+
+    def _default_register_method(self, method):
+        method_idx = self._available_methods.index(method)
+        method_graph = self._bended_modules[method_idx].graph
+        if not getattr(method_graph, "activations", None): raise ScriptedBendedException("Cannot extract activations from graph for method %s"%method)
+
+        # get inputs
+        input_placeholders = list(filter(lambda x: x.op == "placeholder", method_graph.nodes))
+        input_placeholders = list(filter(lambda x: self._check_input_type_for_export(x), input_placeholders))
+        input_shapes = [method_graph.activations.get(i.name).shape for i in input_placeholders]
+        # if len(set(input_shapes)) != 1:
+        #     raise ScriptedBendedException("Found different input shapes for method %s. Multi-input is available if sharing same shapes"%method)
+        input_shape = input_shapes[0]
+        assert len(input_shape) == 3
+        input_shape = input_shape[-1]
+             
+        # get outputs
+        output_placeholder = list(filter(lambda x: x.op == "output", method_graph.nodes))[0]
+        output_nodes = output_placeholder.args
+        output_shapes = []
+        for o in output_nodes:
+            current_act = method_graph.activations.get(o.name)
+            if current_act is None:
+                raise ScriptedBendedException("Could not find output activation %s for method %s."%(o.name, method))
+            if current_act.shape is None: 
+                raise ScriptedBendedException("shape for activation %s not found, or None."%(current_act.shape))
+            output_shapes.append(current_act.shape)
+        if len(set(output_shapes)) != 1:
+            raise ScriptedBendedException("Found different output shapes for method %s. Multi-input is available if sharing same shapes"%method)
+        output_shape = output_shapes[0]
+        assert len(output_shape) == 3
+        output_shape = output_shape[-1]
+
+        # retrieve channels and labels
+        in_channels = 0
+        out_channels = 0
+        in_labels = []
+        out_labels = []
+        for i, p in enumerate(input_placeholders):
+            in_channels += input_shapes[i][-2]
+            in_labels += ["input %s, channel %d"%(p.name, j) for j in range(input_shapes[i][-2])]
+        for i, p in enumerate(output_nodes):
+            out_channels += output_shapes[i][-2]
+            out_labels += ["output %d, channel %d"%(i, j) for j in range(output_shapes[i][-2])]
+
+        if input_shape > output_shape:
+            ratio = input_shape / output_shape
+            if ratio % 2 != 0: print("[Warning] got ratio %f, may cause discrepencies"%ratio)
+            ratio = round(ratio)
+            in_ratio, out_ratio = 1, ratio 
+        elif input_shape < output_shape:
+            ratio = output_shape / input_shape
+            if ratio % 2 != 0: print("[Warning] got ratio %f, may cause discrepencies"%ratio)
+            ratio = round(ratio)
+            in_ratio, out_ratio = ratio, 1
+        else:
+            in_ratio = out_ratio = 1
+        
+        self.register_method(
+            method, 
+            in_channels=in_channels,
+            in_ratio=in_ratio,
+            out_channels=out_channels,
+            out_ratio=out_ratio,
+            input_labels=in_labels,
+            output_labels=out_labels, 
+            test_method=False
+        )
+
+    def _default_register_methods(self, force_default: bool = False):
+        for method in self._available_methods:
+            if (method in self._methods.value) and (not force_default): continue
+            self._default_register_method(method)
 
     def _search_for_getter_and_setters(self, module):
         _candidates = {}
@@ -52,6 +204,44 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         super()._register_controllable(controllable, controllables_hash)
         self.register_attribute(controllable.name, controllable.get_python_value())
 
+    def _retrieve_act_sr_from_method(self, method):
+
+        def fill_with_children(n, obj):
+            assert isinstance(obj, list)
+            assert isinstance(n, torch.fx.Node)
+            if len(n.users) == 0: 
+                return
+            else:
+                obj.extend(list(n.users))
+                for k in n.users:
+                    fill_with_children(k, obj)
+
+        graph = getattr(self, f"_{method}").graph
+        activations = graph.activations
+        if not activations: 
+            raise ScriptedBendedException("Could not extract activations from graph for method %s."%method)
+        # graph_nodes = {k.name: k for k in list(graph.nodes)}
+        input_placeholder = list(filter(lambda x: x.op == "placeholder", graph.nodes))[0]
+
+        input_children = []
+        fill_with_children(input_placeholder, input_children)
+        input_shape = activations[input_placeholder.name].shape[-1]
+        downsamplings = {}
+
+        for node in input_children:
+            current_shape = activations[node.name].shape[-1]
+            downsamplings[node] = current_shape
+
+        return downsamplings
+
+
+    def _parse_exportable_activations(self):
+        """retrieve exportable activations and corresponding sampling ratios for graph splitting"""
+        for method in self._methods.value:
+            self._retrieve_act_sr_from_method(method)
+        # pass
+            
+
     def register_attribute(self, attribute_name: str, values: nn_tilde.Any | nn_tilde.Tuple[nn_tilde.Any]):
         getter_name = "get_"+attribute_name
         setter_name = "set_"+attribute_name
@@ -64,3 +254,4 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
                 raise NNBendedModuleException(f"setter for attribute {attribute_name} not found.")
             setattr(self, setter_name, self._get_set_candidates[setter_name])
         nn_tilde.Module.register_attribute(self, attribute_name, values)
+

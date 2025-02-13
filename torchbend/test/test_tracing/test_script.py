@@ -120,6 +120,25 @@ def test_controlled_bended_scripting(module_config):
         assert not tb.compare_outs(out_orig, out_scripted)
 
 
+@pytest.mark.parametrize("module_config", scriptable_modules_to_test) 
+@pytest.mark.parametrize("jit", [True, False]) 
+def test_scripting_graph_split(module_config, jit):
+    module, bended = module_config.get_modules()
+    for method in get_scriptable_methods(module):
+        args, kwargs, _, bended_acts = module_config.get_method_args(method)
+        bended.trace(**kwargs, fn=method)
+        for activation in bended_acts:
+            out_act = bended.get_activations(activation, **kwargs, fn=method, _save_as_method=f"{method}_get_{activation}")
+            out = bended.from_activations(activation, **out_act, fn=method, _save_as_method=f"{method}_from_{activation}")
     
+    scripted = bended.script(script=jit)
+    for method in get_scriptable_methods(module):
+        for activation in bended_acts:
+            args, kwargs, _, bended_acts = module_config.get_method_args(method)
+            out_act = getattr(scripted, f"{method}_get_{activation}")(**kwargs)
+            out = getattr(scripted, f"{method}_from_{activation}")(**out_act)
+
+
+
 
 

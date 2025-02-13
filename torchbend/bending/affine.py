@@ -62,7 +62,7 @@ class Affine(BendingCallback):
         self.scale = scale
 
     def __repr__(self):
-        return f"Affine(scale={self.scale:.4f}, bias={self.bias:.4f})"
+        return f"Affine(scale={(self.get('scale')):.4f}, bias={self.get('bias'):.4f})"
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor):
         param.set_(cache * self.get('scale') + self.get('bias'))

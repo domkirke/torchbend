@@ -1,11 +1,15 @@
 from inspect import ismethod
+from typing import NoReturn
 from collections import OrderedDict
 import abc
 from ..tracing import BendedWrapper, BendedModule
 
-def wrap_model_method(ext, func):
+def wrap_model_method(ext, func, hook=None):
     def wrapped_function(*args, **kwargs):
-        return getattr(ext, func)(*args, **kwargs)
+        out = getattr(ext, func)(*args, **kwargs)
+        if hook is not None:
+            out = hook(out, (args, kwargs))
+        return out
     return wrapped_function
 
 
@@ -66,18 +70,31 @@ class Interface(object):
                     exported_methods[attr_name] = attr
         return exported_methods
 
+    def get_activations_hook(self, out, original_args):
+        if original_args[1].get("_save_as_method"):
+            method_name = original_args[1]["_save_as_method"]
+            setattr(self, method_name, wrap_model_method(self._model, method_name))
+        return out
+
+    def from_activations_hook(self, out, original_args):
+        if original_args[1].get("_save_as_method"):
+            method_name = original_args[1]["_save_as_method"]
+            setattr(self, method_name, wrap_model_method(self._model, method_name))
+        return out
+
     def _import_methods(self, model):
         assert isinstance(model, (BendedWrapper, BendedModule))
         exported_methods = self._retrieve_exported_methods()        
-        # import methods to interface
+        # import methods from module to interface
         for attr_name in dir(model):
             attr = getattr(model, attr_name)
             if ismethod(attr) and (hasattr(attr,"__import_to_interface")):
                 if hasattr(self, attr_name):
                     if not getattr(getattr(self, attr_name), "__overload_module", False):
                         raise BendingInterfaceException("method %s seems in conflict with original module method. Add _overload_module decorator, or remove"%attr_name)
+                hook = getattr(self, f"{attr_name}_hook", None)
                 if getattr(attr, "__import_to_interface"):
-                    setattr(self, attr_name, wrap_model_method(self._model, attr_name))
+                    setattr(self, attr_name, wrap_model_method(self._model, attr_name, hook=hook))
         # export methods to module
         for attr_name, attr in exported_methods.items():
             if hasattr(model, attr_name):
@@ -91,6 +108,11 @@ class Interface(object):
     @abc.abstractmethod
     def _bend_model(self, model):
         pass
+
+    def _register_method_from_graph(self, graph, fn, method_name) -> NoReturn:
+        self._model._register_method_from_graph(graph, fn, method_name)
+        setattr(self, method_name, wrap_model_method(self._model, method_name))
+
 
     # nntilde-related callbacks
     @abc.abstractmethod

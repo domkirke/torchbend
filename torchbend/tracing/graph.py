@@ -6,6 +6,11 @@ from torch.fx import Graph
 from typing import List, Dict, Any, Optional
 from .tracing import TraceError
 
+_GRAPH_COPY_ATTR = ['activations', 'aliases']
+def _import_attr_from_original_graph(graph, new_graph):
+    for attr in _GRAPH_COPY_ATTR:
+        setattr(new_graph, attr, getattr(graph, attr, None))
+
 
 def graph_transform_nodes(graph, callbacks, verbose=False):
     new_graph = torch.fx.Graph()
@@ -24,6 +29,7 @@ def graph_transform_nodes(graph, callbacks, verbose=False):
         new_graph.lint()
     except RuntimeError as e:
         raise TraceError("Lint failed after node transformation. Caught error : %s"%(e))
+    _import_attr_from_original_graph(graph, new_graph)
     return new_graph
 
 
@@ -52,6 +58,7 @@ def graph_insert_callbacks(graph, callbacks, verbose=False, _fn_name="forward"):
                 bended_node = new_graph.create_node("call_module", hack_obj_name, args=(env[node.name],), kwargs={'name': f"{_fn_name}:{node.name}"}, name=bended_node_name)
                 env[bended_node_name] = bended_node
                 bended_lookup[node.name] = bended_node
+    _import_attr_from_original_graph(graph, new_graph)
     return new_graph
 
 
@@ -81,8 +88,11 @@ def graph_get_activations(graph: torch.fx.Graph, activations: List[str]):
         if list(out_nodes.keys()) == activations:
             # consider that all needed operations are copied to the amputed graph
             break
-    out_node = out_graph.call_function(dict, kwargs=out_nodes, type_expr=Dict[str, torch.Tensor])
-    out_graph.output(out_node)
+    out_nodes = tuple(out_nodes[a] for a in activations)
+    # out_node = out_graph.call_function(dict, kwargs=out_nodes, type_expr=Dict[str, torch.Tensor])
+    out_graph.output(*out_nodes)
+    if graph.activations is not None:
+        out_graph.activations = {k: graph.activations.get(k) for k in env.keys()}
     return out_graph
 
 def get_single_users(node, out):
@@ -92,7 +102,7 @@ def get_single_users(node, out):
             out.append(n)
             get_single_users(n, out)
 
-def graph_from_activations(graph, activations, remove_placeholders=False, parse_inputs_from_callbacks=None):
+def graph_from_activations(graph, activations, remove_placeholders=True, parse_inputs_from_callbacks=None):
     new_graph = torch.fx.Graph()
     env = {}
     node_act = list(filter(lambda x: x.name in activations, graph.nodes))
@@ -110,7 +120,7 @@ def graph_from_activations(graph, activations, remove_placeholders=False, parse_
     # add placeholders
     ph_orig = list(filter(lambda x: x.op == "placeholder" and x.name not in nodes_to_remove, graph.nodes))
     for p in ph_orig: env[p.name] = new_graph.placeholder(p.name, p.type, *p.args)
-    for a in activations: env[a] = new_graph.placeholder(a, Optional[Any], None) 
+    for a in activations: env[a] = new_graph.placeholder(a, torch.Tensor) 
 
     # parse inputs
     additional_inputs = {}
@@ -140,7 +150,6 @@ def graph_from_activations(graph, activations, remove_placeholders=False, parse_
     for k, v in placeholder_map.items():
         env[k] = new_graph.placeholder(k, v.annotation, v.default)
         
-
     # copy graph
     for n in graph.nodes:
         if n.op == "placeholder": continue
@@ -166,4 +175,9 @@ def graph_from_activations(graph, activations, remove_placeholders=False, parse_
                             new_kwargs[name] = env[name]
                 kwargs = new_kwargs
             env[n.name] = new_graph.create_node(n.op, n.target, args, kwargs, name = n.name)
+
+    if graph.activations is not None:
+        new_graph.activations = {k: graph.activations.get(k) for k in env.keys()}
+    new_graph.__from_op = "from_activations"
+
     return new_graph

@@ -30,6 +30,23 @@ def check_rave_models():
             print(f'[Warning] path {d} not valid for RAVE tests')
     return valid_paths
 
+
+def locate_channel_amount_change(activations, init_channels=1):
+    current_n_channels = init_channels
+    acts = []
+    for n, a in activations.items():
+        if a.op == "placeholder": continue
+        if "getitem" in a.name: continue
+        if "cat" in a.name: continue
+        if "copy" in a.name: continue
+        if not isinstance(a.shape, (tuple, torch.Size)): continue
+        if len(a.shape) < 3: continue
+        if a.shape[-2] != current_n_channels:
+            acts.append(n)
+            current_n_channels = a.shape[-2]
+    return acts
+
+
 RAVE_MODEL_PATHS = check_rave_models()
 RAVE_TEST_BATCH_SIZE = (1, 4)
         
@@ -87,21 +104,6 @@ def test_tracing(model_path, scriptable):
     for method in rave_test_activations: 
         model.print_activations(fn=method, out=Path(model_path) / f"activations_{method}.txt")
 
-    def locate_channel_amount_change(activations, init_channels=1):
-        current_n_channels = init_channels
-        acts = []
-        for n, a in activations.items():
-            if a.op == "placeholder": continue
-            if "getitem" in a.name: continue
-            if "cat" in a.name: continue
-            if "copy" in a.name: continue
-            if not isinstance(a.shape, (tuple, torch.Size)): continue
-            if len(a.shape) < 3: continue
-            if a.shape[-2] != current_n_channels:
-                acts.append(n)
-                current_n_channels = a.shape[-2]
-        return acts
-
     # test encode
     encode_acts = locate_channel_amount_change(model.activations(fn="encode"))[:2]
     decode_acts = locate_channel_amount_change(model.activations(fn="decode"), model.latent_size)[:2]
@@ -152,4 +154,37 @@ def test_nntilde_export(model_path):
     out = model.forward(x)
     z = model.encode(x)
     out = model.decode(z)
+
+
+
+
+@pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
+@pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
+def test_nntilde_split(model_path):
+    model = BendedRAVE(model_path, scriptable=True, strict=RAVE_STRICT_LOADING)
+    x = torch.zeros(1, model.channels, 8192)
+
+    forward_acts = "add_44"
+
+    out = model.get_activations(forward_acts, x=x, _save_as_method=f"get_{forward_acts}")
+    out = model.from_activations(forward_acts, x=x, **out, _save_as_method=f"from_{forward_acts}")
+
+    # check obtained methods
+    out_act = getattr(model, f"get_{forward_acts}")(x)
+    out = getattr(model, f"from_{forward_acts}")(x, out_act)
+
+    model = model.nntilde(script=True, force_default=True)
+
+    out_act = getattr(model, f"get_{forward_acts}")(x)
+    out_act = torch.nn.functional.interpolate(out_act, size=x.shape[-1])
+    from_input = torch.cat([x, out_act], -2)
+    out = getattr(model, f"from_{forward_acts}")(from_input)
+    
+    torch.jit.save(model, '.test.ts')
+    os.remove('.test.ts')
+
+    # out = model(x)
+    # out = model.forward(x)
+    # z = model.encode(x)
+    # out = model.decode(z)
 

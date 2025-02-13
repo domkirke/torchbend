@@ -515,7 +515,9 @@ def print_tensor_ids(*tensors, f=None):
             f.write(out_str)
 
 
-def _resolve_code(code, **kwargs):
+def _resolve_code(code,  _import_modules=[], **kwargs):
+    for module in _import_modules:
+        code = f"import {module}\n" + code
     # pattern = str(code)
     for k, v in kwargs.items():
         pattern = re.compile(r'\{\{%s\}\}'%(k.upper()))
