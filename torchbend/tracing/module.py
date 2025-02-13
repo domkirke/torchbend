@@ -26,9 +26,8 @@ from ..utils import checklist, checktuple, get_parameter, print_tensor_ids
 from ..bending import BendingCallback, CallbackChain, is_bending_callback, BendingConfig
 
 _DEFAULT_ACT_EXCLUDE_LIST = ['getattr.*', 'cat.*', 'getitem.*', 'copy.*', 'reshape.*']
-
-
 _DEFAULT_ACTIVATION_FIELDS = ['name', 'op', 'target', 'shape', 'args', 'kwargs']
+
 def _get_activations_properties(act_prop, fields=None):
     fields = fields or _DEFAULT_ACTIVATION_FIELDS
     return [getattr(act_prop, n) for n in fields]
@@ -330,30 +329,29 @@ class BendedModule(object):
     def _parse_aliases(self, flt):
         methods, name = flt.split(':')
         if not name.startswith("#"): 
-            return flt 
+            return [flt]
         if not methods.startswith('('): methods = f"({methods})"%methods
-        methods = re.match(r"\(?(\w*)\)?$", methods).groups()[0].split(',')
+        methods = re.match(r"\(?([\w|]*)\)?$", methods).groups()[0].split('|')
         flt_out = []
         for fn_tmp in methods:
             graph = self._graphs[fn_tmp]
             if not hasattr(graph, "aliases"): 
-                print('[Warning] aliases not found for function %s'%fn)
+                print('[Warning] aliases not found for function %s'%fn_tmp)
             method, name = flt.split(':')
             if name.startswith("#"):
                 name = name[1:]
                 if name not in graph.aliases: continue
-                flt = list(map(lambda x, m=method: f"{m}:{x}", graph.aliases[name]))
-                flt_out.extend(flt)
+                flt_out.extend(list(map(lambda x, m=method: f"{m}:{x}", graph.aliases[name])))
             else:
                 flt_out.append(flt)
-        return flt
+        return flt_out
 
     @_import_to_interface
-    def activations(self, *flt, fn="forward", op=None, exclude=_DEFAULT_ACT_EXCLUDE_LIST, with_bended: bool = True, _with_fn: bool = False, _raise_notfound: bool = False):
+    def activations(self, *flt, fn=None, op=None, exclude=None, with_bended: bool = True, _with_fn: bool = False, _raise_notfound: bool = False):
         if exclude is not None: 
             exclude = checklist(exclude)
         if isinstance(fn, (tuple, list)) or fn is None:
-            if not _with_fn: raise BendingError("_with_fn keyword should be set to True when multiple functions are given to activations().")
+            _with_fn = True
         
         # add callback to regexp if needed
         if fn is None:
@@ -367,9 +365,8 @@ class BendedModule(object):
             for i, e in enumerate(exclude):
                 if ":" not in e: exclude[i] = f"({'|'.join(fn)}):{e}"
         flt = sum([self._parse_aliases(f) for f in flt], [])
-        #TODO
+        
         # exclude = sum([self._parse_aliases(f) for f in exclude], [])
-
         activations = self.all_activations(with_bended=with_bended)
         if op is not None:
             op = checklist(op)

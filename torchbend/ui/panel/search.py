@@ -14,7 +14,6 @@ def get_fn_filters_from_module(bended_module):
         inline = True
     )
 
-
 def get_activation_names(bended_module, fn):
     with_fn = (len(fn) >= 2)
     if len(fn) == 1: fn = fn[0]
