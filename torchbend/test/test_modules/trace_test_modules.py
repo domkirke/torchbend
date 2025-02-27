@@ -185,23 +185,25 @@ class MarkTestModule(nn.Module):
         self.linear1 = nn.Linear(10, 10)
         self.linear2 = nn.Linear(10, 10)
         self.linear3 = nn.Linear(10, 10)
+        self.act = tb.mark(nn.LeakyReLU(), "pie")
 
     @staticmethod
     def tests():
-        return [(MarkTestModule, 'forward_1', ['crumble']), 
-                (MarkTestModule, 'forward_2', ['crumble'])] 
+        return [(MarkTestModule, 'forward_1', ['crumble', 'pie']), 
+                (MarkTestModule, 'forward_2', ['crumble', 'pie'])] 
 
-    
     def forward_1(self, x):
         out1 = self.linear1(x)
         out2 = tb.mark(self.linear2(out1), "crumble")
         out3 = self.linear3(out2)
-        return out3
+        out = self.act(out3)
+        return out
 
     def forward_2(self, x):
         out1 = self.linear1(x)
         out2 = tb.mark(self.linear2(out1), "crumble")
-        return out2
+        out = self.act(out2)
+        return out 
 
 mark_test_modules = [
     MarkTestModule()

@@ -46,12 +46,14 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         ScriptedBendedModule.__init__(self, model, enable_grad=enable_grad)
         self._search_for_getter_and_setters(model.module)
 
-        if not getattr(getattr(model, "register_nntilde_attributes"), "__isabstractmethod__", False):
-            model.register_nntilde_attributes(self)
+        if hasattr(model, "register_nntilde_attributes"):
+            if not getattr(getattr(model, "register_nntilde_attributes"), "__isabstractmethod__", False):
+                model.register_nntilde_attributes(self)
 
-        if not getattr(getattr(model, "register_nntilde_methods"), "__isabstractmethod__", False):
-            if not force_default:
-                model.register_nntilde_methods(self)
+        if hasattr(model, "register_nntilde_methods"):
+            if not getattr(getattr(model, "register_nntilde_methods"), "__isabstractmethod__", False):
+                if not force_default:
+                    model.register_nntilde_methods(self)
 
         self._default_register_methods(force_default)
         self._reset_get_set_candidates()

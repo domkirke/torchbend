@@ -1,5 +1,6 @@
 import functools
 import torch.fx as fx
+import torch.nn as nn
 from .proxy import BendingProxy
 
 def register_alias(obj, name):
@@ -18,14 +19,15 @@ def mark(*args, obj=None, name=None):
         if isinstance(obj, BendingProxy):
             assert obj is not None
             return register_alias(obj, name)
+        elif isinstance(obj, nn.Module):
+            obj.__tb_register_forward_in_alias = name
+            return obj
         else:
             return obj
     else: 
         # used as a decorator
         def mark_decorator(fn):
-            if isinstance(fn, type):
-                raise NotImplemented
-            elif callable(fn):
+            if callable(fn):
                 @functools.wraps(fn)
                 def wrapper(*args, **kwargs):
                     out = fn(*args, **kwargs)

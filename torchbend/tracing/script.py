@@ -5,6 +5,7 @@ from types import MethodType
 import torch, torch.nn as nn
 from ..bending import BendingParameter, get_param_type, BendingCallback, CallbackChain
 from .module import BendedModule
+from .graphmodule import BendedGraphModule
 from . import CONTROLLABLE_TYPES
 from ..utils import _resolve_code, _import_defs_from_tmpfile
 import nn_tilde
@@ -12,10 +13,16 @@ import nn_tilde
 class ScriptedBendedException(Exception):
     pass
 
-method_template = """
+former_method_template = """
 @torch.jit.export
 def {{METHOD_NAME}}{{SIGNATURE}}:
     return self._{{CALLBACK_NAME}}{{INS}}
+"""
+
+method_template = """
+@torch.jit.export
+def {{METHOD_NAME}}{{SIGNATURE}}:
+    return self.graph_module.{{CALLBACK_NAME}}{{INS}}
 """
 
 attribute_template = """
@@ -65,17 +72,28 @@ class ScriptedBendedModule(nn.Module):
 
     def __repr__(self):
         return f"{type(self).__name__}(original_class={self._original_class}, methods={self._methods}, attributes={self._attributes})"
+
+    @property
+    def available_methods(self):
+        return self._available_methods
     
     def _import_model(self, model):
         """Import all the registered methods of a BendedModule into GraphModule calls."""
         self._bended_modules = []
         self._available_methods = []
-        for method in model._graphs.keys():
-            bended_module = model.bend_module(fn=method)
-            module = model.graph_module(method, module=bended_module, make_jit_compatible=True)
-            setattr(self, f"_{method}", module)
-            self._bended_modules.append(getattr(self, f"_{method}"))
-            self._available_methods.append(method)
+        self.graph_module = model.graph_module(jit_compatible=True)
+        self._available_methods = list(self.graph_module.graph.keys())
+
+        # for method in model._graphs.keys():
+        #     bended_module = model.bend_module(fn=method)
+        #     graph = model.graph(method)
+        #     self._graphs[method] = graph
+        #     module = model.graph_module(method, module=bended_module, make_jit_compatible=True)
+        #     if self.graph_module is None:
+        #         self.graph_module = module
+        #     setattr(self, f"_{method}", module)
+        #     self._bended_modules.append(getattr(self, f"_{method}"))
+        #     self._available_methods.append(method)
         for attr in dir(model):
             if hasattr(getattr(model, attr), "_export_to_module"):
                 assert attr not in dir(self)
@@ -84,7 +102,7 @@ class ScriptedBendedModule(nn.Module):
     
     def _make_method(self, method_name: str, callback_name: Optional[str] = None):
         callback_name = callback_name or method_name
-        signature = inspect.signature(getattr(self, "_"+callback_name).forward)
+        signature = inspect.signature(getattr(self.graph_module, callback_name))
         new_params = dict(signature.parameters)
         for k, v in dict(new_params).items():
             if hasattr(v.annotation, "__module__"):
@@ -95,7 +113,6 @@ class ScriptedBendedModule(nn.Module):
             
         signature_str = "(self, " + str(signature)[1:]
         ins = "(" + ",".join([f"{i}={i}" for i in signature.parameters]) + ")"
-
 
         return _resolve_code(self.method_template,
                              method_name=method_name, 
@@ -142,10 +159,9 @@ class ScriptedBendedModule(nn.Module):
                 cb.update_weight(model_param_dict[param], param_dict[param])
 
     def _update_bended_activations(self, model):
-        for s in self.scripted_methods:
-            for k, v in getattr(self, f"_{s}")._modules.items():
-                if isinstance(v, (CallbackChain, BendingCallback)):
-                    getattr(self, f"_{s}")._modules.__setitem__(k, v.script())
+        for k, v in self.graph_module._modules.items():
+            if isinstance(v, (CallbackChain, BendingCallback)):
+                self.graph_module._modules.__setitem__(k, v.script())
 
     def _register_controllable(self, controllable, controllables_hash):
         for i, b in enumerate(self._bending_callbacks):

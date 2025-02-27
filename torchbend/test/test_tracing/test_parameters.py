@@ -134,6 +134,7 @@ def test_bending_parameters_activations(module_config):
     for method in module_config.get_methods():
         zero_callback = tb.Mask(prob=tb.BendingParameter("param_1", 1.))
         args, kwargs, _, acts = module_config.get_method_args(method)
+        if len(acts) == 0: continue
         out_orig = getattr(module, method)(*args, **kwargs)
 
         bended_module.reset()

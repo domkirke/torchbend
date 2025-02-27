@@ -83,6 +83,23 @@ class WrappedFoo(object):
         out2 = self._foo2.forward_dist(x)
         return out1, out2
 
+class TorchFuncsFoo(nn.Module):
+    __bended_methods__ = ['test_to']
+
+    def __init__(self):
+        super().__init__()
+        self.param1 = nn.Parameter(torch.randn(10))
+
+    def test_to(self, x: torch.Tensor):
+        param1 = self.param1.to(x)
+        param2 = self.param1.to(x.device, x.dtype)
+        
+        x = x.to(torch.float32)
+
+        return param1 + param2 + x
+
+
+
 
 
 modules_to_test = [
@@ -149,7 +166,20 @@ modules_to_test = [
                          True
                     )
         }
+    ),
+    ModuleTestConfig(TorchFuncsFoo,
+                    (tuple(), dict()), 
+                    {
+                     'test_to': (
+                        tuple(),
+                        {"x": torch.randn(1, 1, 10)},
+                        ["param1"], 
+                        [], 
+                        True
+                     )
+                    }
     )
+    
 ]
 
 

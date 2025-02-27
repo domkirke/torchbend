@@ -79,10 +79,8 @@ def rave_get_model_paths(path):
 class BendedRAVE(Interface):
     _imported_callbacks_ = []
 
-    def __init__(self, model_path, strict=True, scriptable=True, _trace=True):
+    def __init__(self, model_path, strict=True, scriptable=True):
         model = self.load_model(model_path, strict=strict)
-
-        # warmup model cache
         model(torch.zeros(1, model.n_channels, 8192))
 
         self.scriptable = scriptable
@@ -90,6 +88,8 @@ class BendedRAVE(Interface):
             self.model = script_rave_model(model)
         else:
             self.model = model
+
+        # warmup model cache
         self.pre_process_latent = MethodType(pre_process_fn[type(self.model.encoder)], self)
         self.post_process_latent = MethodType(post_process_fn[type(self.model.encoder)], self)
 
@@ -150,9 +150,9 @@ class BendedRAVE(Interface):
         model = torch.jit.load(model_path)
         return model
 
-    def _bend_model(self, model):
-        model.trace("forward", x=torch.zeros(4, 1, 65536),  _proxied_buffers=self._proxied_buffers)
-        _, (decoder_out,) = model.trace("encode", x=torch.zeros(4, 1, 65536), _proxied_buffers=self._proxied_buffers, _return_out=True)
+    def _bend_model(self, model: BendedModule):
+        model.trace("forward", x=torch.zeros(1, 1, 65536),  _proxied_buffers=self._proxied_buffers)
+        _, (decoder_out,) = model.trace("encode", x=torch.zeros(1, 1, 65536), _proxied_buffers=self._proxied_buffers, _return_out=True)
         latent_out = model.encoder.reparametrize(decoder_out)[:2][0]
         model.trace("decode", z=latent_out, _proxied_buffers=self._proxied_buffers)
 
@@ -262,7 +262,6 @@ class BendedRAVE(Interface):
             audio = self._model.decode(z)
         if out is not None: self.write_audio(out, audio[0])
         return audio
-
 
 
     # nntilde-related callbacks

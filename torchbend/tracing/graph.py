@@ -2,18 +2,23 @@ import re
 from collections import OrderedDict
 import inspect
 import torch
-from torch.fx import Graph
-from typing import List, Dict, Any, Optional
-from .tracing import TraceError
+from torch.fx import Graph, Node
+from torch.fx._compatibility import compatibility
+# from torch.fx.graph_module import GraphModule
+from typing import List, Dict, Any, Optional, Type
+from .tracing import BendedGraph, TraceError
 
-_GRAPH_COPY_ATTR = ['activations', 'aliases']
-def _import_attr_from_original_graph(graph, new_graph):
-    for attr in _GRAPH_COPY_ATTR:
-        setattr(new_graph, attr, getattr(graph, attr, None))
+
+
+
+# _GRAPH_COPY_ATTR = ['activations', 'aliases']
+# def _import_attr_from_original_graph(graph, new_graph):
+#     for attr in _GRAPH_COPY_ATTR:
+#         setattr(new_graph, attr, getattr(graph, attr, None))
 
 
 def graph_transform_nodes(graph, callbacks, verbose=False):
-    new_graph = torch.fx.Graph()
+    new_graph = BendedGraph(from_graph=graph)
     env = {}
     # then insert
     for node in graph.nodes:
@@ -29,15 +34,16 @@ def graph_transform_nodes(graph, callbacks, verbose=False):
         new_graph.lint()
     except RuntimeError as e:
         raise TraceError("Lint failed after node transformation. Caught error : %s"%(e))
-    _import_attr_from_original_graph(graph, new_graph)
+    # _import_attr_from_original_graph(graph, new_graph)
     return new_graph
 
 
-def graph_insert_callbacks(graph, callbacks, verbose=False, _fn_name="forward"):
+def graph_insert_callbacks(graph, callbacks, verbose=False, fn=None):
     """inserts bending operation into a graph"""
-    new_graph = torch.fx.Graph()
+    new_graph = BendedGraph(from_graph=graph)
     env = {}
     bended_lookup = {}
+    fn_name = fn or graph.fn
     # then insert
     for node in graph.nodes:
         new_node = new_graph.node_copy(node, lambda x: env[x.name])
@@ -54,11 +60,11 @@ def graph_insert_callbacks(graph, callbacks, verbose=False, _fn_name="forward"):
                 print('bending activation %s with function %s...'%(node.name, callbacks[node.name]))
             if callbacks[node.name].needs_insertion:
                 bended_node_name = node.name+"_bended"
-                hack_obj_name = node.name + "_callback"
-                bended_node = new_graph.create_node("call_module", hack_obj_name, args=(env[node.name],), kwargs={'name': f"{_fn_name}:{node.name}"}, name=bended_node_name)
+                hack_obj_name = f"{fn_name}_{node.name}_callback"
+                bended_node = new_graph.create_node("call_module", hack_obj_name, args=(env[node.name],), kwargs={'name': f"{fn_name}:{node.name}"}, name=bended_node_name)
                 env[bended_node_name] = bended_node
                 bended_lookup[node.name] = bended_node
-    _import_attr_from_original_graph(graph, new_graph)
+    # _import_attr_from_original_graph(graph, new_graph)
     return new_graph
 
 
@@ -74,8 +80,8 @@ def _get_new_node_args(env, node):
     else:
         return node
 
-def graph_get_activations(graph: torch.fx.Graph, activations: List[str]):
-    out_graph = torch.fx.Graph()
+def graph_get_activations(graph: BendedGraph, activations: List[str]):
+    out_graph = BendedGraph(from_graph=graph)
     env = {}
     out_nodes = {}
     for node in list(graph.nodes):
@@ -90,7 +96,10 @@ def graph_get_activations(graph: torch.fx.Graph, activations: List[str]):
             break
     out_nodes = tuple(out_nodes[a] for a in activations)
     # out_node = out_graph.call_function(dict, kwargs=out_nodes, type_expr=Dict[str, torch.Tensor])
-    out_graph.output(*out_nodes)
+    if len(out_nodes) == 1:
+        out_graph.output(out_nodes[0])
+    else:
+        out_graph.output(out_nodes)
     if graph.activations is not None:
         out_graph.activations = {k: graph.activations.get(k) for k in env.keys()}
     return out_graph
@@ -103,7 +112,7 @@ def get_single_users(node, out):
             get_single_users(n, out)
 
 def graph_from_activations(graph, activations, remove_placeholders=True, parse_inputs_from_callbacks=None):
-    new_graph = torch.fx.Graph()
+    new_graph = BendedGraph(from_graph=graph)
     env = {}
     node_act = list(filter(lambda x: x.name in activations, graph.nodes))
     nodes_to_remove = []
@@ -119,8 +128,12 @@ def graph_from_activations(graph, activations, remove_placeholders=True, parse_i
 
     # add placeholders
     ph_orig = list(filter(lambda x: x.op == "placeholder" and x.name not in nodes_to_remove, graph.nodes))
-    for p in ph_orig: env[p.name] = new_graph.placeholder(p.name, p.type, *p.args)
+    # organize placeholders well
+    nondefault_placeholders = list(filter(lambda x: len(x.args) == 0, ph_orig))
+    default_placeholders = list(filter(lambda x: len(x.args) > 0, ph_orig))
+    for p in nondefault_placeholders: env[p.name] = new_graph.placeholder(p.name, p.type)
     for a in activations: env[a] = new_graph.placeholder(a, torch.Tensor) 
+    for p in default_placeholders: env[p.name] = new_graph.placeholder(p.name, p.type, *p.args)
 
     # parse inputs
     additional_inputs = {}

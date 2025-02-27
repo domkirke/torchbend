@@ -37,6 +37,7 @@ def test_noise_activations(cb_class, module_config):
     mod = module_config.get_bended_module()
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:
+        if len(activation_targets) == 0: continue
         mod.reset()
         mod.trace(method, **kwargs)
         out_orig = getattr(mod, method)(*args, **kwargs)
@@ -66,7 +67,7 @@ def test_noise_script(cb_class, module_config, jit):
 
         std = tb.bending.BendingParameter('scale', 1.)
         mask_callback = cb_class(std=std)
-        mod.bend(mask_callback, *activation_targets)
+        mod.bend(mask_callback, *weight_targets, *activation_targets)
         out_orig = getattr(mod, method)(*args, **kwargs)
         
         scripted = mod.script(script=jit)

@@ -9,7 +9,7 @@ class InterpolateActivation(BendingCallback):
     nntilde_compatible = False
     controllable_params = []
 
-    def _interp_activations(self, x, interp_weights, softmax=False):
+    def _interp_activations(self, x, interp_weights, softmax: bool = False):
         assert interp_weights.shape[-1] == x.shape[0]
         if softmax: interp_weights = torch.nn.functional.softmax(interp_weights, dim=-1)
         if interp_weights.ndim == 1:
@@ -19,7 +19,7 @@ class InterpolateActivation(BendingCallback):
         out = ((interp_weights_r * x_r).sum(-interp_weights_r.ndim+1))
         return out
         
-    def forward(self, x: torch.Tensor, name: Optional[str] = None, interp_weights: Optional[torch.Tensor] = None, softmax: bool = False):
+    def forward(self, x, name: Optional[str] = None, interp_weights: Optional[torch.Tensor] = None, softmax: bool = False):
         if (interp_weights is None):
             return x
         else:

@@ -14,6 +14,7 @@ from test_modules import modules_to_test, ModuleTestConfig
 @pytest.mark.parametrize('module_config', modules_to_test)
 def test_capture(module_config, n = 4):
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:
+        if len(activation_targets) == 0: continue
         mod = module_config.get_bended_module()
         mod.trace(fn=method, **kwargs)
         cb = tb.Capture()
@@ -34,6 +35,7 @@ def test_capture(module_config, n = 4):
 @pytest.mark.parametrize('module_config', modules_to_test)
 def test_capture_env(module_config, n = 4):
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:
+        if len(activation_targets) == 0: continue
         mod = module_config.get_bended_module()
         mod.trace(fn=method, **kwargs)
         cb = tb.Capture()
@@ -55,6 +57,7 @@ def test_capture_env(module_config, n = 4):
 def test_interpolation_env(module_config, n=8):
     mod = module_config.get_bended_module()
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:    
+        if len(activation_targets) == 0: continue
         mod.trace(fn=method, **kwargs)
         for target in activation_targets:
             mod.reset()

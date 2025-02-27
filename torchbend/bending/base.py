@@ -71,11 +71,11 @@ def _create_forward_function(additional_args):
     parsed_add_args = []
     for k, v in is_list.items():
         if v == 1:
-            parsed_add_args.append(f"{k}: Optional[{types[k][0]}] = {_make_default_arg(defaults[k][0])}")
+            parsed_add_args.append(f"{k}: {types[k][0]}= {_make_default_arg(defaults[k][0])}")
         else:
             types[k] = ",".join(types[k])
             defaults[k] = "[" + ", ".join(map(_make_default_arg, defaults[k])) + "]"
-            parsed_add_args.append(f"{k}: Optional[Tuple[{types[k]}]] = {defaults[k]}")
+            parsed_add_args.append(f"{k}: Tuple[{types[k]}] = {defaults[k]}")
         # annotation = c[1].annotation.__name__ if is_list.get(c[0]) == 0 else "List[%s]"%(c[1].annotation.__name__)
         # parsed_add_args.append(f"{c[1].name}: {annotation} = {c[1].}")
     

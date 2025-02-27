@@ -1,5 +1,6 @@
 import torch
 import torchbend as tb
+from torchbend.utils import checktuple
 import pytest
 import sys, os
 from types import MethodType
@@ -135,10 +136,7 @@ def test_scripting_graph_split(module_config, jit):
     for method in get_scriptable_methods(module):
         for activation in bended_acts:
             args, kwargs, _, bended_acts = module_config.get_method_args(method)
-            out_act = getattr(scripted, f"{method}_get_{activation}")(**kwargs)
-            out = getattr(scripted, f"{method}_from_{activation}")(**out_act)
-
-
-
+            out_act = checktuple(getattr(scripted, f"{method}_get_{activation}")(**kwargs))
+            out = getattr(scripted, f"{method}_from_{activation}")(*out_act)
 
 

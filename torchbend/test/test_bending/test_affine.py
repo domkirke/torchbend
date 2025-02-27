@@ -16,6 +16,7 @@ def test_affine_activation(cb_class, module_config):
     mod = module_config.get_bended_module()
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config:
+        if len(activation_targets) == 0: continue
         mod.reset()
         mod.trace(method, **kwargs)
         args, kwargs, _, _ = module_config.get_method_args(method)

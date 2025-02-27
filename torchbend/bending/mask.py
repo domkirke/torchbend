@@ -99,10 +99,12 @@ class Mask(BendingCallback):
 
     def update(self):
         for i, v in enumerate(self._masks):
-            v.set_(self._init_mask(v.shape))
+            with torch.no_grad():
+                v.set_(self._init_mask(v.shape))
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor) -> None:
-        param.set_(self.get_mask_from_id(idx) * cache)
+        with torch.no_grad():
+            param.set_(self.get_mask_from_id(idx) * cache)
 
     def bend_input(self, param: torch.Tensor, name: Optional[str] = None):
         mask = self.get_mask(param, name).to(param)

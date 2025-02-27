@@ -1,23 +1,26 @@
-import re, copy
+import re, copy, math
 from dataclasses import dataclass
 from enum import Enum
 import inspect
 import sys
 import torch
 import functools
-from types import FunctionType
+from types import FunctionType, ModuleType
 from typing import Union, Callable, Optional, Any, Dict, List, Type, Iterable, Tuple
 from torch._C import ScriptObject  # type: ignore[attr-defined]
 from torch.fx._symbolic_trace import _proxyable_classes, Tracer, _Patcher, _autowrap_check, _patch_wrapped_functions
+from torch.fx._compatibility import compatibility
 from torch.fx.proxy import Proxy, TraceError, TracerBase, ParameterProxy
 from torch.fx.node import Argument, Node
 from torch.fx.graph import Graph, _register_custom_builtin
+from torch.fx.graph import CodeGen, _Namespace, _FindNodesLookupTable
 
 from .. import distributions as dist, DEBUG
 from .proxy import BendingProxy, BendingProxyInt, CodePosition, ShapeAttribute, TracingState, get_code_pos_from_frame
 from .input import Inputs
 from ..utils import checklist, checktuple
 from .utils import dist_to_tensor
+from .mark import mark
 
 _orig_module_call: Callable = torch.nn.Module.__call__
 _orig_module_getattr: Callable = torch.nn.Module.__getattr__
@@ -88,12 +91,20 @@ def wrapped_reversed(*args):
 def tensor(*args):
     return torch.tensor(*args)
 
+def wrap_torch_func(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+    return wrapper
+
+
 def _patch_tb_funcs(patcher: _Patcher, frame_dict: Dict[str, Any]):
     patcher.patch(frame_dict, "range", wrapped_range)
     patcher.patch(frame_dict, "reversed", wrapped_reversed)
     if "tensor" not in frame_dict:
         frame_dict['tensor'] = tensor
         patcher.patch(frame_dict, "tensor", tensor)
+    
 
 
 class FlowStep():
@@ -161,6 +172,90 @@ class TracingContext():
 
 
 
+#TODO make that modular with custom definitions given by BendingModule / interfaces
+
+def get_patched_torch_fns():
+    return {
+        'bartlett_window': torch.bartlett_window,
+        'hamming_window': torch.hamming_window, 
+        'blackman_window': torch.blackman_window,
+        'kaiser_window': torch.kaiser_window
+    }
+
+
+# OVERLOADED GRAPH FOR CUSTOM CALLBACK TRACING
+
+
+
+class BendedGraph(torch.fx.Graph):
+    _GRAPH_COPY_ATTR = ['activations', 'aliases']
+    @compatibility(is_backward_compatible=True)
+    def __init__(
+        self,
+        func: str = "forward",
+        owning_module: Optional["BendedGraphModule"] = None,
+        tracer_cls: Optional[Type["BendingTracer"]] = None,
+        tracer_extras: Optional[Dict[str, Any]] = None,
+        from_graph: Optional["BendedGraph"] = None
+    ):
+        """
+        Construct an empty Graph.
+        """
+        if from_graph is not None:
+            self._import_from_graph(from_graph, owning_module=owning_module)
+        else:
+            self._root: Node = Node(self, "", "root", "", (), {})
+            self._used_names: Dict[str, int] = {}  # base name -> number
+            self._insert = self._root.prepend
+            self._len = 0
+            self._graph_namespace = _Namespace()
+            self._owning_module = owning_module
+            self._tracer_cls = tracer_cls
+            self._tracer_extras = tracer_extras
+            self._func_name = func
+            self._original_func_name = None
+            self._codegen = CodeGen()
+            self._codegen._func_name = func
+            self._co_fields: Dict[str, Any] = {}
+            self._find_nodes_lookup_table = _FindNodesLookupTable()
+
+    def _import_from_graph(self, graph, owning_module):
+        self._root: Node = Node(self, "", "root", "", (), {})
+        self._used_names: Dict[str, int] = {}  # base name -> number
+        self._insert = self._root.prepend
+        self._len = 0
+        self._graph_namespace = _Namespace()
+        self._owning_module = owning_module
+        self._tracer_cls = graph._tracer_cls
+        self._tracer_extras = graph._tracer_extras
+        self._func_name = graph._func_name
+        self._original_func_name = graph._func_name
+        self._codegen = CodeGen()
+        self._codegen._func_name = graph._func_name
+        self._co_fields: Dict[str, Any] = {}
+        self._find_nodes_lookup_table = _FindNodesLookupTable()
+        for attr in type(self)._GRAPH_COPY_ATTR:
+            setattr(self, attr, getattr(graph, attr, None))
+
+
+    @property
+    def fn(self):
+        return self._func_name
+
+    @fn.setter
+    def fn(self, name):
+        if name == self._func_name: return
+        self._func_name = name
+        self._codegen._func_name = name
+
+    def change_target_bending_method(self, new_method):
+        if self.fn == new_method: return
+        for n in list(self.nodes):
+            if n.op == "call_module" and n.name.endswith("_bended"):
+                n.target = re.sub(self._func_name, new_method, n.target)
+        self.fn = new_method
+
+
 
 
 class BendingTracer(torch.fx.Tracer):
@@ -169,8 +264,15 @@ class BendingTracer(torch.fx.Tracer):
     proxy_buffer_attributes = False 
     _no_tensor_for_args = False
 
-    def __init__(self, *args, func="forward", _no_tensor_for_args=None, **kwargs):
-        super(BendingTracer, self).__init__(*args, **kwargs)
+    def __init__(self, 
+                 *args, 
+                 func="forward", 
+                 autowrap_modules: Tuple[ModuleType] = (math,),
+                 autowrap_functions: Tuple[Callable, ...] = (),
+                 _no_tensor_for_args=None, 
+                 **kwargs):
+        autowrap_functions += tuple(get_patched_torch_fns().values())
+        super(BendingTracer, self).__init__(*args, autowrap_modules=autowrap_modules, autowrap_functions=autowrap_functions, **kwargs)
         self._no_tensor_for_args = _no_tensor_for_args if _no_tensor_for_args is not None else self._no_tensor_for_args
         self.traced_func_name = func 
         self._aliases = {}
@@ -805,9 +907,9 @@ class BendingTracer(torch.fx.Tracer):
         self,
         root: Union[torch.nn.Module, Callable[..., Any]],
         concrete_args: Optional[Dict[str, Any]] = None,
-    ) -> Graph:
+    ) -> BendedGraph:
         """
-        Trace ``root`` and return the corresponding FX ``Graph`` representation. ``root``
+        Trace ``root`` and return the corresponding FX ``BendedGraph`` representation. ``root``
         can either be an ``nn.Module`` instance or a Python callable.
 
         Note that after this call, ``self.root`` may be different from the ``root`` passed
@@ -827,7 +929,7 @@ class BendingTracer(torch.fx.Tracer):
 
         Returns:
 
-            A ``Graph`` representing the semantics of the passed-in ``root``.
+            A ``BendedGraph`` representing the semantics of the passed-in ``root``.
         """
         global _is_fx_tracing_flag
         old_is_fx_tracing_flag = _is_fx_tracing_flag
@@ -855,7 +957,7 @@ class BendingTracer(torch.fx.Tracer):
                 fn = root
 
             tracer_cls: Optional[Type[Tracer]] = getattr(self, "__class__", None)
-            self.graph = Graph(tracer_cls=tracer_cls)
+            self.graph = BendedGraph(tracer_cls=tracer_cls, func=self.traced_func_name)
             if hasattr(fn, '__code__'):
                 code = fn.__code__
                 self.graph._co_fields = {
@@ -927,7 +1029,10 @@ class BendingTracer(torch.fx.Tracer):
                     self._autowrap_function_ids,
                 )
                 _patch_tb_funcs(patcher , getattr(getattr(mod, "forward", mod), "__globals__", {}))
-                return self.call_module(mod, forward, args, kwargs)
+                out = self.call_module(mod, forward, args, kwargs)
+                if hasattr(mod, "__tb_register_forward_in_alias"):
+                    out = mark(obj=out, name=mod.__dict__['__tb_register_forward_in_alias'])
+                return out
             
             @functools.wraps(_orig_tensor_getitem)
             def tensor_getitem_wrapper(ts, item):

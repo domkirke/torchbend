@@ -49,6 +49,8 @@ class ModuleTestConfig():
     def activation_targets(self, fn="forward"):
         return self.callback_with_args[fn][3]
 
-    def weight_targets(self, fn="forward"):
+    def weight_targets(self, fn=None):
+        if fn is None:
+            fn = list(self.callback_with_args.keys())[0]
         return self.callback_with_args[fn][2]
 

@@ -160,12 +160,12 @@ def test_nntilde_export(model_path):
 
 @pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
 @pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
-def test_nntilde_split(model_path):
+@pytest.mark.parametrize("jit", [True, False])
+def test_nntilde_split(model_path, jit):
     model = BendedRAVE(model_path, scriptable=True, strict=RAVE_STRICT_LOADING)
     x = torch.zeros(1, model.channels, 8192)
 
-    forward_acts = "add_44"
-
+    forward_acts = model.graph().aliases['activations'][0]
     out = model.get_activations(forward_acts, x=x, _save_as_method=f"get_{forward_acts}")
     out = model.from_activations(forward_acts, x=x, **out, _save_as_method=f"from_{forward_acts}")
 
@@ -173,15 +173,16 @@ def test_nntilde_split(model_path):
     out_act = getattr(model, f"get_{forward_acts}")(x)
     out = getattr(model, f"from_{forward_acts}")(x, out_act)
 
-    model = model.nntilde(script=True, force_default=True)
+    model = model.nntilde(script=jit, force_default=True)
 
     out_act = getattr(model, f"get_{forward_acts}")(x)
     out_act = torch.nn.functional.interpolate(out_act, size=x.shape[-1])
     from_input = torch.cat([x, out_act], -2)
     out = getattr(model, f"from_{forward_acts}")(from_input)
     
-    torch.jit.save(model, '.test.ts')
-    os.remove('.test.ts')
+    if jit:
+        torch.jit.save(model, '.test.ts')
+        os.remove('.test.ts')
 
     # out = model(x)
     # out = model.forward(x)

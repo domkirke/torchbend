@@ -101,6 +101,10 @@ def test_graph(module_config):
             graph, out_bended = bended_module.trace(method, *args, **kwargs, _return_out=True)
             assert bended_module.is_traced(method)
             assert bended_module.graph(method)
+            graph_module = bended_module.graph_module()
+            out = getattr(graph_module, method)(*args, **kwargs)
+            out = checktuple(out)
+            out_bended = checktuple(out_bended)
             for i, o in enumerate(out_bended):
                 is_equal = tb.compare_outs(out[i], o)
                 assert bool(is_equal), "outputs are not equal for method %s ; got %s"%(method, is_equal)
@@ -212,11 +216,13 @@ def test_activation_getter(module_config):
         args, kwargs, _, _ = module_config.get_method_args(method)
         bended_module.trace(*args, **kwargs, fn=method)
         targets = module_config.activation_targets(method)
+        if len(targets) == 0:
+            continue
         outs = bended_module.get_activations(*targets, **kwargs, fn=method)
-        assert set(targets) == set(outs.keys()) 
+        assert set(targets) == set(outs.keys())
         bended_module.bend(cb, *targets, fn=method)
-        outs_bended = bended_module.get_activations(*targets, **kwargs, fn=method, _save_as_method="getter") 
-        outs_bended_2 = getattr(bended_module, "getter")(**kwargs)
+        outs_bended = bended_module.get_activations(*targets, **kwargs, fn=method, _save_as_method="getter")
+        outs_bended_2 = {targets[i]: o for i, o in enumerate(checktuple(getattr(bended_module, "getter")(**kwargs)))}
         for t in targets:
             assert bool(tb.compare_outs(outs[t], outs_bended[t]))
             assert bool(tb.compare_outs(outs[t], outs_bended_2[t]))
@@ -234,6 +240,7 @@ def test_activation_bending(module_config):
 
     for method in module_config.get_methods():
         args, kwargs, _, bended_activations = module_config.get_method_args(method)
+        if len(bended_activations) == 0: continue
         bended_module.trace(method, *args, **kwargs)
         bended_module.print_activations(fn=method)
 
@@ -247,7 +254,7 @@ def test_activation_bending(module_config):
 
         for t in bended_activations:
             outs = bended_module.get_activations(t, **kwargs, fn=method)
-            outs_bended = bended_module.get_activations(f"{t}_bended", **kwargs, fn=method)
+            outs_bended = bended_module.get_activations(t, **kwargs, bended=True, fn=method)
             assert tb.compare_outs(outs_bended[f"{t}_bended"], torch.zeros_like(outs[t]))
 
 

@@ -226,6 +226,30 @@ def compare_state_dict_tensors(dict1, dict2):
 def identity(x: Any) -> Any:
     return x
 
+_exclude_module_for_signature = ['builtins']
+
+def _str_from_placeholder(node):
+    rep = node.name
+    if node.type:
+        rep += ": "
+        if getattr(node.type, "__module__", None) == "typing":
+            rep += f"{str(node.type)}"
+        else:
+            if hasattr(node.type, "__module__"):
+                if node.type.__module__ not in _exclude_module_for_signature: rep += f"{node.type.__module__}."
+            rep += f"{node.type.__name__}"
+    if len(node.args) > 0:
+        rep += f"={node.args[0]}"
+    return rep
+
+def _get_signature_from_graph(graph: torch.fx.Graph):
+    placeholders = list(filter(lambda x: x.op == "placeholder", graph.nodes))
+    return ", ".join(list(map(_str_from_placeholder, placeholders)))
+
+def _get_graph_inputs(graph: torch.fx.Graph):
+    placeholders = list(filter(lambda x: x.op == "placeholder", graph.nodes))
+    return ", ".join([f"{x.name}={x.name}" for x in placeholders])
+
     
 def make_graph_jit_compatible(graph: torch.fx.Graph):
     #TODO
@@ -279,8 +303,8 @@ def named_parameters(obj):
         return named_parameters
 
 
-def get_kwargs_from_gm(gm, **kwargs):
-    target_kwargs = list(filter(lambda x: x.op == "placeholder", gm.graph.nodes))
+def get_kwargs_from_gm(gm, fn="forxward", **kwargs):
+    target_kwargs = list(filter(lambda x: x.op == "placeholder", gm.graph[fn].nodes))
     target_kwargs_names = [n.name for n in target_kwargs]
     missing_kwargs = list(filter(lambda x: x.name not in kwargs.keys() and len(x.args) == 0, target_kwargs))
     if len(missing_kwargs) > 0: raise RuntimeError('missing kwargs : %s'%missing_kwargs)
