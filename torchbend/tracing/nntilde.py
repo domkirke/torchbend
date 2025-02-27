@@ -13,7 +13,7 @@ from ..utils import _resolve_code
 method_template = """
 @torch.jit.export
 def {{METHOD_NAME}}{{SIGNATURE}}:
-    return self._{{CALLBACK_NAME}}({{INS}})
+    return self.graph_module.{{CALLBACK_NAME}}({{INS}})
 """
 
 # specific method templates that split a single input to multi-input.
@@ -22,7 +22,7 @@ method_template_n_args = """
 def {{METHOD_NAME}}{{SIGNATURE}}:
     {{INS}} = torch.split(x, {{SECTIONS}}, dim=-2)
     {{SR_CONVERSION}}
-    return self._{{CALLBACK_NAME}}({{INS}})
+    return self.graph_module.{{CALLBACK_NAME}}({{INS}})
 """
 
 class ListAttribute(torch.jit.Attribute):
@@ -73,7 +73,7 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
 
     def _make_method(self, method_name: str, callback_name: Optional[str] = None):
         callback_name = callback_name or method_name
-        signature = inspect.signature(getattr(self, "_"+callback_name).forward)
+        signature = inspect.signature(getattr(self.graph_module, callback_name))
         new_params = dict(signature.parameters)
         for k, v in dict(new_params).items():
             if hasattr(v.annotation, "__module__"):
@@ -119,8 +119,7 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         return input_shapes
 
     def _default_register_method(self, method):
-        method_idx = self._available_methods.index(method)
-        method_graph = self._bended_modules[method_idx].graph
+        method_graph = self._get_graph_for_method(method)
         if not getattr(method_graph, "activations", None): raise ScriptedBendedException("Cannot extract activations from graph for method %s"%method)
 
         # get inputs

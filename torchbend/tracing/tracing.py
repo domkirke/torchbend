@@ -252,7 +252,7 @@ class BendedGraph(torch.fx.Graph):
         if self.fn == new_method: return
         for n in list(self.nodes):
             if n.op == "call_module" and n.name.endswith("_bended"):
-                n.target = re.sub(self._func_name, new_method, n.target)
+                n.target = re.sub(f"^{self._func_name}", new_method, n.target)
         self.fn = new_method
 
 

@@ -882,9 +882,8 @@ class BendedModule(object):
         bended_activations = list(filter(lambda a: a in self._bended_activations[fn], activations))
         callbacks = {a: CallbackChain(*self._bended_activations[fn][a]) for a in bended_activations}
         new_graph = graph_from_activations(graph, activations, remove_placeholders=True, parse_inputs_from_callbacks=callbacks)
-        new_graph.fn = "forward"
-        gm =  BendedGraphModule(self.bend_module(fn=fn), forward=new_graph)
-        outs = gm(**get_kwargs_from_gm(gm, fn="forward", **inputs))
+        gm =  BendedGraphModule(self.bend_module(fn=fn), **{fn: new_graph})
+        outs = getattr(gm, fn)(**get_kwargs_from_gm(gm, fn=fn, **inputs))
         if _save_as_method:
             self._register_method_from_graph(activations, new_graph, fn, _save_as_method)
         if _return_graph:

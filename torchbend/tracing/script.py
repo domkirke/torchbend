@@ -193,8 +193,7 @@ class ScriptedBendedModule(nn.Module):
 
     def _get_graph_for_method(self, method):
         assert method in self._available_methods
-        method_idx = self._available_methods.index(method)
-        method_graph = self._bended_modules[method_idx].graph
+        method_graph = self.graph_module.graph[method]
         return method_graph
 
     def _get_placeholders_for_method(self, method):
