@@ -297,11 +297,17 @@ class BendingTracer(torch.fx.Tracer):
     def register_alias(
             self, 
             node, 
-            name = None
+            name = None,
+            mode = "post", 
     ):
         name = name or node.name
         if name not in self._aliases: self._aliases[name] = []
-        self._aliases[name].append(node.name)
+        if mode == "post":
+            self._aliases[name].append(node.name)
+        elif mode == "pre": 
+           self._aliases[name].extend(node.args) 
+        else:
+            raise TraceError('mark mode %s not known'%mode)
 
     def trace(
         self,
@@ -1031,7 +1037,8 @@ class BendingTracer(torch.fx.Tracer):
                 _patch_tb_funcs(patcher , getattr(getattr(mod, "forward", mod), "__globals__", {}))
                 out = self.call_module(mod, forward, args, kwargs)
                 if hasattr(mod, "__tb_register_forward_in_alias"):
-                    out = mark(obj=out, name=mod.__dict__['__tb_register_forward_in_alias'])
+                    name, mode = mod.__dict__['__tb_register_forward_in_alias']
+                    out = mark(obj=out, name=name, mode=mode)
                 return out
             
             @functools.wraps(_orig_tensor_getitem)
