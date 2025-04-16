@@ -9,20 +9,10 @@ def register_alias(obj, name, mode):
     obj.tracer.register_alias(obj.node, name, mode)
     return obj
 
-def mark_decorator(fn):
-    if callable(fn):
-        @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
-            out = fn(*args, **kwargs)
-            out = mark(obj=out, name=name)
-            return out
-        return wrapper
-    else:
-        raise RuntimeError()
 
 
 @torch.jit.ignore
-def mark(obj: Optional[Any] = None, name: Optional[str] = None, mode: Optional[str] = "post") -> Any:
+def mark_fn(obj: Optional[Any] = None, name: Optional[str] = None, mode: Optional[str] = "post") -> Any:
     if obj is not None:
         if isinstance(obj, BendingProxy):
             assert obj is not None
@@ -33,5 +23,25 @@ def mark(obj: Optional[Any] = None, name: Optional[str] = None, mode: Optional[s
         else:
             return obj
     else: 
+        def mark_decorator(fn):
+            if callable(fn):
+                @functools.wraps(fn)
+                def wrapper(*args, **kwargs):
+                    out = fn(*args, **kwargs)
+                    out = mark_fn(obj=out, name=name)
+                    return out
+                return wrapper
+            else:
+                raise RuntimeError()
         # used as a decorator
         return mark_decorator
+
+
+def mark(obj: Optional[Any] = None, name: Optional[str] = None, mode: Optional[str] = "post") -> torch.Tensor:
+    if torch.jit.is_scripting() or torch.jit.is_tracing():
+        if torch.jit.isinstance(obj, torch.Tensor):
+            return obj
+        else: 
+            raise RuntimeError("when scripting, torchbend marking is only scriptable with tensors")
+    else: 
+        return mark_fn(obj=obj, name=name, mode=mode)

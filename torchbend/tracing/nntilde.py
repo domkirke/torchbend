@@ -2,7 +2,7 @@ import torch
 import math
 import inspect
 import math
-from typing import List, Optional
+from typing import List, Optional, Any, Tuple
 from types import MethodType
 import nn_tilde
 from .module import BendedModule
@@ -243,7 +243,7 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         # pass
             
 
-    def register_attribute(self, attribute_name: str, values: nn_tilde.Any | nn_tilde.Tuple[nn_tilde.Any]):
+    def register_attribute(self, attribute_name: str, values: Any | Tuple[Any]):
         getter_name = "get_"+attribute_name
         setter_name = "set_"+attribute_name
         if not hasattr(self, getter_name):
