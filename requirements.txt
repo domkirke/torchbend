@@ -1,3 +1,5 @@
+gin-config
+pytest
 tabulate
 astor
 numpy
@@ -5,8 +7,9 @@ matplotlib
 pandas
 jupyter
 torch > 1.8
+torchaudio > 1.8
 dill
-nn-tilde
+nn-tilde>=1.6
 plotly
 flask
 flask-moment

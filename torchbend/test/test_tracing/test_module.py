@@ -5,13 +5,13 @@ from torchbend.tracing.utils import state_dict, named_parameters, get_kwargs_fro
 from torchbend.utils import checktuple, get_parameter
 import pytest
 import sys, os
-from conftest import get_log_file, log_to_file
 from typing import Optional
 
 testpath = os.path.abspath((os.path.join(os.path.dirname(__file__), "..")))
 if testpath not in sys.path:
     sys.path.append(testpath)
 from test_modules import modules_to_test, ModuleTestConfig
+from conftest import get_log_file, log_to_file
 
 
 @pytest.mark.parametrize("module_config", modules_to_test)

@@ -1,4 +1,5 @@
 import copy, re, os
+import pathlib, uuid, shutil
 from IPython.core.display import HTML
 from IPython import display as ipython_display
 import pandas as pd
@@ -343,3 +344,21 @@ def display_table_for_jupyter(table, columns=None, max_height=300, display=False
     if display: 
         ipython_display.display(obj)
     return obj
+
+TMP_FILE_OUTPUT = pathlib.Path(__file__).parent / ".tmpfile"
+class TmpFileSession(object):
+    def __init__(self, obj):
+        self._path = (TMP_FILE_OUTPUT / f"{id(obj)}").resolve()
+    def get(self): 
+        if not self._path.exists():
+            os.makedirs(self._path)
+        unique_id = str(uuid.uuid4())
+        return self._path / f"{unique_id}.py"
+    def close(self):
+        if len(os.listdir(TMP_FILE_OUTPUT)) == 0:
+            shutil.rmtree(TMP_FILE_OUTPUT, True)
+        else:
+            shutil.rmtree(self._path, True)
+
+def tmp_file_session(obj):
+    return TmpFileSession(obj)

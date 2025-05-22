@@ -3,14 +3,15 @@ from pathlib import Path
 import itertools
 import torch
 import pytest
-from torchbend.interfaces.rave import BendedRAVE
 
 RAVE_AVAILABLE = False
 try:
     import rave
+    import cached_conv
+    from torchbend.interfaces.rave import BendedRAVE
     RAVE_AVAILABLE = True
 except ModuleNotFoundError:
-    exit()
+    RAVE_AVAILABLE = False
 
 RAVE_MODEL_PATHS = [Path("models/rave/test")]
 RAVE_STRICT_LOADING = False
@@ -46,8 +47,10 @@ def locate_channel_amount_change(activations, init_channels=1):
             current_n_channels = a.shape[-2]
     return acts
 
-
-RAVE_MODEL_PATHS = check_rave_models()
+if RAVE_AVAILABLE:
+    RAVE_MODEL_PATHS = check_rave_models()
+else:
+    RAVE_MODEL_PATHS = []
 RAVE_TEST_BATCH_SIZE = (1, 4)
         
 @pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
@@ -165,9 +168,9 @@ def test_nntilde_split(model_path, jit):
     model = BendedRAVE(model_path, scriptable=True, strict=RAVE_STRICT_LOADING)
     x = torch.zeros(1, model.channels, 8192)
 
-    forward_acts = model.graph().aliases['activations'][0]
-    out = model.get_activations(forward_acts, x=x, _save_as_method=f"get_{forward_acts}")
-    out = model.from_activations(forward_acts, x=x, **out, _save_as_method=f"from_{forward_acts}")
+    forward_acts = model.aliases()['encoder_act'][0][0]
+    out = model.get_activations(f"{forward_acts}$", x=x, _save_as_method=f"get_{forward_acts}")
+    out = model.from_activations(f"{forward_acts}$", x=x, **out, _save_as_method=f"from_{forward_acts}")
 
     # check obtained methods
     out_act = getattr(model, f"get_{forward_acts}")(x)

@@ -490,7 +490,10 @@ class BendedModule(object):
             return self._graphs[fn]
         else:
             return self.bend_graph(fn)
-    
+
+    @_import_to_interface
+    def aliases(self, fn="forward"):
+        return self.graph(fn=fn).aliases
 
     # -- callbacks --
     @_import_to_interface
@@ -616,7 +619,8 @@ class BendedModule(object):
             # copy target weights, as load_state_dict method replaces in place
             clone_parameters(module, list(self._bended_params[version].keys()) + self._bended_params_history[self.version])
             # loaded bended dict
-            module.load_state_dict(state_dict, assign=True)
+            #TODO concrete implications of putting strict=False? (buffers seem to escape model copy)
+            module.load_state_dict(state_dict, assign=True, strict=False)
             # add activation callbacks
             fn = list(self._graphs.keys()) if fn is None else checklist(fn)
             for f in fn:

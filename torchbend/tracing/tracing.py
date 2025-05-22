@@ -294,6 +294,13 @@ class BendingTracer(torch.fx.Tracer):
                 print('[Warning] found value for input %s, but not in signature for function %s'%(i, self.traced_func_name))
         return inputs
 
+    def register_alias_from_node(self, nodes, name):
+        if name not in self._aliases: self._aliases[name] = []
+        if isinstance(nodes, tuple):
+            self._aliases[name].append(tuple(n.name for n in nodes))
+        else:
+            self._aliases[name].append(nodes)
+
     def register_alias(
             self, 
             node, 
@@ -305,7 +312,7 @@ class BendingTracer(torch.fx.Tracer):
         if mode == "post":
             self._aliases[name].append(node.name)
         elif mode == "pre": 
-           self._aliases[name].extend(node.args) 
+           self._aliases[name].append(tuple([a.name for a in node.args])) 
         else:
             raise TraceError('mark mode %s not known'%mode)
 
@@ -538,7 +545,10 @@ class BendingTracer(torch.fx.Tracer):
     def call_function(self, n: Node) -> Any:
         args = self._replace_args(n.args)
         kwargs = self._replace_kwargs(n.kwargs)
+
         try: 
+            if hasattr(n.target, "__tb_register_forward_in_alias"):
+                pass
             return n.target(*args, **kwargs)
         except Exception as e:
             if (n.target == getattr) and (args[0] is None) and (args[1] == "shape"):
@@ -1035,10 +1045,16 @@ class BendingTracer(torch.fx.Tracer):
                     self._autowrap_function_ids,
                 )
                 _patch_tb_funcs(patcher , getattr(getattr(mod, "forward", mod), "__globals__", {}))
+                if hasattr(mod, "__tb_register_forward_in_alias"):
+                    name, mode = mod.__dict__['__tb_register_forward_in_alias']
+                    if name is None: name = type(mod).__name__.lower()
+                    if mode == "pre":
+                        self.register_alias_from_node(tuple(a.node for a in args), name=name)
                 out = self.call_module(mod, forward, args, kwargs)
                 if hasattr(mod, "__tb_register_forward_in_alias"):
                     name, mode = mod.__dict__['__tb_register_forward_in_alias']
-                    out = mark(obj=out, name=name, mode=mode)
+                    if mode == "post":
+                        out = mark(obj=out, name=name, mode=mode)
                 return out
             
             @functools.wraps(_orig_tensor_getitem)

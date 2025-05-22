@@ -122,21 +122,9 @@ class BendedRAVE(Interface):
             # return BendedRAVE.load_scripted(model_path)
 
     @staticmethod
-    def load_checkpoint(model_path, strict=True, scriptable: bool = True, device: str | torch.device = "cpu"):
-        assert BendedRAVE.is_loadable(model_path)
-        cc.use_cached_conv(True)
-        paths = rave_get_model_paths(model_path)
+    def load_checkpoint(model_path, strict=True, scriptable: bool = True, device: str | torch.device = "cpu", load_ema: bool = False):
 
-        config_path = paths['config']
-        if config_path is None:
-            raise BendedRAVEImportException(model_path)
-        gin.parse_config_file(config_path)
-        model = ravelib.RAVE()
-        
-        run = paths['ckpt']
-        if run is None:
-            raise BendedRAVEImportException(model_path)
-        model = model.load_from_checkpoint(run, strict=strict, map_location=device)
+        model, model_path = ravelib.load_rave_checkpoint(model_path, name=None, ema=load_ema)
 
         for m in model.modules():
             if hasattr(m, "weight_g"):

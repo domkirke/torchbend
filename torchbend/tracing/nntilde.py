@@ -7,6 +7,7 @@ from types import MethodType
 import nn_tilde
 from .module import BendedModule
 from .script import ScriptedBendedModule, ScriptedBendedException
+from .utils import tmp_file_session
 from ..utils import _resolve_code
 
 
@@ -38,10 +39,11 @@ class NNBendedModuleException(Exception):
     pass
 
 class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
-    def __init__(self, model, enable_grad: bool = False, force_default: bool = False):
+    def __init__(self, model, enable_grad: bool = False, force_default: bool = False, sr: int | None = None):
         assert isinstance(model, BendedModule), "NNBendedModule must be initialized with a BendedModule"
-        self._methods = ListAttribute([], List[str])
-        self._attributes = ListAttribute([], List[str])
+        self._init_nntilde_module(sr=sr)
+        # self._methods = ListAttribute([], List[str])
+        # self._attributes = ListAttribute([], List[str])
         self._get_set_candidates = {}
         ScriptedBendedModule.__init__(self, model, enable_grad=enable_grad)
         self._search_for_getter_and_setters(model.module)
@@ -57,6 +59,14 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
 
         self._default_register_methods(force_default)
         self._reset_get_set_candidates()
+
+    def _init_nntilde_module(self, sr = None):
+        self._methods = []
+        self._attributes = []
+        self._buffer_attributes = torch.jit.Attribute([], List[str])
+        self.tmp_file_session = tmp_file_session(self)
+        self._ready = False
+        self.sr = torch.jit.Attribute(sr, int | None) 
 
     def _check_input_type_for_export(self, x):
         return (x.type is None) or issubclass(x.type, torch.Tensor)
@@ -187,7 +197,7 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
 
     def _default_register_methods(self, force_default: bool = False):
         for method in self._available_methods:
-            if (method in self._methods.value) and (not force_default): continue
+            if (method in self._methods) and (not force_default): continue
             self._default_register_method(method)
 
     def _search_for_getter_and_setters(self, module):
