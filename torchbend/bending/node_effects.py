@@ -3,7 +3,7 @@ import torch
 import typing as tp
 import inspect
 import ast
-from .base import BendingCallback, BendingCallbackException
+from .callback import BendingCallback, BendingCallbackException
 from ..tracing.proxy import BendingProxy
 
 

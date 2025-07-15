@@ -1,6 +1,6 @@
 from typing import Callable, Optional
 import torch
-from .base import BendingCallback
+from .callback import BendingCallback
 
 class Lambda(BendingCallback):
     weight_compatible = True 

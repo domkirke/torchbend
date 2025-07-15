@@ -1,4 +1,5 @@
 import os
+from copy import deepcopy
 import torch.nn as nn
 import torchbend as tb
 
@@ -27,30 +28,37 @@ class ModuleTestConfig():
         return iter({m: v[:4] for m, v in dict(outs).items()}.items())
 
     def get_module(self):
-        return self.module_class(*self.init_args[0], **self.init_args[1])
+        return deepcopy(self.module_class)(*self.init_args[0], **self.init_args[1])
 
-    def get_bended_module(self, module=None):
+    def get_bended_module(self, module=None, trace=False):
         module = module or self.get_module()
         if isinstance(module, nn.Module):
-            return tb.BendedModule(module)
+            module = tb.BendedModule(module)
         else:
-            return tb.BendedWrapper(module)
+            module = tb.BendedWrapper(module)
+        if trace: self.trace_module(module)
+        return module
 
-    def get_modules(self):
+    def trace_module(self, module):
+        for method in self.get_methods(): 
+            args, kwargs, weights, acts = self.get_method_args(method)
+            module.trace(*args, **kwargs, fn=method)
+
+    def get_modules(self, trace=False):
         module = self.get_module()
-        return module, self.get_bended_module(module)
+        return module, self.get_bended_module(module, trace=trace)
 
     def get_methods(self):
         return list(self.callback_with_args.keys())
 
     def get_method_args(self, method):
-        return self.callback_with_args[method][:4]
+        return deepcopy(self.callback_with_args[method][:4])
 
     def activation_targets(self, fn="forward"):
-        return self.callback_with_args[fn][3]
+        return deepcopy(self.callback_with_args[fn][3])
 
     def weight_targets(self, fn=None):
         if fn is None:
             fn = list(self.callback_with_args.keys())[0]
-        return self.callback_with_args[fn][2]
+        return deepcopy(self.callback_with_args[fn][2])
 

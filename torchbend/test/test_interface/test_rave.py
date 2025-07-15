@@ -64,8 +64,10 @@ def test_import(model_path, scriptable):
 @pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
 @pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
 @pytest.mark.parametrize("batch_size", RAVE_TEST_BATCH_SIZE)
+@pytest.mark.parametrize("cached", [True, False])
 @pytest.mark.parametrize("scriptable", [True, False])
-def test_callbacks(model_path, batch_size, scriptable):
+def test_callbacks(model_path, batch_size, cached, scriptable):
+    cached_conv.use_cached_conv(cached)
     model = BendedRAVE(model_path, scriptable=scriptable, strict=RAVE_STRICT_LOADING)
     x = torch.randn(batch_size, model.channels, 2048)
 
@@ -168,7 +170,7 @@ def test_nntilde_split(model_path, jit):
     model = BendedRAVE(model_path, scriptable=True, strict=RAVE_STRICT_LOADING)
     x = torch.zeros(1, model.channels, 8192)
 
-    forward_acts = model.aliases()['encoder_act'][0][0]
+    forward_acts = model.aliases()['encoder_act'][0]
     out = model.get_activations(f"{forward_acts}$", x=x, _save_as_method=f"get_{forward_acts}")
     out = model.from_activations(f"{forward_acts}$", x=x, **out, _save_as_method=f"from_{forward_acts}")
 

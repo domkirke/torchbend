@@ -1,6 +1,6 @@
 import torch
 from typing import Optional, List
-from .base import BendingCallback, BendingParamType, BendingCallbackException
+from .callback import BendingCallback, BendingParamType, BendingCallbackException
 
 
 class Normal(BendingCallback):
@@ -9,11 +9,10 @@ class Normal(BendingCallback):
     jit_compatible = True
     nntilde_compatible = True
     valid_ops = ['add', 'mul']
-    controllable_params = {'std': (BendingParamType['float'], BendingParamType['int'])}
+    controllable_params = {'std': ((float, torch.FloatTensor), 0.3)}
 
     def __init__(self, std: float = 0.3, seed: int = None, dim=None, op = "add"):
-        super().__init__(seed=seed)
-        self.register_controllable('std', std)
+        super().__init__(std=std)
         assert op in self.valid_ops
         self.op = op
         self.dim = dim
@@ -103,11 +102,12 @@ class Normal(BendingCallback):
         else: 
             param.set_(self.get_noise_from_id(idx) * self.get('std') + cache)
 
-    def bend_input(self, param: torch.Tensor, name: Optional[str] = None):
-        noise = self.get_noise(param, name).to(param)
+    def bend_input(self, x: torch.Tensor, std: torch.Tensor | None = None, name: str | None = None):
+        if std is None: std = self.get('std')
+        noise = self.get_noise(x, name).to(x)
         if self.op == "mul":
-            return param * (noise * self.get('std'))
+            return x * (noise * std)
         elif self.op == "add":
-            return param + (noise * self.get('std'))
+            return x + (noise * std)
         else:
             raise BendingCallbackException('op %s not known'%(self.op))

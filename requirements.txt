@@ -1,13 +1,15 @@
 gin-config
 pytest
+pytest-xdist 
 tabulate
 astor
 numpy
 matplotlib
 pandas
 jupyter
-torch > 1.8
-torchaudio > 1.8
+torch
+torchaudio
+panel
 dill
 nn-tilde>=1.6
 plotly

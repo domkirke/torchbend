@@ -1,6 +1,6 @@
 import torch
 from typing import Optional, Union, List
-from .base import BendingCallback
+from .callback import BendingCallback
 
 
 

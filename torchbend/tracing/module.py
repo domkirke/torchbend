@@ -14,7 +14,7 @@ import inspect
 from torch import nn
 from torch.fx import Graph, GraphModule
 from torch.fx.proxy import TraceError
-from typing import Union , NoReturn, Optional, Tuple
+from typing import Union , NoReturn, Optional, Tuple, List
 from .. import get_output, TorchbendOutput
 from . import interp
 from .input import Inputs
@@ -24,7 +24,7 @@ from .utils import BendingError, get_model_copy, _get_weight_properties, _get_si
 from .utils import _import_to_interface, make_graph_jit_compatible, clone_parameters, display_table_for_jupyter, get_kwargs_from_gm
 from .graph import graph_insert_callbacks, graph_get_activations, graph_from_activations, graph_transform_nodes
 from ..utils import checklist, checktuple, get_parameter, _resolve_code
-from ..bending import BendingCallback, CallbackChain, is_bending_callback, BendingConfig
+from ..bending import BendingCallback, CallbackChain, is_bending_callback, BendingConfig, BendingParameter
 
 _DEFAULT_ACT_EXCLUDE_LIST = ['getattr.*', 'cat.*', 'getitem.*', 'copy.*', 'reshape.*']
 _DEFAULT_ACTIVATION_FIELDS = ['name', 'op', 'target', 'shape', 'args', 'kwargs']
@@ -299,6 +299,10 @@ class BendedModule(object):
                 f.write(pretty_weights_txt)
         return pretty_weights_txt
 
+    @_import_to_interface
+    def print_aliases(self, out=None):
+        return self.print_activations(*sum(self.aliases().values(), tuple()), out=out)
+
     # -- overrides from nn.Module -- 
     @_import_to_interface
     def parameters(self):
@@ -353,6 +357,10 @@ class BendedModule(object):
 
     @_import_to_interface
     def activations(self, *flt, fn=None, op=None, exclude=None, with_bended: bool = True, _with_fn: bool = False, _raise_notfound: bool = False):
+
+        if len(flt) == 0: 
+            raise ValueError('BendedModule.activations take at least one regexp (give ".*" to retrieve everything)')
+
         if exclude is not None: 
             exclude = checklist(exclude)
         if isinstance(fn, (tuple, list)) or fn is None:
@@ -403,6 +411,7 @@ class BendedModule(object):
             fn, param = param.split(":")
         if fn not in self._activations: raise BendingError("function %s does not exist or not traced yet"%(fn))
         return self._activations[fn][param].shape
+
 
     # @_import_to_interface
     # def print_graph(self,  fn="forward", op=None, flt=r".*", exclude=None, out=None) -> str:
@@ -493,7 +502,12 @@ class BendedModule(object):
 
     @_import_to_interface
     def aliases(self, fn="forward"):
-        return self.graph(fn=fn).aliases
+        alias_dict = self.graph(fn=fn).aliases
+        alias_out = {}
+        for k, v in alias_dict.items():
+            alias_out[k] = sum(list(map(checktuple, v)), tuple())
+        return alias_out
+
 
     # -- callbacks --
     @_import_to_interface
@@ -610,16 +624,16 @@ class BendedModule(object):
                 raise BendingError('Cannot bend activation %s with callback %s.\nException : %s\n Proceeding'%(parameter, callback, e))
         
     @_import_to_interface
-    def bend_module(self, fn=None, version=None):
+    def bend_module(self, fn=None, version=None, copy_parameters=True):
         version = version or self.version
         with torch.no_grad():
             # clone module with deep-copying parameters
-            module = get_model_copy(self._module, copy_parameters=True)
+            module = get_model_copy(self._module, copy_parameters=copy_parameters)
             state_dict = self.bended_state_dict()
             # copy target weights, as load_state_dict method replaces in place
             clone_parameters(module, list(self._bended_params[version].keys()) + self._bended_params_history[self.version])
-            # loaded bended dict
             #TODO concrete implications of putting strict=False? (buffers seem to escape model copy)
+            # loaded bended dict
             module.load_state_dict(state_dict, assign=True, strict=False)
             # add activation callbacks
             fn = list(self._graphs.keys()) if fn is None else checklist(fn)
@@ -627,6 +641,9 @@ class BendedModule(object):
                 if self._graphs.get(f) is not None:
                     for k, v in self.bended_activations(f).items():
                         setattr(module, f"{f}_{k}_callback", CallbackChain(*v))
+                    for k, v in self._graphs[f].get_attached_callbacks().items():
+                        setattr(module, f"{f}_{k}", v)
+                        
             return module
 
     @_import_to_interface
@@ -646,7 +663,8 @@ class BendedModule(object):
             graphs = {fn: self.bend_graph(fn=fn)}
         if jit_compatible:
             graphs = {k: make_graph_jit_compatible(g) for k, g in graphs.items()}
-        return BendedGraphModule(module, **graphs)
+        graph_module = BendedGraphModule(module, **graphs)
+        return graph_module
 
     @_import_to_interface
     def _bend(self, *args, fn=None, verbose=False, bend_param=True, bend_graph=True):
@@ -770,9 +788,8 @@ class BendedModule(object):
                 self._controllables[v.name] = v
                 self._controllable_hash[v.name] = self._controllable_hash.get(v.name, []) + [self._bending_callbacks.index(callback)]
 
-    @property
     @_import_to_interface
-    def controllables(self):
+    def controllables(self) -> List[BendingParameter]:
         return copy.copy(self._controllables)
 
     def update(self, param_name, value):
@@ -800,16 +817,22 @@ class BendedModule(object):
         self._activations[method_name] = {}
         self._bended_activations[method_name] = {}
         for node in graph.nodes:
+            if node.name.endswith('_bended'):
+               continue 
             if node.name in self._activations[fn]:
                 self._activations[method_name][node.name] = self._activations[fn][node.name]
-            else:
-                if node.name.endswith('_bended'):
-                    pass
-        node_names = [n.name for n in graph.nodes]
-        for act, bendings in self._bended_activations[fn].items():
-            if f"{act}_bended" not in node_names: continue
-            for b in bendings:
-                self.bend(b, f"{act}$", fn=method_name)
+            if node.name in self._bended_activations[fn]: 
+                # self._bended_activations[method_name][node.name] = self._bended_activations[fn][node.name]
+                bending_callbacks = self._bended_activations[fn][node.name]
+                for cb in bending_callbacks:
+                    cb.copy_activation(f"{fn}:{node.name}", f"{method_name}:{node.name}")
+                for k, v in self.bended_activations().items():
+                    self._graphs[method_name].attach_bending_callback(f"{k}_callback", CallbackChain(*v))
+        # node_names = [n.name for n in graph.nodes]
+        # for act, bendings in self._bended_activations[fn].items():
+        #     if f"{act}_bended" not in node_names: continue
+        #     for b in bendings:
+        #         # self.bend(b, f"{act}$", fn=method_name)
         setattr(self, method_name, types.MethodType(_get_method_from_graph(self, method_name), self))
 
     def inputs_for(self, method_name, **kwargs):

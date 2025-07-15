@@ -5,8 +5,8 @@ from functools import reduce
 from typing import Optional, List, Tuple, Iterable, Union
 
 from torch.nn.parameter import Parameter as Parameter
-from .base import BendingCallback, BendingCallbackException
-from .parameter import BendingParamType
+from .callback import BendingCallback, BendingCallbackException
+from .parameter import BendingParamType, BendingParameter
 from .utils import prod
 
 
@@ -19,12 +19,12 @@ class Mask(BendingCallback):
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
-    controllable_params = {'prob': None}
+    controllable_params = {'prob': ((float, torch.Tensor), 1.)}
 
-    def __init__(self, prob: float = 0.3, seed: int = None, dim: Optional[Union[int, List[int]]]=None):
-        super().__init__(seed=seed)
+    def __init__(self, seed: int = None, prob: BendingParamType | BendingParameter | None = None, dim: Optional[Union[int, List[int]]]=None):
+        super().__init__(seed=seed, prob=prob)
         # register paramters
-        self.register_controllable('prob', prob)
+        # self.register_controllable('prob', prob)
         self.dim = dim
         # init masks
         self._masks = torch.nn.ParameterList()
@@ -70,6 +70,7 @@ class Mask(BendingCallback):
         self._mask_shapes.value.append(shape)
 
     def _mask_from_name(self, name: str) -> torch.Tensor:
+        ## for torchscript integration
         for i, m in enumerate(self._masks):
             if self._mask_names[i] == name:
                 return m
@@ -83,19 +84,27 @@ class Mask(BendingCallback):
         name = super().register_weight(parameter, name=name, cache=cache)
         self._add_mask(name, parameter.shape)
 
-    def get_mask(self, param, name: Optional[str]) -> torch.Tensor:
-        if name is not None:
-            return self._mask_from_name(name)
-        else:
-            mask = torch.bernoulli(torch.full_like(param, fill_value=float(self.prob))).to(param)
-        return mask
-
     def get_mask_from_id(self, idx: int) -> torch.nn.Parameter:
         #grrrr
         for i, v in enumerate(self._masks):
             if i == idx:
                 return v
         raise BendingCallbackException('%s not present in masks'%idx)
+    
+    def get_mask(self, param, prob: torch.Tensor | None = None, name: str | None = None) -> torch.Tensor:
+        if prob is None: 
+            if name is None:
+                return torch.bernoulli(torch.full_like(param, fill_value=float(self.prob))).to(param)
+            else:
+                return self._mask_from_name(name)
+        else:
+            if isinstance(prob, float):
+                return torch.bernoulli(torch.full_like(param, fill_value=float(self.prob))).to(param)
+            elif isinstance(prob, torch.Tensor):
+                #TODO perform some broadcast? 
+                return torch.bernoulli(prob.expand_as(param)).to(param)
+            else:
+                raise TypeError('wrong type for prob : %s'%type(prob))
 
     def update(self):
         for i, v in enumerate(self._masks):
@@ -106,9 +115,9 @@ class Mask(BendingCallback):
         with torch.no_grad():
             param.set_(self.get_mask_from_id(idx) * cache)
 
-    def bend_input(self, param: torch.Tensor, name: Optional[str] = None):
-        mask = self.get_mask(param, name).to(param)
-        return param * mask
+    def bend_input(self, x: torch.Tensor, prob: torch.Tensor | None = None, name: str | None = None):
+        mask = self.get_mask(x, prob, name)
+        return x * mask
         
                   
 class OrderedMask(Mask): 
@@ -142,18 +151,20 @@ class OrderedMask(Mask):
             self._mask_shapes.value[good_idx] = shape
         return mask
 
-    def _mask_from_randperm(self, perm, prob, shape: List[int]):
+    def _mask_from_randperm(self, perm: torch.Tensor, prob: torch.Tensor | None, shape: List[int]):
         mask_shape = self._get_mask_shape(shape)
         numel = prod(mask_shape)
+        if prob is None: 
+            prob = self.get('prob')
         idx = int(prob * numel)
         mask = torch.zeros(numel)
         mask.index_put_((perm[:idx].long(),), torch.full((idx,), 1.))
         return mask.reshape(mask_shape)
 
-    def get_mask(self, param, name: Optional[str]) -> torch.Tensor:
+    def get_mask(self, param, prob: torch.Tensor | None, name: str | None) -> torch.Tensor:
         if name is not None:
             mask_idx = self._mask_from_name(name)
-            mask = self._mask_from_randperm(mask_idx, self.prob.get_value(), param.shape).to(param)
+            mask = self._mask_from_randperm(mask_idx, prob, param.shape).to(param)
         else:
             mask = torch.bernoulli(torch.full_like(param, fill_value=float(self.prob))).to(param)
         return mask
@@ -166,6 +177,7 @@ class OrderedMask(Mask):
         raise BendingCallbackException('%s not present in masks'%idx)
 
     def update(self):
+        """no update is needed with OrderedMask, as mask is updated in real time"""
         pass
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor):

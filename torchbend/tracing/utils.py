@@ -253,6 +253,7 @@ def _get_graph_inputs(graph: torch.fx.Graph):
 
     
 def make_graph_jit_compatible(graph: torch.fx.Graph):
+    """performs some actions on the graph to make it JIT-compatible (typically, converting distributions)"""
     #TODO
     nodes = {}
     # new_graph = torch.fx.Graph()

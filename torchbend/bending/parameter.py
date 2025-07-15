@@ -35,6 +35,45 @@ class BendingParamType():
     @staticmethod
     def param_hash():
         return {v: k for k, v in BendingParamType.param_types().items()}
+
+    @staticmethod
+    def _get_default_tensor_type() -> type:
+        dtype = torch.get_default_dtype()
+        if dtype in [torch.bool]:
+            return torch.ByteTensor
+        if dtype in [torch.int, torch.int8, torch.int16, torch.int32, torch.int64]:
+            return torch.LongTensor
+        elif dtype in [torch.float, torch.float16, torch.float32, torch.float64]:
+            return torch.FloatTensor
+        elif dtype in [torch.complex, torch.complex32, torch.complex64, torch.complex128]: 
+            raise NotImplementedError
+        else:
+            raise TypeError('cannot parse tensor %s as a native python value'%tensor)
+
+    @staticmethod 
+    def _str_from_type(obj: type) -> int:
+        if issubclass(obj, torch.Tensor):
+            if obj == torch.Tensor: obj = BendingParamType._get_default_tensor_type()
+        if issubclass(obj, (int, numbers.Integral)):
+            return 'int'
+        elif issubclass(obj, bool):
+            return 'bool'
+        elif issubclass(obj, (float, numbers.Real)):
+            return 'float'
+        elif issubclass(obj, (complex, numbers.Complex)):
+            raise NotImplementedError()
+        elif issubclass(obj, torch.FloatTensor):
+            return 'float'
+        elif issubclass(obj, (torch.LongTensor, torch.IntTensor)):
+            return 'int'
+        elif issubclass(obj, (torch.ByteTensor)):
+            return 'bool'
+        raise TypeError('could not get type string for type : %s'%obj)
+            
+
+    @staticmethod
+    def param_type_from_type(obj: type) -> int:
+        return BendingParamType.param_types()[BendingParamType._str_from_type(obj)]
     
     @staticmethod
     def _param_type_from_obj(obj: _VALID_PARAM_TYPES) -> int:
@@ -140,6 +179,7 @@ class BendingParameter(nn.Module):
     def __init__(self, 
                  name: str,
                  value: Any,
+                 as_input: bool = False,
                  weight: Optional[float] = None,
                  bias: Optional[float] = None,
                  range: Tuple[Optional[float], Optional[float]] = [None, None], 
@@ -148,11 +188,8 @@ class BendingParameter(nn.Module):
         super().__init__()
         self._name : str = torch.jit.Attribute(name, str)
         self.param_type: int = BendingParamType._param_type_from_obj(value)
-        # if self.param_type in [BendingParamType.get_type('str')]:
-        #     self.value: str = value
-        #     self._make_init_warnings_for_str(weight=weight, bias=bias, min_range=range[0], max_range=range[1], clamp=clamp)
-        # else:
         self.value : Any = nn.Parameter(self._to_tensor(value), requires_grad=False)
+        self.as_input = as_input
         if self.param_type in [BendingParamType.get_type('bool')]:
             self._make_init_warnings_for_bool(weight=weight, bias=bias, min_range=range[0], max_range=range[1], clamp=clamp)
         else:

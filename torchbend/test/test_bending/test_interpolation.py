@@ -29,10 +29,15 @@ def test_interpolation(module_config, n=8):
             outs = mod.get_activations(target, **kwargs, fn=method)
             # unbatched
             interp = torch.randn(outs[target].shape[0])
+            outs_direct = getattr(mod, method)(**kwargs, interp_weights=interp)
             outs_interpolated = mod.from_activations(target, fn=method, **outs, **kwargs, interp_weights=interp)
+            
+            assert tb.compare_outs(outs_direct, outs_interpolated)
             # batched
             interp = torch.randn(4, outs[target].shape[0])
+            outs_direct = getattr(mod, method)(**kwargs, interp_weights=interp)
             outs_interpolated = mod.from_activations(target, fn=method, **outs, **kwargs, interp_weights=interp)
+            assert tb.compare_outs(outs_direct, outs_interpolated)
 
         # full activations
         if len(activation_targets) > 1:
@@ -41,11 +46,11 @@ def test_interpolation(module_config, n=8):
             mod.bend(cb, *activation_targets, fn=method)
             outs = mod.get_activations(*activation_targets, **kwargs, fn=method)
             # unbatched
-            interp = {f"{t}_interp_weights": torch.randn(outs[t].shape[0]) for t in activation_targets}
-            outs_interpolated = mod.from_activations(*activation_targets, fn=method, **kwargs, **outs, **interp)
+            interp = {f"interp_weights_{i}": torch.randn(outs[t].shape[0]) for i, t in enumerate(activation_targets)}
+            outs_interpolated = mod.from_activations(*activation_targets, **interp, fn=method, **kwargs, **outs)
             # batched
-            interp = {f"{t}_interp_weights": torch.randn(4, outs[t].shape[0]) for t in activation_targets}
-            outs_interpolated = mod.from_activations(*activation_targets, fn=method, **kwargs, **outs, **interp)
+            interp = {f"interp_weights_{i}": torch.randn(4, outs[t].shape[0]) for i, t in enumerate(activation_targets)}
+            outs_interpolated = mod.from_activations(*activation_targets, **interp, fn=method, **kwargs, **outs)
 
 
 @pytest.mark.parametrize('module_config', modules_to_test)

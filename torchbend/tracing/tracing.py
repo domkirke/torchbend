@@ -217,7 +217,17 @@ class BendedGraph(torch.fx.Graph):
             self._codegen = CodeGen()
             self._codegen._func_name = func
             self._co_fields: Dict[str, Any] = {}
+            self._attached_bending_callbacks = {}
             self._find_nodes_lookup_table = _FindNodesLookupTable()
+
+    def attach_bending_callback(self, name, callback):
+        """when bending operations were written within the graph, 
+        attach bending callbacks to the bended graph to be attributed to the
+        bended graph module """
+        self._attached_bending_callbacks[name]  = callback
+
+    def get_attached_callbacks(self):
+        return dict(self._attached_bending_callbacks)
 
     def _import_from_graph(self, graph, owning_module):
         self._root: Node = Node(self, "", "root", "", (), {})
@@ -234,9 +244,9 @@ class BendedGraph(torch.fx.Graph):
         self._codegen._func_name = graph._func_name
         self._co_fields: Dict[str, Any] = {}
         self._find_nodes_lookup_table = _FindNodesLookupTable()
+        self._attached_bending_callbacks = graph._attached_bending_callbacks
         for attr in type(self)._GRAPH_COPY_ATTR:
             setattr(self, attr, getattr(graph, attr, None))
-
 
     @property
     def fn(self):
@@ -255,6 +265,9 @@ class BendedGraph(torch.fx.Graph):
                 n.target = re.sub(f"^{self._func_name}", new_method, n.target)
         self.fn = new_method
 
+    @property
+    def inputs(self):
+        return list(filter(lambda x: x.op == "placeholder", self.nodes))
 
 
 

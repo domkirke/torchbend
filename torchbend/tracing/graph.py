@@ -38,15 +38,74 @@ def graph_transform_nodes(graph, callbacks, verbose=False):
     return new_graph
 
 
+
+def _get_additional_inputs_from_cb(cb):
+    add_inputs = []
+    for name, param in dict(inspect.signature(cb.forward).parameters).items():
+        if name in cb.native_callback_arguments: continue
+        add_inputs.append(name)
+    return add_inputs
+        
+
 def graph_insert_callbacks(graph, callbacks, verbose=False, fn=None):
+    
+    def node_name_from(input_dict, node_name):
+        # if re.match(r'.*\_(\d+)$', node_name):
+            # get_node_name = (lambda x: "_".join(node_name.split('_')[:-1]))
+        #     name = get_node_name(node_name)
+        #     n_occur = len(list(filter(lambda x: x == name, map(get_node_name, input_dict.keys())))) - 1
+        #     return f"{name}_{n_occur}"
+        # else:
+        #     name = node_name
+        #     n_occur = 0
+        #     return name
+        return 
+    
+    def _get_node_name(node_name):
+        if re.match(r'.*\_(\d+)$', node_name):
+            node_name = "_".join(node_name.split('_')[:-1])
+        return node_name
+
+    def _update_bending_ph_names(bended, original):
+        ph_hash = {}
+        for act_name, bending_list in bended.items(): 
+            for b in bending_list:
+                b_name = _get_node_name(b)
+                if b_name not in ph_hash:
+                    ph_hash[b_name].append(act_name)
+
+    def _parse_placeholder_names(graph):
+        placeholders = list(filter(lambda x: x.op == "placeholder", graph.nodes))
+        placeholders_names = [n.name for n in placeholders]
+        placeholder_count = {}
+        for p in placeholders_names:
+            root_name = _get_node_name(p)
+            if root_name in placeholder_count:
+                placeholder_count[root_name] += 1
+            else:
+                placeholder_count[root_name] = 1
+        ph_with_shared_names = list(filter(lambda k: placeholder_count[k] != 1, placeholder_count))
+        for p_name in ph_with_shared_names:
+            current_count = 0
+            for p in placeholders:
+                if _get_node_name(p.name) == p_name:
+                    p.name = f"{_get_node_name(p.name)}_{current_count}"
+                    p.target = f"{_get_node_name(p.name)}_{current_count}"
+                    current_count += 1
+            
+
     """inserts bending operation into a graph"""
     new_graph = BendedGraph(from_graph=graph)
     env = {}
     bended_lookup = {}
     fn_name = fn or graph.fn
+
     # then insert
+    last_input = None
     for node in graph.nodes:
         new_node = new_graph.node_copy(node, lambda x: env[x.name])
+        if node.op == "placeholder":
+            last_input = new_node
         # check arguments to replace by bended node in case
         new_args = list(new_node.args)
         for i, arg in enumerate(new_args):
@@ -59,12 +118,21 @@ def graph_insert_callbacks(graph, callbacks, verbose=False, fn=None):
             if verbose:
                 print('bending activation %s with function %s...'%(node.name, callbacks[node.name]))
             if callbacks[node.name].needs_insertion:
+                add_inputs = _get_additional_inputs_from_cb(callbacks[node.name])
+                callback_kwargs = {'name': f"{fn_name}:{node.name}"}
+                for k in add_inputs:
+                    # node_name = node_name_from(inputs, k)
+                    with new_graph.inserting_after(last_input):
+                        additional_node = new_graph.create_node("placeholder", k, (None,))
+                        callback_kwargs[k] = additional_node
                 bended_node_name = node.name+"_bended"
                 hack_obj_name = f"{fn_name}_{node.name}_callback"
-                bended_node = new_graph.create_node("call_module", hack_obj_name, args=(env[node.name],), kwargs={'name': f"{fn_name}:{node.name}"}, name=bended_node_name)
+                bended_node = new_graph.create_node("call_module", hack_obj_name, args=(env[node.name],), kwargs=callback_kwargs, name=bended_node_name)
                 env[bended_node_name] = bended_node
                 bended_lookup[node.name] = bended_node
     # _import_attr_from_original_graph(graph, new_graph)
+    # regularize placeholder names
+    _parse_placeholder_names(new_graph)
     return new_graph
 
 
@@ -82,7 +150,7 @@ def _get_new_node_args(env, node):
 
 def graph_get_activations(graph: BendedGraph, activations: List[str]):
     out_graph = BendedGraph(from_graph=graph)
-    env = {}
+    env = OrderedDict()
     out_nodes = {}
     for node in list(graph.nodes):
         if node.op != "output":
@@ -100,6 +168,12 @@ def graph_get_activations(graph: BendedGraph, activations: List[str]):
         out_graph.output(out_nodes[0])
     else:
         out_graph.output(out_nodes)
+
+    # filter unused nodes 
+    for k, n in reversed(env.items()):
+        if len(n.users) == 0: 
+            out_graph.erase_node(n)
+
     if graph.activations is not None:
         out_graph.activations = {k: graph.activations.get(k) for k in env.keys()}
     return out_graph

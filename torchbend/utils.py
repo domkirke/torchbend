@@ -569,7 +569,7 @@ def get_random_hash(n=8):
 def _import_defs_from_tmpfile(code, gl=None, lo=None, tmpdir="/tmp/torchbend/jit"):
     gl = gl or globals() 
     os.makedirs(tmpdir, exist_ok=True)
-    file = os.path.join(tmpdir, get_random_hash()+".py")
+    file = os.path.join(tmpdir, get_random_hash(n=32)+".py")
     with open(file, 'w+') as f:
         f.write(code)
     lo = lo or {}

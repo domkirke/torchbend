@@ -1,14 +1,17 @@
 import panel as pn
 import functools
+import torch
 from .utils import tensor_to_audio, tensor_to_image, batched, get_widgets_from_controllables
 
 _DEFAULT_MAX_COLUMNS = 4
 _DEFAULT_MAX_IMAGE_COLUMNS = 4
 
+
 def generate_realtime_image(bended_module=None,
                             max_columns=None,
                             max_rows=None, 
                             gen_params=None, 
+                            out=None,
                             **widget_dict):
     assert bended_module is not None
     for name, param in widget_dict.items():
@@ -85,13 +88,23 @@ def generate_realtime(bended_module,
                       max_columns = None, 
                       max_rows = None, 
                       **kwargs):
+
     render_type = render_type or getattr(bended_module, "_panel_render_type_")
+    def catch_result(fn):
+        def _closure(*args, **kwargs):
+            out = fn(*args, out=_closure.out, **kwargs)
+            _closure.out = out
+            return out
+        _closure.out = None
+        return _closure
     if render_type == "image":
-        return functools.partial(generate_realtime_image, 
-                                 bended_module=bended_module, 
-                                 max_columns = max_columns,
-                                 max_rows = max_rows,
-                                 gen_params=kwargs)
+        return functools.partial(catch_result(generate_realtime_image), 
+                                    bended_module=bended_module, 
+                                    max_columns = max_columns,
+                                    max_rows = max_rows,
+                                    gen_params=kwargs)
+    elif render_type is None: 
+        raise ValueError('could not get render type from model; please provide render_type keyword')
     else:
         raise NotImplementedError("render_type %s not handled by panel interfaces"%render_type)
 
@@ -164,7 +177,7 @@ def panel_generation_ui(
         context = None,
         **kwargs
 ):
-    controllables = bended_module.controllables
+    controllables = bended_module.controllables()
     controllable_widgets = get_widgets_from_controllables(controllables)
     if max_rows is None and max_columns is None:
         max_columns = _DEFAULT_MAX_COLUMNS

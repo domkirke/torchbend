@@ -113,25 +113,25 @@ def panel_search_ui(
 
     # activations_frame.watch(click_list_callback, ['selection'], onlychanged=True)
 
-    # w1 = pn.widgets.CodeEditor(annotations=["row"], readonly=True, width = 200, height=300)
-    # w1 = pn.widgets.CodeEditor(width = 200, height = 300)
-    # w1 = "Hello!"
+    w1 = pn.widgets.CodeEditor(annotations=["row"], readonly=True, width = 200, height=300)
+    w1 = pn.widgets.CodeEditor(width = 200, height = 300)
+    w1 = "Hello!"
 
     code_editor = pn.widgets.CodeEditor(readonly=True, language='python', width = 500, height=300)
     config = {"headerControls": {"close": "remove"}, "theme": "light"}
     floatpanel = pn.layout.FloatPanel(code_editor, name='code', margin=20, config=config)
 
-    activations_frame.on_click(partial(click_list_callback, bended_module=bended_module, data_frame=activations_frame, code_editor=code_editor))
+    activations_frame.on_click(partial(click_list_callback, bended_module=bended_module, data_frame=activations_frame))#, code_editor=code_editor))
 
-    set_cursor_button = pn.widgets.Button(name='Set Cursor to Line 140')
-    set_cursor_button.js_on_click(args={'editor': code_editor}, code=js_callback)
+    # set_cursor_button = pn.widgets.Button(name='Set Cursor to Line 140')
+    # set_cursor_button.js_on_click(args={'editor': code_editor}, code=js_callback)
 
     return pn.Column(
         fn_checkboxes, 
         filter_input, 
         activations_frame, 
-        floatpanel,
-        set_cursor_button,
+        # floatpanel,
+        # set_cursor_button,
         height=600, 
         sizing_mode="stretch_width"
     ).servable()

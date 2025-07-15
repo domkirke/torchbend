@@ -1,13 +1,20 @@
 from typing import Optional
 import torch
-from .base import BendingCallback
+from .parameter import BendingParameter
+from .callback import BendingCallback
 
 class InterpolateActivation(BendingCallback):
     weight_compatible = False
     activation_compatible = True
     jit_compatible = False
     nntilde_compatible = False
-    controllable_params = []
+    controllable_params = {'interp_weights': (torch.FloatTensor, None), 'softmax': (bool, False)}
+
+    def __init__(self, interp_weights: BendingParameter | torch.FloatTensor | None = None, **kwargs):
+        # by default, put interp_weights as additional argument using a placeholder with as_input=True
+        if interp_weights is None: 
+            interp_weights = BendingParameter('interp_weights', torch.FloatTensor([[1.]]), as_input=True)
+        super().__init__(interp_weights = interp_weights, **kwargs)
 
     def _interp_activations(self, x, interp_weights, softmax: bool = False):
         assert interp_weights.shape[-1] == x.shape[0]
@@ -18,8 +25,8 @@ class InterpolateActivation(BendingCallback):
         interp_weights_r = interp_weights.reshape(interp_weights.shape + (1, ) * (x.ndim - 1))
         out = ((interp_weights_r * x_r).sum(-interp_weights_r.ndim+1))
         return out
-        
-    def forward(self, x, name: Optional[str] = None, interp_weights: Optional[torch.Tensor] = None, softmax: bool = False):
+
+    def bend_input(self, x, interp_weights: Optional[torch.Tensor] = None, softmax: bool = False, name: Optional[str] = None):
         if (interp_weights is None):
             return x
         else:

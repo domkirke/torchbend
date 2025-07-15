@@ -1,4 +1,4 @@
-from .base import BendingCallback, BendingCallbackException
+from .callback import BendingCallback, BendingCallbackException
 from typing import Optional
 import torch
 import torch.nn as nn
@@ -8,7 +8,6 @@ class Capture(BendingCallback):
     activation_compatible = True
     jit_compatible = False
     nntilde_compatible = False
-    controllable_params = []
 
     def __init__(self):
         super().__init__()
@@ -53,16 +52,13 @@ class Capture(BendingCallback):
         super().stop()
         for k, v in self._buffer_tmp.items():
             if k in self._captures:
-                self._captures[k] = self._concatenate_buffers([self._captures[k]] + v)
+                self._captures[k] = [self._captures[k]]
             else:
-                self._captures[k] = self._concatenate_buffers(v)
+                self._captures[k] = v
             self._buffer_tmp[k] = []
         self._is_initialized = True
 
-    def bend_input(self, x: torch.Tensor, name: str | None = None):
-        return x
-
-    def forward(self, x: torch.Tensor, name: Optional[str] = None):
+    def bend_input(self, x: torch.Tensor, name: Optional[str] = None):
         """applies transformation to an input (typically activations)"""
         if self._is_capturing:
             assert name is not None
@@ -70,7 +66,7 @@ class Capture(BendingCallback):
             return x
         else:
             if not self.is_ready: raise BendingCallbackException(self._not_ready_str)
-            return self.bend_input(x, name=name)
+            return x
 
 
 class InterpolationFromCapture(Capture):

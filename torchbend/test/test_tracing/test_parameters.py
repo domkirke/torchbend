@@ -1,28 +1,86 @@
 import torch
+import copy
 import torchbend as tb
 import pytest
 from torchbend.bending.parameter import BendingParameterException
 from test_modules import modules_to_test, scriptable_modules_to_test 
 
+
+class PArgs(): 
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+    def __repr__(self): 
+        sig = "PArgs("
+        sig += ', '.join(map(str, self.args))
+        sig += ', '.join([f"{k}: {v}" for k, v in self.kwargs.items()])
+        sig += ")"
+        return sig
+    def keys(self):
+        return self.kwargs.keys()
+    def __getitem__(self, i): 
+        if isinstance(i, int):
+            return self.args[i]
+        else:
+            return self.kwargs[i]
+    def __setitem__(self, i, val):
+        if isinstance(i, int):
+            args = list(self.args)
+            args[i] = val
+            self.args = tuple(args)
+        else:
+            self.kwargs[i] = val
+    def __iter__(self):
+        return iter(self.args)
+    def copy(self): 
+        return copy.deepcopy(self)
+    def __add__(self, obj):
+        r_obj = copy.deepcopy(self)
+        if isinstance(obj, (tuple, list)):
+            r_obj.args += obj
+        elif isinstance(obj, dict):
+            r_obj.kwargs.update(obj)
+        else:
+            raise TypeError("cannot add obj %s to Pargs"%type(obj))
+        return r_obj
+
+
+
+
 @pytest.mark.parametrize("module_config", scriptable_modules_to_test)
 def test_int_parameter(module_config):
-    module, bended_module = module_config.get_modules()
+    module, bended_module = module_config.get_modules(trace=True)
 
-    def _test_parameter(bended_module, method, bias, ok=[], not_ok=[]):
+    def _test_parameter(bended_module, method, control_args, ok=[], not_ok=[]):
         bended_module.reset()
+
+        # test with normal behaviour
+        bias = tb.BendingParameter(*control_args, **control_args)
+        # test with as_input=True, that should add the parameter in the graph's signature 
+        control_args_input = control_args.copy()
+        control_args_input[0] = control_args_input[0] + "_input"
+        bias_input = tb.BendingParameter(*control_args_input, as_input=True, **control_args_input)
         assert int(bias) == bias.get_value()
         assert isinstance(bias.get_python_value(), int)
+
         bias_callback = tb.Bias(bias=bias)
+        bias_callback_input = tb.Bias(bias=bias_input)
         args, kwargs, weights, acts = module_config.get_method_args(method)
         bended_module.bend(bias_callback, *weights, *acts, fn=method)
+        bended_module.bend(bias_callback_input, *weights, *acts, fn=method)
         assert len(ok) + len(not_ok) > 0, "at least one value must be given in either ok or not_ok"
         
         scripted_module = bended_module.script(script=False) 
 
         # try out ok values
+        inputs = bended_module.bend_graph(fn=method).inputs
         for value in ok:
+            current_kwargs = dict(kwargs)
+            for i in inputs: 
+                if i.name not in current_kwargs:
+                    current_kwargs[i.name] = value
             bias.set_value(value)
-            getattr(bended_module, method)(*args, **kwargs)
+            getattr(bended_module, method)(*args, **current_kwargs)
             scripted_module.set_bias(value)
 
         # try out not ok values
@@ -41,39 +99,55 @@ def test_int_parameter(module_config):
 
     for method in module_config.get_methods():
 
-        bias = tb.BendingParameter("bias", 0)
+        bias = PArgs("bias", 0)
         _test_parameter(bended_module, method, bias, ok=[0])
 
-        bias = tb.BendingParameter("bias", 0, range=[0, None])
+        bias = PArgs("bias", 0, range=[0, None])
         _test_parameter(bended_module, method, bias, ok=[0, 3], not_ok=[-1])
 
-        bias = tb.BendingParameter("bias", 0, range=[None, 3])
+        bias = PArgs("bias", 0, range=[None, 3])
         _test_parameter(bended_module, method, bias, ok=[0, 3], not_ok=[5])
 
-        bias = tb.BendingParameter("bias", 0, range=[0, 3])
+        bias = PArgs("bias", 0, range=[0, 3])
         _test_parameter(bended_module, method, bias, ok=[0, 3], not_ok=[-2, 5])
+
 
 
 
 @pytest.mark.parametrize("module_config", scriptable_modules_to_test)
 def test_float_parameter(module_config):
-    module, bended_module = module_config.get_modules()
+    module, bended_module = module_config.get_modules(trace=True)
 
-    def _test_parameter(bended_module, method, bias, ok=[], not_ok=[]):
+    def _test_parameter(bended_module, method, control_args, ok=[], not_ok=[]):
         bended_module.reset()
+
+        # test with normal behaviour
+        bias = tb.BendingParameter(*control_args, **control_args)
+        # test with as_input=True, that should add the parameter in the graph's signature 
+        control_args_input = control_args.copy()
+        control_args_input[0] = control_args_input[0] + "_input"
+        bias_input = tb.BendingParameter(*control_args_input, as_input=True, **control_args_input)
         assert int(bias) == bias.get_value()
         assert isinstance(bias.get_python_value(), float)
-        bias_callback = tb.Normal(std=bias)
+
+        bias_callback = tb.Bias(bias=bias)
+        bias_callback_input = tb.Bias(bias=bias_input)
         args, kwargs, weights, acts = module_config.get_method_args(method)
         bended_module.bend(bias_callback, *weights, *acts, fn=method)
+        bended_module.bend(bias_callback_input, *weights, *acts, fn=method)
         assert len(ok) + len(not_ok) > 0, "at least one value must be given in either ok or not_ok"
         
         scripted_module = bended_module.script(script=False) 
 
         # try out ok values
+        inputs = bended_module.bend_graph(fn=method).inputs
         for value in ok:
+            current_kwargs = dict(kwargs)
+            for i in inputs: 
+                if i.name not in current_kwargs:
+                    current_kwargs[i.name] = value
             bias.set_value(value)
-            getattr(bended_module, method)(*args, **kwargs)
+            getattr(bended_module, method)(*args, **current_kwargs)
             scripted_module.set_bias(value)
 
         # try out not ok values
@@ -92,17 +166,28 @@ def test_float_parameter(module_config):
 
     for method in module_config.get_methods():
 
-        bias = tb.BendingParameter("bias", 0.)
+        bias = PArgs("bias", 0.)
         _test_parameter(bended_module, method, bias, ok=[0])
 
-        bias = tb.BendingParameter("bias", 0., range=[0, None])
+        bias = PArgs("bias", 0., range=[0, None])
         _test_parameter(bended_module, method, bias, ok=[0, 3], not_ok=[-1])
 
-        bias = tb.BendingParameter("bias", 0., range=[None, 3])
+        bias = PArgs("bias", 0., range=[None, 3])
         _test_parameter(bended_module, method, bias, ok=[0, 3], not_ok=[5])
 
-        bias = tb.BendingParameter("bias", 0., range=[0, 3])
+        bias = PArgs("bias", 0., range=[0, 3])
         _test_parameter(bended_module, method, bias, ok=[0, 3], not_ok=[-2, 5])
+
+
+
+@pytest.mark.skip(reason="to program")
+def test_bool_parameter(module_config):
+    pass
+
+
+@pytest.mark.skip(reason="to program")
+def test_tensor_parameter(module_config):
+    pass
 
 
 @pytest.mark.parametrize("module_config", modules_to_test)
@@ -148,4 +233,33 @@ def test_bending_parameters_activations(module_config):
         bended_module.update("param_1", 1.)
         out_unbended = getattr(bended_module, method)(*args, **kwargs)
         assert bool(tb.compare_outs(out_orig, out_unbended)) 
+
+
+@pytest.mark.parametrize("module_config", modules_to_test)
+def test_parameters_as_inputs(module_config):
+    module, bended_module = module_config.get_modules(trace=True)
+    
+    for method in module_config.get_methods(): 
+        bended_module.reset()
+        args, kwargs, _, acts = module_config.get_method_args(method)
+        if len(acts) == 0:
+            pytest.skip(reason="no activation to bend")
+        param = tb.BendingParameter(name="param", value=0., as_input=True)
+        bias = tb.Bias(bias=param)
+
+        # test non-scripted
+        bended_module.bend(bias, *acts, fn=method, verbose=True)
+        bended_module.bend(bias, *acts, fn=method, verbose=True)
+
+        bended_idx = 0
+        for i in [0, 1]:
+            for act in acts: 
+                kwargs[f'{param.name}_{bended_idx}'] = torch.zeros(bended_module.activation_shape(act))
+                bended_idx += 1
+        getattr(bended_module, method)(*args, **kwargs)
+
+        # test scripted
+        scripted_module = bended_module.script()
+        getattr(scripted_module, method)(*args, **kwargs)
+
 

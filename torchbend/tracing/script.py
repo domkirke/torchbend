@@ -140,7 +140,7 @@ class ScriptedBendedModule(nn.Module):
         self._update_bended_activations(model)
 
     def _import_bending_ops(self, model):
-        self._controllables = nn.ModuleList(model.controllables.values())
+        self._controllables = nn.ModuleList(model.controllables().values())
         self._bending_callbacks = nn.ModuleList([m.script() for m in model._bending_callbacks])
         _controllables_hash = torch.jit.Attribute({}, Dict[str, List[int]])
         for v in self._controllables:
@@ -155,7 +155,6 @@ class ScriptedBendedModule(nn.Module):
                 print('[Warning] Bended parameter %s not found in current module.'%param)
                 continue
             for cb in cb_list:
-                # cb.update_weight(model.get_parameter(param), param_dict[param])
                 cb.update_weight(model_param_dict[param], param_dict[param])
 
     def _update_bended_activations(self, model):
@@ -176,15 +175,7 @@ class ScriptedBendedModule(nn.Module):
         setattr(self, "get_"+param.name, MethodType(funcs["get_"+param.name], self))
     
     def _full_param_dict(self):
-        param_dict = {}
-        for module in self._bended_modules:
-            for k, v in dict(module.named_parameters()).items():
-                if k in param_dict:
-                    if id(param_dict[k].data) != id(v.data):
-                        print('[Warning] param %s does not coincide between graph modules.'%k)
-                else:
-                    param_dict[k] = v
-        return param_dict
+        return dict(self.graph_module.named_parameters())
 
     def _disable_parameter_grad(self):
         for gm in self._bended_modules:

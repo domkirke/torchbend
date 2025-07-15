@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn 
 from tqdm import tqdm
 
+from torchbend import mark
+
 
 class Encoder(nn.Module) :
     def __init__(
@@ -22,7 +24,7 @@ class Encoder(nn.Module) :
                                                    kernel, 
                                                    stride,
                                                    padding))
-            self.net.add_module(f'bn{n}', nn.BatchNorm2d(out_chan))
+            self.net.add_module(f'bn{n}', mark(nn.BatchNorm2d(out_chan), name="encoder"))
             self.net.add_module(f'act{n}', nn.ReLU())
             self.net.add_module(f'dr{n}', nn.Dropout2d(0.2))
             h_out = ((self.sizes[-1][0]+2*padding-(kernel-1)-1)//stride)+1
@@ -79,7 +81,7 @@ class Decoder(nn.Module) :
                                                                 stride,
                                                                 padding,
                                                                 out_pad))
-            self.net.add_module(f'bn{n+nmlp}', nn.BatchNorm2d(out_chan))
+            self.net.add_module(f'bn{n+nmlp}', mark(nn.BatchNorm2d(out_chan), name="decoder"))
             if n < len(kernels)-1 :
                 self.net.add_module(f'act{n+nmlp}', nn.ReLU())
                 self.net.add_module(f'dr{n}', nn.Dropout2d(0.2))

@@ -13,7 +13,7 @@ from test_modules import modules_to_test, ModuleTestConfig
 
 @pytest.mark.parametrize('module_config', modules_to_test)
 def test_capture(module_config, n = 4):
-    for method, (args, kwargs, weight_targets, activation_targets) in module_config:
+    for method, (args, kwargs, _, activation_targets) in module_config:
         if len(activation_targets) == 0: continue
         mod = module_config.get_bended_module()
         mod.trace(fn=method, **kwargs)

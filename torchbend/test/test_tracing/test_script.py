@@ -66,7 +66,7 @@ def test_bended_scripting(module_config, nntilde: bool):
         args, kwargs, bended_weights, bended_acts = module_config.get_method_args(method)
         bended.trace(fn=method, *args, **kwargs)
         # bend module
-        cb = tb.Mask(0.)
+        cb = tb.Mask(prob=0.)
         bended.bend(cb, fn=method, *bended_weights, *bended_acts)
 
     # script module
@@ -83,20 +83,24 @@ def test_bended_scripting(module_config, nntilde: bool):
 
 
 @pytest.mark.parametrize("module_config", scriptable_modules_to_test)
-def test_controlled_bended_scripting(module_config):
+@pytest.mark.parametrize("bending_type", ['act', 'weight', 'act+weight'])
+def test_controlled_bended_scripting_weights(module_config, bending_type):
     module, bended = module_config.get_modules()
     param = tb.BendingParameter("mask", 1.)
 
     # trace scriptable methods
     for method in get_scriptable_methods(module):
-        args, kwargs, bended_weights, bended_acts = module_config.get_method_args(method)
+        args, kwargs, bended_weights, bended_activations = module_config.get_method_args(method)
         bended.trace(fn=method, *args, **kwargs)
         # bend module
-        cb = tb.Mask(param)
-        bended.bend(cb, *bended_weights, *bended_acts)
+        cb = tb.Mask(prob=param)
+        if bending_type in ['weight', 'act+weight']:
+            bended.bend(cb, *bended_weights, bend_graph=False)
+        if bending_type in ['act', 'act+weight']:
+            bended.bend(cb, *bended_activations, bend_param=False) 
 
     def check_bending_param(param, val, tol=1.e-5):
-        return  (param > val - tol) and (param < val + tol)
+        return (param > val - tol) and (param < val + tol)
 
     # script module
     scripted = bended.script()

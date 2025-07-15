@@ -35,8 +35,9 @@ def test_mask_weight(cb_class, module_config):
 
 
 @pytest.mark.parametrize('cb_class', [tb.Mask, partial(tb.Mask, dim=-1), tb.OrderedMask, partial(tb.OrderedMask, dim=-1)])
+@pytest.mark.parametrize('as_input', [True, False])
 @pytest.mark.parametrize('module_config', modules_to_test)
-def test_mask_activation(cb_class, module_config):
+def test_mask_activation(cb_class, module_config, as_input):
     torch.set_grad_enabled(False)
     mod = module_config.get_bended_module()
 
@@ -47,22 +48,33 @@ def test_mask_activation(cb_class, module_config):
         args, kwargs, _, _ = module_config.get_method_args(method)
         out_orig = getattr(mod, method)(*args, **kwargs)
 
-        prob = tb.bending.BendingParameter('mask', 1.)
+        prob = tb.bending.BendingParameter('mask', 1., as_input=as_input)
         mask_callback = cb_class(prob=prob)
 
+        kwargs_nomask = dict(kwargs)
+        kwargs_masked = dict(kwargs)
         mod.bend(mask_callback, fn=method, *activation_targets)
-        out_nomask = getattr(mod, method)(*args, **kwargs)
+        if as_input: 
+            for i, a in enumerate(activation_targets):
+                if len(activation_targets) == 1:
+                    kwargs_nomask['mask'] = torch.Tensor([1.])
+                    kwargs_masked['mask'] = torch.Tensor([0.])
+                else:
+                    kwargs_nomask['mask_%d'%i] = torch.Tensor([1.])
+                    kwargs_masked['mask_%d'%i] = torch.Tensor([0.])
+        out_nomask = getattr(mod, method)(*args, **kwargs_nomask)
         assert bool(tb.compare_outs(out_orig, out_nomask))
 
         prob.set_value(0.)
-        out_masked = getattr(mod, method)(*args, **kwargs)
+        out_masked = getattr(mod, method)(*args, **kwargs_masked)
         assert not bool(tb.compare_outs(out_orig, out_masked))
 
 
 @pytest.mark.parametrize('cb_class', [tb.Mask, partial(tb.Mask, dim=-1), tb.OrderedMask, partial(tb.OrderedMask, dim=-1)])
 @pytest.mark.parametrize('module_config', modules_to_test)
+@pytest.mark.parametrize('as_input', [True, False])
 @pytest.mark.parametrize('jit', [True, False])
-def test_mask_script(cb_class, module_config, jit):
+def test_mask_script(cb_class, module_config, jit, as_input):
     mod = module_config.get_bended_module()
 
     for method, (args, kwargs, weight_targets, activation_targets) in module_config.scriptable():
@@ -70,15 +82,28 @@ def test_mask_script(cb_class, module_config, jit):
         mod.trace(method, **kwargs)
         out_orig = getattr(mod, method)(*args, **kwargs)
 
-        prob = tb.bending.BendingParameter('mask', 1.)
+        prob = tb.bending.BendingParameter('mask', 1., as_input=as_input)
         mask_callback = cb_class(prob=prob)
+        if len(weight_targets) > 0: mod.bend(mask_callback, *weight_targets, bend_graph=False)
+        if len(activation_targets) > 0: mod.bend(mask_callback, *activation_targets, bend_param=False)
 
-        mod.bend(mask_callback, *weight_targets, *activation_targets)
+        kwargs_nomask = dict(kwargs)
+        kwargs_masked = dict(kwargs)
+        if as_input and len(activation_targets) > 0: 
+            targets = list(mod.activations(*activation_targets, fn=method, with_bended=False).keys())
+            for i, a in enumerate(targets):
+                if len(targets) == 1:
+                    kwargs_nomask['mask'] = torch.Tensor([1.])
+                    kwargs_masked['mask'] = torch.Tensor([0.])
+                else:
+                    kwargs_nomask['mask_%d'%i] = torch.Tensor([1.])
+                    kwargs_masked['mask_%d'%i] = torch.Tensor([0.])
+
         mod_scripted = mod.script(script=jit)
         mod_scripted._set_bending_control('mask', 1.)
-        out_scripted = getattr(mod_scripted, method)(*args, **kwargs)
+        out_scripted = getattr(mod_scripted, method)(*args, **kwargs_nomask)
         assert bool(tb.compare_outs(out_orig, out_scripted))
 
         mod_scripted._set_bending_control('mask', 0.)
-        out_scripted = getattr(mod_scripted, method)(*args, **kwargs)
+        out_scripted = getattr(mod_scripted, method)(*args, **kwargs_masked)
         assert not bool(tb.compare_outs(out_orig, out_scripted))

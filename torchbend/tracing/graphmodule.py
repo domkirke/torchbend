@@ -46,7 +46,7 @@ class BendedGraphModule(GraphModule):
         self,
         root: Union[torch.nn.Module, Dict[str, Any]],
         class_name: str = "BendedGraphModule",
-        _create_poly_signature: bool = False,
+        # _create_poly_signature: bool = False,
         **kwargs
     ):
         """
@@ -75,6 +75,7 @@ class BendedGraphModule(GraphModule):
 
         for k, v in kwargs.items():
             assert isinstance(v, torch.fx.Graph), f"GraphModule must be initialized with a valid sequence of Graph; got {type(v)} for callback {k}"
+
 
         #TODO check if graphs are graphing the same object
         graph_nodes = sum([list(g.nodes) for g in kwargs.values()], [])
@@ -146,11 +147,24 @@ class BendedGraphModule(GraphModule):
         self._create_node_hooks: List[Callable] = []
         self._erase_node_hooks: List[Callable] = []
 
+        for k, v in self._graph.items():
+            if hasattr(v, "_attached_bending_callbacks"):
+                for name, callback in v.get_attached_callbacks().items(): 
+                    setattr(root, f"{k}_{name}", callback)
+
     __jit_ignored_attributes__ = ["graph", "graphs"]
 
     @property
     def graph(self) -> Graph | None:
         return self._graph
+
+    def __str__(self) -> str:
+        rep = ""
+        for k, g in self._graph.items(): 
+            rep += f'Graph for {k} : \n', '-'*10
+            rep += str(g)
+            rep += "\n"
+        return rep
 
     @graph.setter
     def graph(self, graphs: Dict[str, Graph]) -> None:
@@ -160,6 +174,8 @@ class BendedGraphModule(GraphModule):
         for method, g in graphs.items():
             assert isinstance(g, Graph), f"Expected a Graph instance, but got {type(g)}"
             g.owning_module = self
+            g.lint()
+            g.eliminate_dead_code()
             self._activations[method] = getattr(g, "activations", None)
             # self.recompile()
         self._graph = graphs
