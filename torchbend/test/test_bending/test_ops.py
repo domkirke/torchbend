@@ -20,17 +20,18 @@ def test_piping(test_modules, callbacks, is_equal):
         module, bended = test_modules.get_modules()
         bended.reset()
         args, kwargs, weight_targets, act_targets  = test_modules.get_method_args(m)
-        bended.trace(func=m, **kwargs)
+        bended.trace(fn=m, **kwargs)
         out_orig = getattr(module, m)(*args, **kwargs)
 
         pipe = callbacks[0] >> callbacks[1]
         
         bending_targets = bended.bendable_keys(*weight_targets, *act_targets).keys()
-        bended.bend(pipe, *bending_targets)
+        bended.bend(pipe, *bending_targets, fn=m)
         out_bended = getattr(bended, m)(*args, **kwargs)
 
         assert bool(tb.compare_outs(out_orig, out_bended, allow_almost_equal=True)) == is_equal
 
         # test scripting
+        scripted = pipe.script()
         if pipe.jit_compatible:
-            scripted = torch.jit.script(pipe)
+            scripted = torch.jit.script(scripted)            

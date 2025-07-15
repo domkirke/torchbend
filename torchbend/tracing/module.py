@@ -402,7 +402,7 @@ class BendedModule(object):
 
     @_import_to_interface
     def activation_names(self, **kwargs):
-        names = list(self.activations(**kwargs).keys()) 
+        names = list(self.activations(".*", **kwargs).keys()) 
         return names
 
     @_import_to_interface
@@ -445,6 +445,7 @@ class BendedModule(object):
 
     @_import_to_interface
     def print_activations(self, *flt, fn="forward", op=None, exclude=None, out=None, fields=None, _with_fn: bool = False) -> str:
+        if len(flt) == 0: flt = [".*"]
         activations = self.activations(*flt, fn=fn, op=op, exclude=exclude, _with_fn=_with_fn)
         fields = fields or _DEFAULT_ACTIVATION_FIELDS
         act_parsed = list(map(partial(_get_activations_properties, fields=fields), activations.values()))
@@ -995,7 +996,7 @@ class BendedModule(object):
             assert c in self._bending_callbacks
         if len(callbacks) == 0: callbacks = self._bending_callbacks
         for c in callbacks:
-            c.stop()
+            if c.capturing: c.stop()
 
     @_import_to_interface
     def capture(self, *callbacks):

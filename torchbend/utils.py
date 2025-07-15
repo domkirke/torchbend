@@ -577,6 +577,8 @@ def _import_defs_from_tmpfile(code, gl=None, lo=None, tmpdir="/tmp/torchbend/jit
     exec(code_compiled, gl, lo)
     return lo 
 
+def can_concatenate(tensor_list, dim):
+    extruded_shapes = [t.shape[:dim] + t.shape[dim+1:] for t in tensor_list]
+    return len(set(extruded_shapes)) == 1
 
 
-__all__= ['get_random_hash', 'get_parameter', 'print_tensor_ids', '_import_defs_from_tmpfile',  '_resolve_code']

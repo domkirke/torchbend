@@ -68,5 +68,5 @@ def test_interpolation_env(module_config, n=8):
                 for _ in range(n):
                     for k, v in kwargs.items(): kwargs[k] = torch.randn_like(v)
                     _ = getattr(mod, method)(*args, **kwargs)
-            onehot = torch.randn(4, cb.captures[f"{method}:{target}"].shape[0])
+            onehot = torch.randn(4, cb.n_captures(f"{method}:{target}"))
             outs = mod.from_activations(f"{target}", **{target: onehot}, **kwargs, fn=method)

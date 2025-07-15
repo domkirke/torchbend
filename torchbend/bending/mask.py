@@ -21,7 +21,7 @@ class Mask(BendingCallback):
     nntilde_compatible = True
     controllable_params = {'prob': ((float, torch.Tensor), 1.)}
 
-    def __init__(self, seed: int = None, prob: BendingParamType | BendingParameter | None = None, dim: Optional[Union[int, List[int]]]=None):
+    def __init__(self, prob: BendingParameter | float | None = None, seed: int = None, dim: Optional[Union[int, List[int]]]=None):
         super().__init__(seed=seed, prob=prob)
         # register paramters
         # self.register_controllable('prob', prob)
@@ -92,7 +92,7 @@ class Mask(BendingCallback):
         raise BendingCallbackException('%s not present in masks'%idx)
     
     def get_mask(self, param, prob: torch.Tensor | None = None, name: str | None = None) -> torch.Tensor:
-        if prob is None: 
+        if prob is None or not self._prob_as_input: 
             if name is None:
                 return torch.bernoulli(torch.full_like(param, fill_value=float(self.prob))).to(param)
             else:
@@ -105,6 +105,7 @@ class Mask(BendingCallback):
                 return torch.bernoulli(prob.expand_as(param)).to(param)
             else:
                 raise TypeError('wrong type for prob : %s'%type(prob))
+
 
     def update(self):
         for i, v in enumerate(self._masks):
@@ -180,7 +181,8 @@ class OrderedMask(Mask):
         """no update is needed with OrderedMask, as mask is updated in real time"""
         pass
 
-    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor):
+    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor | None = None):
+        assert cache is not None
         param.set_(self.get_mask_from_id(idx, cache) * cache)
 
 

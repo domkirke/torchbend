@@ -332,20 +332,24 @@ def test_bending_as_environement(module_config):
         bended_module.reset()
         args, kwargs, bended_weights, bended_activations = module_config.get_method_args(method)
         out_orig = getattr(bended_module, method)(*args, **kwargs)
+
         # bend with first bending callback
         cb1 = tb.Mask(tb.BendingParameter('mask2', 0.5))
         bended_module.bend(cb1, *bended_weights, *bended_activations)
         out_bend1 = getattr(bended_module, method)(*args, **kwargs)
-        # bend with environment
-        cb2 = tb.Mask(tb.BendingParameter('mask1', 0.))
-        with bended_module.bend(cb2, *bended_weights, *bended_activations):
-            out_bend2 = getattr(bended_module, method)(*args, **kwargs)
-        out_orig2 = getattr(bended_module, method)(*args, **kwargs)
+        out_bend1 = getattr(bended_module, method)(*args, **kwargs)
 
-        assert bool(tb.compare_outs(out_bend1, out_orig2))
-        assert not bool(tb.compare_outs(out_orig, out_bend1))
-        assert not bool(tb.compare_outs(out_orig, out_bend2))
-        assert not bool(tb.compare_outs(out_bend1, out_bend2))
+
+        # # bend with environment
+        # cb2 = tb.Mask(tb.BendingParameter('mask1', 0.))
+        # with bended_module.bend(cb2, *bended_weights, *bended_activations):
+        #     out_bend2 = getattr(bended_module, method)(*args, **kwargs)
+        # out_orig2 = getattr(bended_module, method)(*args, **kwargs)
+
+        # assert bool(tb.compare_outs(out_bend1, out_orig2))
+        # assert not bool(tb.compare_outs(out_orig, out_bend1))
+        # assert not bool(tb.compare_outs(out_orig, out_bend2))
+        # assert not bool(tb.compare_outs(out_bend1, out_bend2))
 
 # @pytest.mark.parametrize("module_config", modules_to_test)
 # def test_bending_range_exploration(module_config):

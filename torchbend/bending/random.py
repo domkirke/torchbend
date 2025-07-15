@@ -1,6 +1,7 @@
 import torch
 from typing import Optional, List
 from .callback import BendingCallback, BendingParamType, BendingCallbackException
+from .parameter import BendingParameter
 
 
 class Normal(BendingCallback):
@@ -11,7 +12,7 @@ class Normal(BendingCallback):
     valid_ops = ['add', 'mul']
     controllable_params = {'std': ((float, torch.FloatTensor), 0.3)}
 
-    def __init__(self, std: float = 0.3, seed: int = None, dim=None, op = "add"):
+    def __init__(self, std: float | torch.Tensor | BendingParameter = 0.3, seed: int = None, dim=None, op = "add"):
         super().__init__(std=std)
         assert op in self.valid_ops
         self.op = op

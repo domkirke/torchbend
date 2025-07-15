@@ -1,3 +1,4 @@
+from ..utils import can_concatenate
 from .callback import BendingCallback, BendingCallbackException
 from typing import Optional
 import torch
@@ -27,8 +28,28 @@ class Capture(BendingCallback):
         return self._captures
 
     @property
+    def capturing(self): 
+        return self._is_capturing
+
+    @property
     def is_ready(self) -> bool:
         return self._is_initialized or self._is_capturing
+
+    def _n_captures_from_activation(self, name: str, dim=0):
+        captures = self._captures[name]
+        n = 0
+        for c in captures:
+            n += c.shape[dim]
+        return n
+
+    def n_captures(self, name: str | None = None, dim = 0):
+        if name is None: 
+            n_captures = {}
+            for k, v in self._captures.items(): 
+                n_captures[k] = self.n_captures_from_activation(name, dim=dim)
+        else:
+            n_captures = self._n_captures_from_activation(name, dim=dim)
+        return n_captures
 
     def register_weight(self, parameter, name=None, cache = True):
         name = super().register_weight(parameter, name=name, cache=cache)
@@ -58,6 +79,10 @@ class Capture(BendingCallback):
             self._buffer_tmp[k] = []
         self._is_initialized = True
 
+    def bend_input_with_capture(self, x: torch.Tensor, name: Optional[str] = None): 
+        """Callback to override for specific behavior with captured content"""
+        return x
+
     def bend_input(self, x: torch.Tensor, name: Optional[str] = None):
         """applies transformation to an input (typically activations)"""
         if self._is_capturing:
@@ -65,30 +90,37 @@ class Capture(BendingCallback):
             self.record_buffer(x, name)
             return x
         else:
-            if not self.is_ready: raise BendingCallbackException(self._not_ready_str)
-            return x
+            if not self.is_ready: 
+                return x
+            else:
+                return self.bend_input_with_capture(x, name=name)
 
 
 class InterpolationFromCapture(Capture):
 
-    def bend_input(self, x: torch.Tensor, name: Optional[str] = None):
+    def __init__(self, *args, dim=0, **kwargs):
+        super(InterpolationFromCapture, self).__init__(*args, **kwargs)
+        self.dim = dim   
+
+    @property
+    def different_input(self):
+        return self._is_ready
+
+    def stop(self): 
+        super(InterpolationFromCapture, self).stop()
+        for k, v in self._captures.items():
+            if len(v) > 0:
+                assert can_concatenate(v, self.dim), "captures for activation {k} are not concatenable"
+
+    def bend_input_with_capture(self, x: torch.Tensor, name: Optional[str] = None):
         # x : b x b_c
         # captures: b_c x (...)
         # captures -> : 1 x b_c x (...)
         # x: b x b_c x (1,) * ...
         if name not in self._captures: 
             raise BendingCallbackException('capture for activation %s seems empty. Did you record anything?')
-        captures = self._captures[name].unsqueeze(0)
+        captures = torch.cat(self._captures[name], dim=self.dim).unsqueeze(0)
         x = x.reshape(x.shape + (1, ) * (captures.ndim - 2))
         return (captures * torch.nn.functional.softmax(x, dim=1)).sum(1)
 
-    def forward(self, x: torch.Tensor, name: Optional[str] = None):
-        """applies transformation to an input (typically activations)"""
-        if not self.is_ready: raise BendingCallbackException(self._not_ready_str)
-        if self._is_capturing:
-            assert name is not None
-            self.record_buffer(x, name)
-            return x
-        else:
-            return self.bend_input(x, name=name)
         
