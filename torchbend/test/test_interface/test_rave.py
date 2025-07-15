@@ -92,6 +92,7 @@ def test_callbacks(model_path, batch_size, cached, scriptable):
     assert z.shape[-2] == model.latent_size
     assert z_nopostprocess.shape[-2] == model.latent_size
 
+MAX_ACTIVATION_TESTS = 4
 
 @pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
 @pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
@@ -110,24 +111,27 @@ def test_tracing(model_path, scriptable):
         model.print_activations(fn=method, out=Path(model_path) / f"activations_{method}.txt")
 
     # test encode
-    encode_acts = locate_channel_amount_change(model.activations(fn="encode"))[:2]
-    decode_acts = locate_channel_amount_change(model.activations(fn="decode"), model.latent_size)[:2]
-    forward_acts = locate_channel_amount_change(model.activations(fn="forward"))[:2]
+    encode_acts = model.activations('#encoder_act', fn="encode")
+    decode_acts = model.activations('#decoder_act', fn="decode")
+    forward_acts = model.activations('#encoder_act', '#decoder_act', fn="forward")
 
     x = torch.zeros(1, model.channels, 8192)
     z = model.encode(x)
 
-    for e_act in encode_acts:
+    for i, e_act in enumerate(encode_acts):
         acts = model.get_activations(f"{e_act}$", x=x, fn="encode")
         out = model.from_activations(f"{e_act}$", **acts, x=x, fn="encode")
+        if i >= MAX_ACTIVATION_TESTS: break
 
-    for d_act in decode_acts:
+    for i, d_act in enumerate(decode_acts):
         acts = model.get_activations(f"{d_act}$", z=z, fn="decode")
         out = model.from_activations(f"{d_act}$", **acts, z=z, fn="decode")
+        if i >= MAX_ACTIVATION_TESTS: break
 
-    for f_act in forward_acts:
+    for i, f_act in enumerate(forward_acts):
         acts = model.get_activations(f"{f_act}$", x=x, fn="forward")
         out = model.from_activations(f"{f_act}$", **acts, x=x, fn="forward")
+        if i >= MAX_ACTIVATION_TESTS: break
 
         
 

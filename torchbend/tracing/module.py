@@ -372,6 +372,13 @@ class BendedModule(object):
             fn = list(self._activations.keys())
         fn = checklist(fn)
         flt = list(flt)
+        # parse aliases
+        for f in fn:
+            for i, k in enumerate(list(flt)):
+                if k[0] == "#" and k[1:] in self.aliases():
+                    del flt[i]
+                    flt.extend([f"{f}:{x}" for x in self.aliases(fn=f)[k[1:]]])
+
         for i, f in enumerate(flt):
             if ":" not in f: flt[i] = f"({'|'.join(fn)}):{f}"
         if exclude:
