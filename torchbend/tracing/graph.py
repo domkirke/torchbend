@@ -100,6 +100,20 @@ def graph_insert_callbacks(graph, callbacks, verbose=False, fn=None):
     bended_lookup = {}
     fn_name = fn or graph.fn
 
+    def _replace_with_bended(arg, bended_lookup):
+        if isinstance(arg, torch.fx.Node):
+            if arg.name in bended_lookup:
+                return bended_lookup[arg.name]
+            else:
+                return arg
+        elif isinstance(arg, (tuple, list)):
+            return type(arg)([_replace_with_bended(a, bended_lookup) for a in arg])
+        elif isinstance(arg, dict):
+            return {k: _replace_with_bended(v, bended_lookup) for k, v in arg.items()}
+        else:
+            return arg
+        
+
     # then insert
     last_input = None
     for node in graph.nodes:
@@ -107,12 +121,7 @@ def graph_insert_callbacks(graph, callbacks, verbose=False, fn=None):
         if node.op == "placeholder":
             last_input = new_node
         # check arguments to replace by bended node in case
-        new_args = list(new_node.args)
-        for i, arg in enumerate(new_args):
-            if isinstance(arg, torch.fx.Node):
-                if arg.name in bended_lookup:
-                    new_args[i] = bended_lookup[arg.name]
-        new_node.args = tuple(new_args)
+        new_node.args = _replace_with_bended(new_node.args, bended_lookup)
         env[node.name] = new_node
         if node.name in callbacks:
             if verbose:

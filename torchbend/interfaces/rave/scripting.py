@@ -244,8 +244,7 @@ class ScriptedRAVE(nn.Module):
         z = self.encoder(x)
         if postprocess:
             z = self.post_process_latent(z)
-        z = mark(z, 'latent_pca')
-        return z
+        return mark(z, "latent_pca")
 
 
     @torch.jit.export
@@ -351,7 +350,6 @@ class VariationalScriptedRAVE(ScriptedRAVE):
 
     def pre_process_latent(self, z):
         noise = get_noise(z, self.full_latent_size)
-        z = mark(z, "latent_pca")
         z = torch.cat([z, noise], 1)
         z = F.conv1d(z, self.latent_pca.T.unsqueeze(-1))
         z = z + self.latent_mean.unsqueeze(-1)

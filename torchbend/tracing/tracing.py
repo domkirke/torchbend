@@ -323,7 +323,8 @@ class BendingTracer(torch.fx.Tracer):
         name = name or node.name
         if name not in self._aliases: self._aliases[name] = []
         if mode == "post":
-            self._aliases[name].append(node.name)
+            if node.name not in self._aliases[name]:
+                self._aliases[name].append(node.name)
         elif mode == "pre": 
            self._aliases[name].append(tuple([a.name for a in node.args])) 
         else:

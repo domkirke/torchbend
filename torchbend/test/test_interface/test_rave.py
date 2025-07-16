@@ -220,9 +220,9 @@ def test_latent_steering_with_input_controllables(model_path):
     out_orig = model.forward(x, clear_cache=True)
     out_orig2 = model.forward(x, clear_cache=True) 
 
-    target_activation = model.aliases(fn="forward")['latent_pca'][0]
-    target_activation_b = f"{target_activation}_bended"
-    activation_shape = model.activation_shape(target_activation)
+    target_activations = model.activations('#latent_pca')
+    target_activations_b = [f"{t}_bended" for t in target_activations]
+    activation_shape = model.activation_shape(list(target_activations.keys())[0])
 
     scale_value = torch.full((1, *activation_shape[1:]), 1.)
     scale_in = tb.BendingParameter('latent_scale', scale_value, True)
@@ -230,20 +230,12 @@ def test_latent_steering_with_input_controllables(model_path):
     bias_in = tb.BendingParameter('latent_bias', bias_value, True)
     affine_cb = tb.Affine(scale=scale_in, bias=bias_in)
     affine_cb.nntilde()
-    model.bend(affine_cb, target_activation, fn="encode")
+    model.bend(affine_cb, *target_activations, fn="forward")
 
-    target_activation_enc = model.aliases(fn="encode")['latent_pca'][0]
-    target_activation_b_enc = f"{target_activation}_bended"
-    scale_value = torch.full((1, *activation_shape[1:]), 1.)
-    scale_in = tb.BendingParameter('latent_scale', scale_value, True)
-    bias_value = torch.full((1, *activation_shape[1:]), 0.)
-    bias_in = tb.BendingParameter('latent_bias', bias_value, True)
-    affine_cb = tb.Affine(scale=scale_in, bias=bias_in)
-    affine_cb.nntilde()
-    model.bend(affine_cb, target_activation_enc, fn="forward")
-
-    out = model.get_activations(target_activation_b, x=x, latent_scale=torch.zeros_like(scale_value), latent_bias=bias_value, fn="forward")
-    assert tb.compare_outs(out[target_activation_b], torch.zeros_like(out[target_activation_b]))
+    for m in ['forward', 'encode']:
+        target_act = model.activation_names('#latent_pca', fn=m)[0]
+        out = model.get_activations(f"{target_act}_bended", x=x, latent_scale=torch.zeros_like(scale_value), latent_bias=bias_value, fn=m)
+        assert tb.compare_outs(out[f"{target_act}_bended"], torch.zeros_like(out[f"{target_act}_bended"]))
 
     scripted = model.nntilde()
     x_scripted = torch.cat([
@@ -251,6 +243,7 @@ def test_latent_steering_with_input_controllables(model_path):
         torch.full((x.shape[0], model.latent_size, x.shape[-1]), 1.), 
         torch.full((x.shape[0], model.latent_size, x.shape[-1]), 0.), 
     ], dim=-2)
+    out = scripted.encode(x_scripted)
     out = scripted.forward(x_scripted)
     save_scripted(scripted, test_name)
 

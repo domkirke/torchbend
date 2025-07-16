@@ -372,19 +372,31 @@ class BendedModule(object):
             fn = list(self._activations.keys())
         fn = checklist(fn)
         flt = list(flt)
-        # parse aliases
-        for f in fn:
-            for i, k in enumerate(list(flt)):
-                if k[0] == "#" and k[1:] in self.aliases():
-                    del flt[i]
-                    flt.extend([f"{f}:{x}" for x in self.aliases(fn=f)[k[1:]]])
 
+        # parse aliases
+        for i, k in enumerate(list(flt)):
+            flt_with_aliases = []
+            if k[0] == "#" and k[1:] in self.aliases():
+                for f in fn:
+                    aliases = [f"{f}:{x}" for x in self.aliases(fn=f).get(k[1:], [])]
+                    flt_with_aliases.extend(aliases)
+            else:
+                flt_with_aliases.append(k)
+        flt = flt_with_aliases
+
+        # add prefix for method
         for i, f in enumerate(flt):
-            if ":" not in f: flt[i] = f"({'|'.join(fn)}):{f}"
+            if ":" not in f: 
+                if flt[i].startswith('?'):
+                    if len(flt) > 1:
+                        if flt[1] == "^": flt = f"?{flt[2:]}"
+                    flt[i] = f"?^({'|'.join(fn)}):{f[1:]}$"
+                else:
+                    flt[i] = f"?^({'|'.join(fn)}):{f}$"
         if exclude:
             for i, e in enumerate(exclude):
                 if ":" not in e: exclude[i] = f"({'|'.join(fn)}):{e}"
-        flt = sum([self._parse_aliases(f) for f in flt], [])
+        # flt = sum([self._parse_aliases(f) for f in flt], [])
         
         # exclude = sum([self._parse_aliases(f) for f in exclude], [])
         activations = self.all_activations(with_bended=with_bended)
@@ -395,7 +407,12 @@ class BendedModule(object):
         valid_activations = {}
         if len(flt) == 0: flt = [f"{f}:" for f in fn]
         for f in checklist(flt):
-            valid_activations.update(dict(filter(lambda x, r=f: re.match(r, x[0]) is not None, activations.items())))
+            if f.startswith('?'):
+                f = f[1:]
+                valid_activations.update(dict(filter(lambda x, r=f: re.match(r, x[0]) is not None, activations.items())))
+            else:
+                valid_activations.update(dict(filter(lambda x, r=f: x[0]==r is not None, activations.items())))
+
         if exclude is not None:
             for e in checklist(exclude):
                 valid_activations = dict(filter(lambda x, r=e: re.match(r, x[0]) is None, valid_activations.items())) 
@@ -408,8 +425,9 @@ class BendedModule(object):
         return valid_activations
 
     @_import_to_interface
-    def activation_names(self, **kwargs):
-        names = list(self.activations(".*", **kwargs).keys()) 
+    def activation_names(self, *flt, **kwargs):
+        if len(flt) == 0: flt = [".*"]
+        names = list(self.activations(*flt, **kwargs).keys()) 
         return names
 
     @_import_to_interface
