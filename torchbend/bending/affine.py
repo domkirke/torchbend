@@ -9,10 +9,11 @@ from .callback import BendingCallback, BendingCallbackAttributeException
 
 def _parse_affine_control(inp, ctrl):
     assert ctrl.shape[0] == 1 or ctrl.shape[0] == inp.shape[0]
-    if ctrl.shape[1] < inp.shape[1]: 
-        ctrl = torch.cat([ctrl, torch.zeros(ctrl.shape[0], inp.shape[1] - ctrl.shape[1], ctrl.shape[2])])
-    elif ctrl.shape[1] > inp.shape[1]: 
-        ctrl = ctrl[:, :inp.shape[1]]
+    if ctrl.shape[1] != 1:
+        if ctrl.shape[1] < inp.shape[1]:
+            ctrl = torch.cat([ctrl, torch.zeros(ctrl.shape[0], inp.shape[1] - ctrl.shape[1], ctrl.shape[2])])
+        elif ctrl.shape[1] > inp.shape[1]: 
+            ctrl = ctrl[:, :inp.shape[1]]
     if ctrl.shape[-1] != inp.shape[-1]:
         ctrl = torch.nn.functional.interpolate(ctrl, inp.shape[-1], mode="nearest")
     return ctrl
@@ -36,6 +37,8 @@ class Bias(BendingCallback):
         param.set_(cache + self.get('bias'))
 
     def bend_input(self, x: torch.Tensor, bias: torch.Tensor, name: Optional[str] = None):
+        if bias is not None: 
+            if self._bias_as_input and self._for_nntilde: bias = _parse_affine_control(x, bias)
         return x + bias
 
 
@@ -56,9 +59,9 @@ class Scale(BendingCallback):
         assert cache is not None
         param.set_(cache * self.get('scale'))
 
-    def bend_input(self, x: torch.Tensor, scale: torch.Tensor | None = None, name: str | None = None):
-        if scale is None:
-            scale = self.get('scale')
+    def bend_input(self, x: torch.Tensor, scale: torch.Tensor, name: str | None = None):
+        if scale is not None:
+            if self._scale_as_input and self._for_nntilde: scale = _parse_affine_control(x, scale)
         return x * scale
         
 

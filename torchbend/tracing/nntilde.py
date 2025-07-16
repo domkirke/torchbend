@@ -231,6 +231,7 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
     def _update_method_attributes(self, method, attributes):
         input_shapes = self._get_input_shapes_from_method(method) 
         input_nodes = self.graph_module.graph[method].find_nodes(op="placeholder")
+        input_nodes = list(filter(lambda x: len(x.users) > 0, input_nodes))
         pre_annotated_channels = attributes.in_channels
         channel_count = 0
         for i, shape in enumerate(input_shapes): 

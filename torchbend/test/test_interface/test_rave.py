@@ -248,6 +248,63 @@ def test_latent_steering_with_input_controllables(model_path):
     save_scripted(scripted, test_name)
 
 
+@pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
+@pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
+def test_modulation_with_input_controllables(model_path):
+    test_name = get_test_name()
+    model = BendedRAVE(model_path, scriptable=True, strict=RAVE_STRICT_LOADING)
+
+    x = torch.full((1, 1, 8192), 0.)
+    out_orig = model.forward(x, clear_cache=True)
+    out_orig2 = model.forward(x, clear_cache=True) 
+
+    target_activations = model.activation_names('#decoder_act', fn="decode")
+    target_fw_activations = model.activation_names('#decoder_act', fn="forward")
+
+    for i, t in enumerate(target_activations):
+        t = [f"decode:{t}", f"forward:{target_fw_activations[i]}"]
+        activation_shape = model.activation_shape(t[0])
+        scale_value = torch.full((1, 1, activation_shape[2]), 1.)
+        scale_in = tb.BendingParameter(f'mod_{i}', scale_value, True)
+        affine_cb = tb.Scale(scale=scale_in)
+        affine_cb.nntilde()
+        model.bend(affine_cb, *t)
+
+    out_encoder = model.encode(x)
+    for i, t in enumerate(target_activations):
+        out = model.get_activations(f"{t}_bended", z=out_encoder, **{f'mod_{i}': torch.zeros_like(scale_value)}, fn="decode")
+        assert tb.compare_outs(out[f"{t}_bended"], torch.zeros_like(out[f"{t}_bended"]))
+    for i, t in enumerate(target_fw_activations):
+        out = model.get_activations(f"{t}_bended", x=x, **{f'mod_{i}': torch.zeros_like(scale_value)}, fn="forward")
+        assert tb.compare_outs(out[f"{t}_bended"], torch.zeros_like(out[f"{t}_bended"]))
+
+
+    scripted = model.nntilde()
+    z_scripted = torch.cat([
+        out_encoder, 
+        torch.full((out_encoder.shape[0], len(target_activations), out_encoder.shape[-1]), 1.), 
+    ], dim=-2)
+    out = scripted.decode(z_scripted)
+
+    x_scripted = torch.cat([
+        x, 
+        torch.full((x.shape[0], len(target_activations), x.shape[-1]), 1.), 
+    ], dim=-2)
+    out = scripted.forward(x_scripted)
+    save_scripted(scripted, test_name)
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

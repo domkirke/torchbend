@@ -161,7 +161,7 @@ class BendedGraphModule(GraphModule):
     def __str__(self) -> str:
         rep = ""
         for k, g in self._graph.items(): 
-            rep += f'Graph for {k} : \n', '-'*10
+            rep += f'Graph for {k} : \n' + '-'*10
             rep += str(g)
             rep += "\n"
         return rep

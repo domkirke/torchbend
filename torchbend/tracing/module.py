@@ -650,7 +650,7 @@ class BendedModule(object):
                 raise BendingError('Cannot bend activation %s with callback %s.\nException : %s\n Proceeding'%(parameter, callback, e))
         
     @_import_to_interface
-    def bend_module(self, fn=None, version=None, copy_parameters=True):
+    def bend_module(self, fn=None, version=None, copy_parameters=True, jit_compatible: bool = False):
         version = version or self.version
         with torch.no_grad():
             # clone module with deep-copying parameters
@@ -666,7 +666,7 @@ class BendedModule(object):
             for f in fn:
                 if self._graphs.get(f) is not None:
                     for k, v in self.bended_activations(f).items():
-                        setattr(module, f"{f}_{k}_callback", CallbackChain(*v))
+                        setattr(module, f"{f}_{k}_callback", CallbackChain.create(*v, _jit_compatible=jit_compatible, name=f"CallbackChain_{f}_{k}"))
                     for k, v in self._graphs[f].get_attached_callbacks().items():
                         setattr(module, f"{f}_{k}", v)
                         
@@ -682,7 +682,7 @@ class BendedModule(object):
     @_import_to_interface
     def graph_module(self, fn=None, module=None, jit_compatible=False):
         if module is None:
-            module = self.bend_module(fn=fn)
+            module = self.bend_module(fn=fn, jit_compatible=jit_compatible)
         if fn is None:
             graphs = {k: self.bend_graph(fn=k) for k in self._graphs.keys()}
         else:
