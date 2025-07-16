@@ -2,47 +2,9 @@ import torch
 import copy
 import torchbend as tb
 import pytest
+from torchbend.utils import PArgs
 from torchbend.bending.parameter import BendingParameterException
 from test_modules import modules_to_test, scriptable_modules_to_test 
-
-
-class PArgs(): 
-    def __init__(self, *args, **kwargs):
-        self.args = args
-        self.kwargs = kwargs
-    def __repr__(self): 
-        sig = "PArgs("
-        sig += ', '.join(map(str, self.args))
-        sig += ', '.join([f"{k}: {v}" for k, v in self.kwargs.items()])
-        sig += ")"
-        return sig
-    def keys(self):
-        return self.kwargs.keys()
-    def __getitem__(self, i): 
-        if isinstance(i, int):
-            return self.args[i]
-        else:
-            return self.kwargs[i]
-    def __setitem__(self, i, val):
-        if isinstance(i, int):
-            args = list(self.args)
-            args[i] = val
-            self.args = tuple(args)
-        else:
-            self.kwargs[i] = val
-    def __iter__(self):
-        return iter(self.args)
-    def copy(self): 
-        return copy.deepcopy(self)
-    def __add__(self, obj):
-        r_obj = copy.deepcopy(self)
-        if isinstance(obj, (tuple, list)):
-            r_obj.args += obj
-        elif isinstance(obj, dict):
-            r_obj.kwargs.update(obj)
-        else:
-            raise TypeError("cannot add obj %s to Pargs"%type(obj))
-        return r_obj
 
 
 
@@ -241,7 +203,7 @@ def test_parameters_as_inputs(module_config):
     
     for method in module_config.get_methods(): 
         bended_module.reset()
-        args, kwargs, _, acts = module_config.get_method_args(method)
+        args, kwargs, weights, acts = module_config.get_method_args(method)
         if len(acts) == 0:
             pytest.skip(reason="no activation to bend")
         param = tb.BendingParameter(name="param", value=0., as_input=True)
@@ -252,14 +214,21 @@ def test_parameters_as_inputs(module_config):
         bended_module.bend(bias, *acts, fn=method, verbose=True)
 
         bended_idx = 0
+        untouched_kwargs = dict(kwargs)
+        touched_kwargs = dict(kwargs)
         for i in [0, 1]:
             for act in acts: 
-                kwargs[f'{param.name}_{bended_idx}'] = torch.zeros(bended_module.activation_shape(act))
+                untouched_kwargs[f'{param.name}_{bended_idx}'] = torch.zeros(bended_module.activation_shape(act))
+                touched_kwargs[f'{param.name}_{bended_idx}'] = torch.ones(bended_module.activation_shape(act))
                 bended_idx += 1
         getattr(bended_module, method)(*args, **kwargs)
 
         # test scripted
-        scripted_module = bended_module.script()
-        getattr(scripted_module, method)(*args, **kwargs)
+        if module_config.is_scriptable:
+            scripted_module = bended_module.script()
+            out1 = getattr(scripted_module, method)(*args, **untouched_kwargs)
+            out2 = getattr(scripted_module, method)(*args, **touched_kwargs)
+            assert not tb.compare_outs(out1, out2)
+            torch.jit.save(scripted_module, '/tmp/test.ts' )
 
 

@@ -1,4 +1,6 @@
 import torch
+from dataclasses import dataclass
+import re
 import math
 import inspect
 import math
@@ -22,8 +24,8 @@ method_template_n_args = """
 @torch.jit.export
 def {{METHOD_NAME}}{{SIGNATURE}}:
     {{INS}} = torch.split(x, {{SECTIONS}}, dim=-2)
-    {{SR_CONVERSION}}
-    return self.graph_module.{{CALLBACK_NAME}}({{INS}})
+{{SR_CONVERSION}}
+    return self.graph_module.{{CALLBACK_NAME}}({{INS_PARSED}})
 """
 
 class ListAttribute(torch.jit.Attribute):
@@ -37,6 +39,18 @@ class ListAttribute(torch.jit.Attribute):
 
 class NNBendedModuleException(Exception):
     pass
+
+@dataclass
+class NNBendedMethodAttributes:
+    in_channels: int
+    in_ratio: int 
+    out_channels: int
+    out_ratio: int
+    input_labels: List[str]
+    output_labels: List[str]
+
+    def as_dict(self): 
+        return self.__getstate__()
 
 class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
     def __init__(self, model, enable_grad: bool = False, force_default: bool = False, sr: int | None = None):
@@ -52,12 +66,12 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
             if not getattr(getattr(model, "register_nntilde_attributes"), "__isabstractmethod__", False):
                 model.register_nntilde_attributes(self)
 
-        if hasattr(model, "register_nntilde_methods"):
-            if not getattr(getattr(model, "register_nntilde_methods"), "__isabstractmethod__", False):
-                if not force_default:
-                    model.register_nntilde_methods(self)
+        # if hasattr(model, "nn_tilde_methods"):
+        #     if not getattr(getattr(model, "register_nntilde_methods"), "__isabstractmethod__", False):
+        #         if not force_default:
+        #             model.register_nntilde_methods(self)
 
-        self._default_register_methods(force_default)
+        self._register_methods(model, force_default)
         self._reset_get_set_candidates()
 
     def _init_nntilde_module(self, sr = None):
@@ -69,7 +83,10 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         self.sr = torch.jit.Attribute(sr, int | None) 
 
     def _check_input_type_for_export(self, x):
-        return (x.type is None) or issubclass(x.type, torch.Tensor)
+        if x.type == Optional[torch.Tensor]:
+            return True
+        else:
+            return (x.type is None) or issubclass(x.type, torch.Tensor)
 
     @torch.jit.export
     def _adjust_sr(self, x, factor: Optional[float] = 1.):
@@ -95,7 +112,10 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
 
         # parse channel split
         channel_split = [s[-2] for s in self._get_input_shapes_from_method(callback_name)]
+        input_args = self.graph_module.graph[method_name].find_nodes(op="placeholder")
+        input_args = [input_args[0]] + list(filter(lambda x: hasattr(x, "from_callback"), input_args))
         ins = ", ".join([f"in{i}" for i in range(len(channel_split))])
+        ins_parsed = ", ".join([f"{input_args[i].name}=in{i}" for i in range(len(channel_split))])
         sections = "(" + ", ".join([str(sp) for sp in channel_split]) + ",)"
 
         # parse upsampling 
@@ -104,9 +124,8 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         for i, n in enumerate(n_samples):
             if i == 0: continue
             if n > n_samples[0] or n < n_samples[0]:
-                # factor = n_samples[0] / n
                 factor = n / n_samples[0]
-                sr_conversion.append(f"in{i} = self._adjust_sr(in{i}, {factor})")
+                sr_conversion.append(f"    in{i} = self._adjust_sr(in{i}, {factor})")
         sr_conversion = "\n".join(sr_conversion)
 
         n_inputs = len(channel_split)
@@ -115,6 +134,7 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
                              callback_name=callback_name, 
                              signature=signature_str, 
                              ins=ins if n_inputs > 1 else "x", 
+                             ins_parsed = ins_parsed,
                              sr_conversion=sr_conversion,
                              sections=sections,
                              _import_modules=['typing']) 
@@ -125,17 +145,29 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         input_placeholders = self._get_placeholders_for_method(method)
         input_placeholders = list(filter(lambda x: self._check_input_type_for_export(x), input_placeholders))
         method_graph = self._get_graph_for_method(method)
-        input_shapes = [method_graph.activations.get(i.name).shape for i in input_placeholders]
+        input_shapes = []
+        for i in input_placeholders:
+            activation = method_graph.activations.get(i.name)
+            if activation is None: 
+                if hasattr(i, "from_callback"):
+                    for k, p in i.from_callback.input_controllables().items(): 
+                        if re.match(rf'{i.name}((_\d)*)?$', p.name):
+                            if p.value is not None: 
+                                input_shapes.append(p.value.shape)
+                            else:
+                                raise ValueError('Could not obtain shape for input %s'%i.name)                                
+            else:
+                input_shapes.append(activation.shape)
         return input_shapes
 
-    def _default_register_method(self, method):
+    def _default_method_attributes(self, method):
         method_graph = self._get_graph_for_method(method)
         if not getattr(method_graph, "activations", None): raise ScriptedBendedException("Cannot extract activations from graph for method %s"%method)
 
         # get inputs
         input_placeholders = list(filter(lambda x: x.op == "placeholder", method_graph.nodes))
         input_placeholders = list(filter(lambda x: self._check_input_type_for_export(x), input_placeholders))
-        input_shapes = [method_graph.activations.get(i.name).shape for i in input_placeholders]
+        input_shapes = self._get_input_shapes_from_method(method)
         # if len(set(input_shapes)) != 1:
         #     raise ScriptedBendedException("Found different input shapes for method %s. Multi-input is available if sharing same shapes"%method)
         input_shape = input_shapes[0]
@@ -184,8 +216,9 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         else:
             in_ratio = out_ratio = 1
         
-        self.register_method(
-            method, 
+        # self.register_method(
+        #    method, 
+        return NNBendedMethodAttributes(
             in_channels=in_channels,
             in_ratio=in_ratio,
             out_channels=out_channels,
@@ -195,10 +228,35 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
             test_method=False
         )
 
-    def _default_register_methods(self, force_default: bool = False):
+    def _update_method_attributes(self, method, attributes):
+        input_shapes = self._get_input_shapes_from_method(method) 
+        input_nodes = self.graph_module.graph[method].find_nodes(op="placeholder")
+        pre_annotated_channels = attributes.in_channels
+        channel_count = 0
+        for i, shape in enumerate(input_shapes): 
+            channel_count += shape[1]
+            if channel_count > pre_annotated_channels: 
+                labels = [f"(signal) {input_nodes[i].name} #{j}" for j in range(shape[1])]
+                attributes.input_labels.extend(labels)
+        attributes.in_channels = channel_count
+        if attributes.in_channels != len(attributes.input_labels):
+            pass
+        return attributes
+            
+
+    def _register_methods(self, model, force_default: bool = False):
+        method_attributes = getattr(model, "nn_tilde_methods", None)
+        if method_attributes is None: 
+            method_attributes = {}
+        else: 
+            method_attributes = method_attributes()
         for method in self._available_methods:
-            if (method in self._methods) and (not force_default): continue
-            self._default_register_method(method)
+            if method in method_attributes and not force_default:
+                # self._register_method(method, self._update_method_attributes(method_attributes[method]))
+                attrs = self._update_method_attributes(method, method_attributes[method])
+            else:
+                attrs = self._default_method_attribute(method)
+            self.register_method(method, **attrs.as_dict())
 
     def _search_for_getter_and_setters(self, module):
         _candidates = {}

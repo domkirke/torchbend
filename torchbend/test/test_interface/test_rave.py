@@ -1,8 +1,10 @@
 import os
+import random
 from pathlib import Path
 import itertools
 import torch
 import pytest
+import torchbend as tb
 
 RAVE_AVAILABLE = False
 try:
@@ -21,6 +23,16 @@ rave_test_activations = {
     'encode': [], 
     'decode': []
 }
+
+RAVE_TS_DIR = Path("outs") / "nntilde" / "rave"
+
+def save_scripted(obj, test_name):
+    target_dir = (Path(__file__).parent / RAVE_TS_DIR).resolve()
+    os.makedirs(target_dir, exist_ok=True)
+    torch.jit.save(obj, target_dir / f"{test_name}.ts")
+
+def get_test_name(): 
+    return os.environ.get('PYTEST_CURRENT_TEST').split(':')[-1].split(' ')[0]
 
 def check_rave_models():
     valid_paths = []
@@ -197,4 +209,60 @@ def test_nntilde_split(model_path, jit):
     # out = model.forward(x)
     # z = model.encode(x)
     # out = model.decode(z)
+
+@pytest.mark.skipif(not RAVE_AVAILABLE, reason="rave not available")
+@pytest.mark.parametrize("model_path", RAVE_MODEL_PATHS)
+def test_latent_steering_with_input_controllables(model_path):
+    test_name = get_test_name()
+    model = BendedRAVE(model_path, scriptable=True, strict=RAVE_STRICT_LOADING)
+
+    x = torch.full((1, 1, 8192), 0.)
+    out_orig = model.forward(x, clear_cache=True)
+    out_orig2 = model.forward(x, clear_cache=True) 
+
+    target_activation = model.aliases(fn="forward")['latent_pca'][0]
+    target_activation_b = f"{target_activation}_bended"
+    activation_shape = model.activation_shape(target_activation)
+
+    scale_value = torch.full((1, *activation_shape[1:]), 1.)
+    scale_in = tb.BendingParameter('latent_scale', scale_value, True)
+    bias_value = torch.full((1, *activation_shape[1:]), 0.)
+    bias_in = tb.BendingParameter('latent_bias', bias_value, True)
+    affine_cb = tb.Affine(scale=scale_in, bias=bias_in)
+    affine_cb.nntilde()
+    model.bend(affine_cb, target_activation, fn="encode")
+
+    target_activation_enc = model.aliases(fn="encode")['latent_pca'][0]
+    target_activation_b_enc = f"{target_activation}_bended"
+    scale_value = torch.full((1, *activation_shape[1:]), 1.)
+    scale_in = tb.BendingParameter('latent_scale', scale_value, True)
+    bias_value = torch.full((1, *activation_shape[1:]), 0.)
+    bias_in = tb.BendingParameter('latent_bias', bias_value, True)
+    affine_cb = tb.Affine(scale=scale_in, bias=bias_in)
+    affine_cb.nntilde()
+    model.bend(affine_cb, target_activation_enc, fn="forward")
+
+    out = model.get_activations(target_activation_b, x=x, latent_scale=torch.zeros_like(scale_value), latent_bias=bias_value, fn="forward")
+    assert tb.compare_outs(out[target_activation_b], torch.zeros_like(out[target_activation_b]))
+
+    scripted = model.nntilde()
+    x_scripted = torch.cat([
+        x, 
+        torch.full((x.shape[0], model.latent_size, x.shape[-1]), 1.), 
+        torch.full((x.shape[0], model.latent_size, x.shape[-1]), 0.), 
+    ], dim=-2)
+    out = scripted.forward(x_scripted)
+    save_scripted(scripted, test_name)
+
+
+
+
+
+
+
+
+
+
+
+
 

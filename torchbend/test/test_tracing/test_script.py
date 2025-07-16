@@ -124,6 +124,8 @@ def test_controlled_bended_scripting_weights(module_config, bending_type):
         out_scripted = getattr(scripted, method)(*args, **kwargs)
         assert not tb.compare_outs(out_orig, out_scripted)
 
+    torch.jit.save(scripted, "/tmp/test.ts")
+
 
 @pytest.mark.parametrize("module_config", scriptable_modules_to_test) 
 @pytest.mark.parametrize("jit", [True, False]) 

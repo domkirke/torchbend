@@ -107,26 +107,27 @@ class ScriptedBendedModule(nn.Module):
         for k, v in dict(new_params).items():
             if hasattr(v.annotation, "__module__"):
                 if v.annotation.__module__ == "typing":
-                    v._annotation = str(v.annotation)
+                    # v._annotation = str(v.annotation)
                     new_params[k] = v
         signature._parameters = new_params
             
         signature_str = "(self, " + str(signature)[1:]
         ins = "(" + ",".join([f"{i}={i}" for i in signature.parameters]) + ")"
 
-        return _resolve_code(self.method_template,
+        code = _resolve_code(self.method_template,
                              method_name=method_name, 
                              callback_name=callback_name, 
                              signature=signature_str, 
                              ins=ins, 
                              _import_modules=['typing'])
+        return code
 
     def _register_imported_methods(self, methods: List[str]):
         codes = []
         for m in methods:
             codes.append(self._make_method(m))
-            if m == "forward":
-                codes.append(self._make_method("__call__", m))
+            # if m == "forward":
+            #     codes.append(self._make_method("__call__", m))
         codes = "\n".join(codes)
         methods_defs = _import_defs_from_tmpfile(codes, gl=globals())
         for k, v in methods_defs.items():
@@ -144,7 +145,8 @@ class ScriptedBendedModule(nn.Module):
         self._bending_callbacks = nn.ModuleList([m.script() for m in model._bending_callbacks])
         _controllables_hash = torch.jit.Attribute({}, Dict[str, List[int]])
         for v in self._controllables:
-            self._register_controllable(v, _controllables_hash)
+            if not v.as_input:
+                self._register_controllable(v, _controllables_hash)
         self._controllables_hash = _controllables_hash
                 
     def _update_bended_weights(self, model):

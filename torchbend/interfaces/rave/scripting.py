@@ -13,6 +13,8 @@ import rave.core
 import rave.resampler
 from rave.prior import model as prior
 
+from torchbend import mark
+
 
 class DumbPrior(nn.Module):
     def forward(self, x: torch.Tensor):
@@ -242,6 +244,7 @@ class ScriptedRAVE(nn.Module):
         z = self.encoder(x)
         if postprocess:
             z = self.post_process_latent(z)
+        z = mark(z, 'latent_pca')
         return z
 
 
@@ -283,7 +286,6 @@ class ScriptedRAVE(nn.Module):
 
     def forward(self, x):
         return self.decode(self.encode(x), from_forward=True)[..., :x.shape[-1]]
-
 
     @torch.jit.export
     def get_learn_target(self) -> bool:
@@ -349,6 +351,7 @@ class VariationalScriptedRAVE(ScriptedRAVE):
 
     def pre_process_latent(self, z):
         noise = get_noise(z, self.full_latent_size)
+        z = mark(z, "latent_pca")
         z = torch.cat([z, noise], 1)
         z = F.conv1d(z, self.latent_pca.T.unsqueeze(-1))
         z = z + self.latent_mean.unsqueeze(-1)

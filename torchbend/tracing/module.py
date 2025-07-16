@@ -855,7 +855,7 @@ class BendedModule(object):
                         *activations, 
                         fn="forward", 
                         as_dict=True,
-                        bended=False,
+                        # bended=False,
                         _return_graph=False, 
                         _save_as_method=None, 
                         **inputs):
@@ -866,13 +866,13 @@ class BendedModule(object):
         module = self.bend_module(fn=fn)
         graph = self.bend_graph(fn=fn)
 
-        if bended: 
-            activations = list(activations)
-            bended_activations = self.bended_activations(fn)
-            for i, a in enumerate(activations):
-                if a in bended_activations: activations[i] += "_bended"
+        # if bended: 
+        #     activations = list(activations)
+        #     bended_activations = self.bended_activations(fn)
+        #     for i, a in enumerate(activations):
+        #         if a in bended_activations: activations[i] += "_bended"
 
-        activations = list(self.activations(*activations, _raise_notfound=True, fn=fn, with_bended = bended).keys())
+        activations = list(self.activations(*activations, _raise_notfound=True, fn=fn, with_bended = True).keys())
         #TODO parse node's children and remove then to get minimal graphs? 
         new_graph = graph_get_activations(graph, activations)
 

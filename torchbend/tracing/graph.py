@@ -123,8 +123,10 @@ def graph_insert_callbacks(graph, callbacks, verbose=False, fn=None):
                 for k in add_inputs:
                     # node_name = node_name_from(inputs, k)
                     with new_graph.inserting_after(last_input):
-                        additional_node = new_graph.create_node("placeholder", k, (None,))
+                        additional_node = new_graph.create_node("placeholder", k, (None,), type_expr = Optional[torch.Tensor])
+                        additional_node.from_callback = callbacks[node.name]
                         callback_kwargs[k] = additional_node
+                        last_input = additional_node
                 bended_node_name = node.name+"_bended"
                 hack_obj_name = f"{fn_name}_{node.name}_callback"
                 bended_node = new_graph.create_node("call_module", hack_obj_name, args=(env[node.name],), kwargs=callback_kwargs, name=bended_node_name)

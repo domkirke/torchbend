@@ -1,7 +1,21 @@
 import torch
+from copy import copy
+import math
 from typing import Optional
 from .parameter import BendingParameter
+from collections import OrderedDict
 from .callback import BendingCallback, BendingCallbackAttributeException
+
+
+def _parse_affine_control(inp, ctrl):
+    assert ctrl.shape[0] == 1 or ctrl.shape[0] == inp.shape[0]
+    if ctrl.shape[1] < inp.shape[1]: 
+        ctrl = torch.cat([ctrl, torch.zeros(ctrl.shape[0], inp.shape[1] - ctrl.shape[1], ctrl.shape[2])])
+    elif ctrl.shape[1] > inp.shape[1]: 
+        ctrl = ctrl[:, :inp.shape[1]]
+    if ctrl.shape[-1] != inp.shape[-1]:
+        ctrl = torch.nn.functional.interpolate(ctrl, inp.shape[-1], mode="nearest")
+    return ctrl
 
 
 class Bias(BendingCallback):
@@ -9,7 +23,7 @@ class Bias(BendingCallback):
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
-    controllable_params = {'bias': (None, 0.)}
+    controllable_params = OrderedDict({'bias': (None, 0.)})
 
     def __init__(self, bias: float | torch.Tensor | BendingParameter = 0.):
         super().__init__(bias=bias)
@@ -21,9 +35,7 @@ class Bias(BendingCallback):
         assert cache is not None
         param.set_(cache + self.get('bias'))
 
-    def bend_input(self, x: torch.Tensor, bias: torch.Tensor | None = None, name: Optional[str] = None):
-        if bias is None: 
-            bias = self.get('bias')
+    def bend_input(self, x: torch.Tensor, bias: torch.Tensor, name: Optional[str] = None):
         return x + bias
 
 
@@ -32,7 +44,7 @@ class Scale(BendingCallback):
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
-    controllable_params = {'scale': (None, 1.)}
+    controllable_params = OrderedDict({'scale': (None, 1.)})
 
     def __init__(self, scale: float | torch.Tensor | BendingParameter  = 1.):
         super().__init__(scale=scale)
@@ -55,23 +67,30 @@ class Affine(BendingCallback):
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
-    controllable_params = {'scale': (None, 1.0), 'bias': (None, 0.0)}
+    controllable_params = OrderedDict({'scale': (None, 1.0), 'bias': (None, 0.0)})
 
     def __init__(self, bias: float | torch.Tensor | BendingParameter = 0., scale: float = 1.):
         super().__init__(scale=scale, bias=bias)
+
+    def __getstate__(self):
+        return super().__getstate__()
+
+    def __setstate__(self, state):
+        return super().__setstate__(state)
 
     def __repr__(self):
         return f"Affine(scale={(self.get('scale')):.4f}, bias={self.get('bias'):.4f})"
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: Optional[torch.Tensor] = None):
-        assert cache is not None
-        param.set_(cache * self.get('scale') + self.get('bias'))
+        if cache is not None: 
+            param.set_(cache * self.get('scale') + self.get('bias'))
 
-    def bend_input(self, x: torch.Tensor, scale: torch.Tensor | None = None, bias: torch.Tensor | None = None, name: Optional[str] = None):
-        if scale is None: scale = self.get('scale')
-        if bias is None: bias = self.get('bias')
+    def bend_input(self, x: torch.Tensor, scale: torch.Tensor, bias: torch.Tensor, name: Optional[str] = None):
+        if scale is not None:
+            if self._scale_as_input and self._for_nntilde: scale = _parse_affine_control(x, scale)
+        if bias is not None: 
+            if self._bias_as_input and self._for_nntilde: bias = _parse_affine_control(x, bias)
         return x * scale + bias
 
-        
         
 __all__ = ['Scale', 'Affine', 'Bias']

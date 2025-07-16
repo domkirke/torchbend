@@ -582,3 +582,45 @@ def can_concatenate(tensor_list, dim):
     return len(set(extruded_shapes)) == 1
 
 
+
+class PArgs(): 
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+    def __repr__(self): 
+        sig = "PArgs("
+        sig += ', '.join(map(str, self.args))
+        sig += ', '.join([f"{k}: {v}" for k, v in self.kwargs.items()])
+        sig += ")"
+        return sig
+    def keys(self):
+        return self.kwargs.keys()
+    def __getitem__(self, i): 
+        if isinstance(i, int):
+            return self.args[i]
+        else:
+            return self.kwargs[i]
+    def __setitem__(self, i, val):
+        if isinstance(i, int):
+            args = list(self.args)
+            args[i] = val
+            self.args = tuple(args)
+        else:
+            self.kwargs[i] = val
+    def __iter__(self):
+        return iter(self.args)
+    def copy(self): 
+        return copy.deepcopy(self)
+    def __add__(self, obj):
+        r_obj = copy.deepcopy(self)
+        if isinstance(obj, (tuple, list)):
+            r_obj.args += obj
+        elif isinstance(obj, dict):
+            r_obj.kwargs.update(obj)
+        else:
+            raise TypeError("cannot add obj %s to Pargs"%type(obj))
+        return r_obj
+
+
+
+

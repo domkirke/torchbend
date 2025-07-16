@@ -80,7 +80,7 @@ class BendingParamType():
         #damn torchscipt, don't judge me
         # if torch.is_tensor(obj):
         if torch.jit.isinstance(obj, torch.Tensor):
-            assert obj.numel() == 1, "Got non-scalar tensor for BendingParameter value"
+            # assert obj.numel() == 1, "Got non-scalar tensor for BendingParameter value"
             if obj.dtype in [torch.float, torch.float16, torch.float32, torch.float64]:
                 return BendingParamType.param_types()['float']
             elif obj.dtype in [torch.int, torch.int8, torch.int16, torch.int32, torch.int64]:

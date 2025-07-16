@@ -10,10 +10,13 @@ if libpath not in sys.path:
 def log_to_file(f, label, value):
     f.write(f"{label} : \n{value}\n\n{'-' * 16}")
 
+def get_test_name():
+    return os.environ.get('PYTEST_CURRENT_TEST').split(':')[-1].split(' ')[0]
+
 outdir = __file__
 def get_log_file(outdir=outdir):
     outdir = os.path.join(os.path.dirname(outdir), "outs")
-    test_name = os.environ.get('PYTEST_CURRENT_TEST').split(':')[-1].split(' ')[0]
+    test_name = get_test_name()
     return os.path.join(outdir, test_name+"_out.txt")
 
     

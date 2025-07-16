@@ -11,7 +11,7 @@ import re
 from typing import Union, Optional
 import rave as ravelib
 from ..base import Interface, _export_to_module, _overload_module
-from ...tracing import BendedModule
+from ...tracing import BendedModule, NNBendedMethodAttributes
 from .scripting import pre_process_fn, post_process_fn, script_rave_model
 import cached_conv as cc
 import gin
@@ -144,7 +144,10 @@ class BendedRAVE(Interface):
     def _bend_model(self, model: BendedModule):
         model.trace("forward", x=torch.zeros(1, 1, 65536),  _proxied_buffers=self._proxied_buffers)
         _, (decoder_out,) = model.trace("encode", x=torch.zeros(1, 1, 65536), _proxied_buffers=self._proxied_buffers, _return_out=True)
-        latent_out = model.encoder.reparametrize(decoder_out)[:2][0]
+        if self.scriptable:
+            latent_out = decoder_out
+        else:
+            latent_out = model.encoder.reparametrize(decoder_out)[:2][0]
         model.trace("decode", z=latent_out, _proxied_buffers=self._proxied_buffers)
 
     def _load_single_audio(self, path: str):
@@ -198,10 +201,16 @@ class BendedRAVE(Interface):
     def write_audio(self, path, audio):
         torchaudio.save(path, audio, self.sample_rate)
 
-    def forward(self, x: Union[torch.Tensor, str], out: Optional[str] = None):
+    def clear_cache(self): 
+        for k, v in self._model.named_buffers(): 
+            if re.match(r'.*(pad|cache)', k):
+                v.data.zero_()
+
+    def forward(self, x: Union[torch.Tensor, str], out: Optional[str] = None, clear_cache:  bool = False, **kwargs):
         if isinstance(x, str):
             x = self.load_audio(x)
-        audio = self._model.forward(x)
+        if clear_cache: self.clear_cache()
+        audio = self._model.forward(x, **kwargs)
         if out is not None: self.write_audio(out, audio[0])
         return audio
     
@@ -257,51 +266,92 @@ class BendedRAVE(Interface):
 
     # nntilde-related callbacks
     @_export_to_module
-    def register_nntilde_methods(self, nn_module):
-        assert self.scriptable, "Cannot convert a non-scriptable instance of RAVE for nn~. Please use scriptable=True during BendedRAVE initialization"
-        nn_module.register_method(
-            "encode",
-            in_channels=self.channels,
-            in_ratio=1,
-            out_channels=self.latent_size,
-            out_ratio=self.model.ratio_encode,
-            input_labels=['(signal) Channel %d'%d for d in range(1, self.model.target_channels+1)],
-            output_labels=[
-                f'(signal) Latent dimension {i + 1}'
-                for i in range(self.latent_size)
-            ],
-        )
-        nn_module.register_method(
-            "decode",
-            in_channels=self.latent_size,
-            in_ratio=self.model.ratio_encode,
-            out_channels=self.model.target_channels,
-            out_ratio=1,
-            input_labels=[
-                f'(signal) Latent dimension {i+1}'
-                for i in range(self.latent_size)
-            ],
-            output_labels=['(signal) Channel %d'%d for d in range(1, self.model.target_channels+1)]
-        )
-
-        nn_module.register_method(
-            "forward",
-            in_channels=self.channels,
-            in_ratio=1,
-            out_channels=self.model.target_channels,
-            out_ratio=1,
-            input_labels=['(signal) Channel %d'%d for d in range(1, self.channels + 1)],
-            output_labels=['(signal) Channel %d'%d for d in range(1, self.model.target_channels+1)]
-        )
-
+    def nn_tilde_methods(self):
+        methods = {'encode': NNBendedMethodAttributes(
+                    in_channels=self.channels,
+                    in_ratio=1,
+                    out_channels=self.latent_size,
+                    out_ratio=self.model.ratio_encode,
+                    input_labels=['(signal) Channel %d'%d for d in range(1, self.model.target_channels+1)],
+                    output_labels=[
+                        f'(signal) Latent dimension {i + 1}'
+                        for i in range(self.latent_size)
+                        ], 
+                    ), 
+                    'decode': NNBendedMethodAttributes(
+                        in_channels=self.latent_size,
+                        in_ratio=self.model.ratio_encode,
+                        out_channels=self.model.target_channels,
+                        out_ratio=1,
+                        input_labels=[
+                            f'(signal) Latent dimension {i+1}'
+                            for i in range(self.latent_size)
+                        ],
+                        output_labels=['(signal) Channel %d'%d for d in range(1, self.model.target_channels+1)]
+                    ), 
+                    'forward': NNBendedMethodAttributes(
+                        in_channels=self.channels,
+                        in_ratio=1,
+                        out_channels=self.model.target_channels,
+                        out_ratio=1,
+                        input_labels=['(signal) Channel %d'%d for d in range(1, self.channels + 1)],
+                        output_labels=['(signal) Channel %d'%d for d in range(1, self.model.target_channels+1)]
+                    )}
         if self.model.has_prior:
-            nn_module.register_method(
-                "prior",
+            methods['prior'] = NNBendedMethodAttributes(
                 in_channels=1,
                 in_ratio=self.prior.ratio,
                 out_channels = self.latent_size,
                 out_ratio=self.prior.ratio
             )
+        return methods
+
+    # @_export_to_module
+    # def register_nntilde_methods(self, nn_module):
+    #     assert self.scriptable, "Cannot convert a non-scriptable instance of RAVE for nn~. Please use scriptable=True during BendedRAVE initialization"
+    #     nn_module.register_method(
+    #         "encode",
+    #         in_channels=self.channels,
+    #         in_ratio=1,
+    #         out_channels=self.latent_size,
+    #         out_ratio=self.model.ratio_encode,
+    #         input_labels=['(signal) Channel %d'%d for d in range(1, self.model.target_channels+1)],
+    #         output_labels=[
+    #             f'(signal) Latent dimension {i + 1}'
+    #             for i in range(self.latent_size)
+    #         ],
+    #     )
+    #     nn_module.register_method(
+    #         "decode",
+    #         in_channels=self.latent_size,
+    #         in_ratio=self.model.ratio_encode,
+    #         out_channels=self.model.target_channels,
+    #         out_ratio=1,
+    #         input_labels=[
+    #             f'(signal) Latent dimension {i+1}'
+    #             for i in range(self.latent_size)
+    #         ],
+    #         output_labels=['(signal) Channel %d'%d for d in range(1, self.model.target_channels+1)]
+    #     )
+
+    #     nn_module.register_method(
+    #         "forward",
+    #         in_channels=self.channels,
+    #         in_ratio=1,
+    #         out_channels=self.model.target_channels,
+    #         out_ratio=1,
+    #         input_labels=['(signal) Channel %d'%d for d in range(1, self.channels + 1)],
+    #         output_labels=['(signal) Channel %d'%d for d in range(1, self.model.target_channels+1)]
+    #     )
+
+    #     if self.model.has_prior:
+    #         nn_module.register_method(
+    #             "prior",
+    #             in_channels=1,
+    #             in_ratio=self.prior.ratio,
+    #             out_channels = self.latent_size,
+    #             out_ratio=self.prior.ratio
+    #         )
 
     @_export_to_module
     def register_nntilde_attributes(self, nn_module):
