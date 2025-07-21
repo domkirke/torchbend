@@ -48,6 +48,7 @@ class NNBendedMethodAttributes:
     out_ratio: int
     input_labels: List[str]
     output_labels: List[str]
+    test_method: bool = False
 
     def as_dict(self): 
         return self.__getstate__()
@@ -113,7 +114,7 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         # parse channel split
         channel_split = [s[-2] for s in self._get_input_shapes_from_method(callback_name)]
         input_args = self.graph_module.graph[method_name].find_nodes(op="placeholder")
-        input_args = [input_args[0]] + list(filter(lambda x: hasattr(x, "from_callback"), input_args))
+        input_args = input_args + list(filter(lambda x: hasattr(x, "from_callback"), input_args))
         ins = ", ".join([f"in{i}" for i in range(len(channel_split))])
         ins_parsed = ", ".join([f"{input_args[i].name}=in{i}" for i in range(len(channel_split))])
         sections = "(" + ", ".join([str(sp) for sp in channel_split]) + ",)"
@@ -243,7 +244,6 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         if attributes.in_channels != len(attributes.input_labels):
             pass
         return attributes
-            
 
     def _register_methods(self, model, force_default: bool = False):
         method_attributes = getattr(model, "nn_tilde_methods", None)
@@ -256,7 +256,7 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
                 # self._register_method(method, self._update_method_attributes(method_attributes[method]))
                 attrs = self._update_method_attributes(method, method_attributes[method])
             else:
-                attrs = self._default_method_attribute(method)
+                attrs = self._default_method_attributes(method)
             self.register_method(method, **attrs.as_dict())
 
     def _search_for_getter_and_setters(self, module):

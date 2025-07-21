@@ -12,6 +12,14 @@ from typing import Union, List, Optional, Any
 from .parameter import BendingParameter, _VALID_PARAM_TYPES, BendingParamType, BendingParameterException, get_param_type
 from ..utils import _import_defs_from_tmpfile, _replace_placeholders, checktuple
 
+
+attribute_setter_pattern = """
+\t{{ATTRIBUTE[]}} = BendingParamType._to_tensor(self.{{ATTRIBUTE[]}}, {{ATTRIBUTE_TYPE[]}})"""
+
+controllable_setter_pattern = """
+\t{{CONTROLLABLE_NAME[]}} = self.get("{{ARG_NAME[]}}")
+"""
+
 input_controllable_setter_pattern = """
 \tif {{INPUT_CONTROLLABLE_NAME[]}} is None:
 \t\t{{INPUT_CONTROLLABLE_NAME[]}} = self.get("{{INPUT_ARG_NAME[]}}")
@@ -19,17 +27,20 @@ input_controllable_setter_pattern = """
 \t\t{{INPUT_CONTROLLABLE_NAME[]}} = self.parse_controllable({{INPUT_CONTROLLABLE_NAME[]}}, {{INPUT_CONTROLLABLE_TYPE[]}})
 """
 
-controllable_setter_pattern = """
-\t{{ARG_NAME[]}} = self.get("{{CONTROLLABLE_NAME[]}}")
+comment_pattern = """
+\t#{{COMMENT[]}}
 """
 
 forward_pattern = """
 import torch
 import typing
 from typing import Optional
+from torchbend import BendingParamType
 
 @torch.jit.export
 def dynamic_forward(self, x, name: Optional[str] = None, {{CALLBACK_ARGS_SIG}}):
+{{COMMENT_PATTERN:LOOP}}
+\t{{ATTRIBUTE_SETTER:LOOP}}
 \t{{CONTROLLABLE_SETTER:LOOP}}
 \t{{CONTROLLABLE_INPUT_SETTER:LOOP}}
 \tif not self.is_ready: raise BendingCallbackException(self._not_ready_str)
@@ -43,6 +54,8 @@ def dynamic_forward(self, x, name: Optional[str] = None, {{CALLBACK_ARGS_SIG}}):
 
 def create_callback_forward_function(module):
     controllables = module.controllables
+    attributes = []
+    attributes_types = []
     noinput_controllables = []
     noinput_controllable_names = []
     noinput_arg_names = []
@@ -52,28 +65,39 @@ def create_callback_forward_function(module):
     callback_args = []
     callback_args_type = []
     input_controllables = []
-    for name, c in controllables.items():
-        if not c.as_input: 
-            noinput_controllables.append(c)
-            noinput_arg_names.append(name)
-            noinput_controllable_names.append(name)
+    for name, _ in module.controllable_params.items():
+        if name in controllables:
+            c = controllables[name]
+            if not c.as_input: 
+                noinput_controllables.append(c)
+                noinput_arg_names.append(name)
+                noinput_controllable_names.append(c.name)
+            else:
+                input_controllables.append(c)
+                input_controllable_names.append(c.name)
+                input_args_names.append(name)
+                callback_args_sig.append(
+                    f"{c.name}: Optional[torch.Tensor] = None"
+                )
+                callback_args_type.append(f"{c.param_type}")
+            callback_args.append(f'{name}={c.name}')
         else:
-            input_controllables.append(c)
-            input_controllable_names.append(c.name)
-            input_args_names.append(name)
-            callback_args_sig.append(
-                f"{c.name}: Optional[torch.Tensor] = None"
-            )
-            callback_args_type.append(f"{c.param_type}")
-        callback_args.append(f'{name}={c.name}')
+            attributes.append(name)
+            attributes_types.append(BendingParamType.param_type_from_type(type(getattr(module, name))))
+            callback_args.append(f'{name}={name}')
+
     callback_args_sig = ", ".join(callback_args_sig)
     callback_args = ", ".join(callback_args)
+    comments = [f"generated from {module.__class__.__name__}"]
     codes = _replace_placeholders(forward_pattern,
                                   callback_args=callback_args, callback_args_sig = callback_args_sig, input_controllable_type=callback_args_type,
+                                  attribute_setter = attribute_setter_pattern, attribute = attributes, attribute_type = attributes_types,
+                                  _attribute_setter_loop = len(attributes), 
+                                  controllable_setter = controllable_setter_pattern, controllable_name = noinput_controllable_names, arg_name = noinput_arg_names,
+                                  _controllable_setter_loop = len(noinput_controllables), 
                                   controllable_input_setter = input_controllable_setter_pattern, input_controllable_name = input_controllable_names, input_arg_name = input_args_names,
                                   _controllable_input_setter_loop = len(input_controllables),
-                                  controllable_setter = controllable_setter_pattern, controllable_name = noinput_controllable_names, arg_name = noinput_arg_names,
-                                  _controllable_setter_loop = len(noinput_controllables))
+                                  comment_pattern = comment_pattern, comment = comments, _comment_pattern_loop = len(comments))
     funcs = _import_defs_from_tmpfile(codes, gl=globals(), lo=locals())
     return funcs['dynamic_forward']
 

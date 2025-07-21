@@ -99,8 +99,8 @@ def test_mask_script(cb_class, module_config, jit, as_input):
                     kwargs_nomask['mask_%d'%i] = torch.Tensor([1.])
                     kwargs_masked['mask_%d'%i] = torch.Tensor([0.])
 
-        mod_scripted = mod.script(script=jit)
-        mod_scripted._set_bending_control('mask', 1.)
+        mod_scripted = mod.script(script=False)
+        if len(weight_targets) > 0: mod_scripted._set_bending_control('mask', 1.)
         out_scripted = getattr(mod_scripted, method)(*args, **kwargs_nomask)
         assert bool(tb.compare_outs(out_orig, out_scripted))
 

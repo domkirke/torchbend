@@ -84,7 +84,7 @@ def test_bended_scripting(module_config, nntilde: bool):
 
 @pytest.mark.parametrize("module_config", scriptable_modules_to_test)
 @pytest.mark.parametrize("bending_type", ['act', 'weight', 'act+weight'])
-def test_controlled_bended_scripting_weights(module_config, bending_type):
+def test_controlled_bended_scripting(module_config, bending_type):
     module, bended = module_config.get_modules()
     param = tb.BendingParameter("mask", 1.)
 
@@ -125,6 +125,7 @@ def test_controlled_bended_scripting_weights(module_config, bending_type):
         assert not tb.compare_outs(out_orig, out_scripted)
 
     torch.jit.save(scripted, "/tmp/test.ts")
+
 
 
 @pytest.mark.parametrize("module_config", scriptable_modules_to_test) 

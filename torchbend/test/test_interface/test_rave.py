@@ -131,18 +131,18 @@ def test_tracing(model_path, scriptable):
     z = model.encode(x)
 
     for i, e_act in enumerate(encode_acts):
-        acts = model.get_activations(f"{e_act}$", x=x, fn="encode")
-        out = model.from_activations(f"{e_act}$", **acts, x=x, fn="encode")
+        acts = model.get_activations(f"{e_act}", x=x, fn="encode")
+        out = model.from_activations(f"{e_act}", **acts, x=x, fn="encode")
         if i >= MAX_ACTIVATION_TESTS: break
 
     for i, d_act in enumerate(decode_acts):
-        acts = model.get_activations(f"{d_act}$", z=z, fn="decode")
-        out = model.from_activations(f"{d_act}$", **acts, z=z, fn="decode")
+        acts = model.get_activations(f"{d_act}", z=z, fn="decode")
+        out = model.from_activations(f"{d_act}", **acts, z=z, fn="decode")
         if i >= MAX_ACTIVATION_TESTS: break
 
     for i, f_act in enumerate(forward_acts):
-        acts = model.get_activations(f"{f_act}$", x=x, fn="forward")
-        out = model.from_activations(f"{f_act}$", **acts, x=x, fn="forward")
+        acts = model.get_activations(f"{f_act}", x=x, fn="forward")
+        out = model.from_activations(f"{f_act}", **acts, x=x, fn="forward")
         if i >= MAX_ACTIVATION_TESTS: break
 
         
@@ -168,8 +168,8 @@ def test_nntilde_export(model_path):
     model = BendedRAVE(model_path, scriptable=True, strict=RAVE_STRICT_LOADING)
     x = torch.zeros(1, model.channels, 8192)
     model = model.nntilde(script=True)
-    torch.jit.save(model, '.test.ts')
-    os.remove('.test.ts')
+    torch.jit.save(model, f'.rave_test_{get_test_name()}.ts')
+    os.remove(f'.rave_test_{get_test_name()}.ts')
 
     out = model(x)
     out = model.forward(x)
@@ -187,8 +187,8 @@ def test_nntilde_split(model_path, jit):
     x = torch.zeros(1, model.channels, 8192)
 
     forward_acts = model.aliases()['encoder_act'][0]
-    out = model.get_activations(f"{forward_acts}$", x=x, _save_as_method=f"get_{forward_acts}")
-    out = model.from_activations(f"{forward_acts}$", x=x, **out, _save_as_method=f"from_{forward_acts}")
+    out = model.get_activations(f"{forward_acts}", x=x, _save_as_method=f"get_{forward_acts}")
+    out = model.from_activations(f"{forward_acts}", x=x, **out, _save_as_method=f"from_{forward_acts}")
 
     # check obtained methods
     out_act = getattr(model, f"get_{forward_acts}")(x)
@@ -202,8 +202,8 @@ def test_nntilde_split(model_path, jit):
     out = getattr(model, f"from_{forward_acts}")(from_input)
     
     if jit:
-        torch.jit.save(model, '.test.ts')
-        os.remove('.test.ts')
+        torch.jit.save(model, f'.rave_test_{get_test_name()}.ts')
+        os.remove(f'.rave_test_{get_test_name()}.ts')
 
     # out = model(x)
     # out = model.forward(x)

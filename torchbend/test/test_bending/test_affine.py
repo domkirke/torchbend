@@ -110,7 +110,8 @@ def affine_test_script(cb_class, module_config, as_input):
             cb_kwargs['bias'] = bias
         affine_callback = cb_class(**cb_kwargs)
 
-        mod.bend(affine_callback, *weight_targets, *activation_targets)
+        mod.bend(affine_callback, *weight_targets, bend_graph=False)
+        mod.bend(affine_callback, *activation_targets, bend_param=False)
 
         if as_input: 
             bended_params = affine_callback.bended_activations(fn=method)

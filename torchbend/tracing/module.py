@@ -359,7 +359,7 @@ class BendedModule(object):
     def activations(self, *flt, fn=None, op=None, exclude=None, with_bended: bool = True, _with_fn: bool = False, _raise_notfound: bool = False):
 
         if len(flt) == 0: 
-            raise ValueError('BendedModule.activations take at least one regexp (give ".*" to retrieve everything)')
+            raise ValueError('BendedModule.activations take at least one regexp (give "?.*" to retrieve everything)')
 
         if exclude is not None: 
             exclude = checklist(exclude)
@@ -374,14 +374,15 @@ class BendedModule(object):
         flt = list(flt)
 
         # parse aliases
+        flt_with_aliases = []
         for i, k in enumerate(list(flt)):
-            flt_with_aliases = []
-            if k[0] == "#" and k[1:] in self.aliases():
-                for f in fn:
+            for f in fn:
+                if k[0] == "#" and k[1:] in self.aliases(fn=f):
+                    if f not in self._graphs: continue
                     aliases = [f"{f}:{x}" for x in self.aliases(fn=f).get(k[1:], [])]
                     flt_with_aliases.extend(aliases)
-            else:
-                flt_with_aliases.append(k)
+                else:
+                    flt_with_aliases.append(k)
         flt = flt_with_aliases
 
         # add prefix for method
@@ -392,13 +393,11 @@ class BendedModule(object):
                         if flt[1] == "^": flt = f"?{flt[2:]}"
                     flt[i] = f"?^({'|'.join(fn)}):{f[1:]}$"
                 else:
-                    flt[i] = f"?^({'|'.join(fn)}):{f}$"
+                    flt[i] = f"?^({'|'.join(fn)}):{re.escape(f)}$"
         if exclude:
             for i, e in enumerate(exclude):
                 if ":" not in e: exclude[i] = f"({'|'.join(fn)}):{e}"
-        # flt = sum([self._parse_aliases(f) for f in flt], [])
-        
-        # exclude = sum([self._parse_aliases(f) for f in exclude], [])
+
         activations = self.all_activations(with_bended=with_bended)
         if op is not None:
             op = checklist(op)

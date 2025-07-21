@@ -145,8 +145,8 @@ class ScriptedBendedModule(nn.Module):
         self._bending_callbacks = nn.ModuleList([m.script() for m in model._bending_callbacks])
         _controllables_hash = torch.jit.Attribute({}, Dict[str, List[int]])
         for v in self._controllables:
-            if not v.as_input:
-                self._register_controllable(v, _controllables_hash)
+            # if not v.as_input:
+            self._register_controllable(v, _controllables_hash)
         self._controllables_hash = _controllables_hash
                 
     def _update_bended_weights(self, model):
@@ -194,6 +194,12 @@ class ScriptedBendedModule(nn.Module):
         if not getattr(method_graph, "activations", None): raise ScriptedBendedException("Cannot extract activations from graph for method %s"%method)
         input_placeholders = list(filter(lambda x: x.op == "placeholder", method_graph.nodes))
         return input_placeholders
+
+    def _get_outputs_for_method(self, method):
+        method_graph = self._get_graph_for_method(method)
+        if not getattr(method_graph, "activations", None): raise ScriptedBendedException("Cannot extract activations from graph for method %s"%method)
+        output_placeholders = list(filter(lambda x: x.op == "output", method_graph.nodes))
+        return output_placeholders
 
     # ____________________________________________________________
     # operational methods

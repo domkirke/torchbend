@@ -254,7 +254,7 @@ def test_activation_bending(module_config):
 
         for t in bended_activations:
             outs = bended_module.get_activations(t, **kwargs, fn=method)
-            outs_bended = bended_module.get_activations(t, **kwargs, bended=True, fn=method)
+            outs_bended = bended_module.get_activations(f"{t}_bended", **kwargs,  fn=method)
             assert tb.compare_outs(outs_bended[f"{t}_bended"], torch.zeros_like(outs[t]))
 
 
@@ -283,7 +283,7 @@ def test_bending_callbacks_as_inputs(module_config):
             bended_module.reset()
             bended_module.bend(cb1, t, fn=method, verbose=True)
             bended_module.bend(cb2, t, fn=method, verbose=True)
-            acts = bended_module.get_activations(rf"{t}$", fn=method, **kwargs)
+            acts = bended_module.get_activations(rf"{t}", fn=method, **kwargs)
             out = bended_module.from_activations(t, fn=method, **acts, **kwargs, param1 = [1, 1], param2="coucou", param3="bonjour")
 
 

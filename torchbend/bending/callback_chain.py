@@ -176,7 +176,8 @@ class CallbackChain(nn.Module):
             if name not in fn_counter: fn_counter[name] = 0
             additional_controllables[name] = (param.name, param, fn_counter[name])
         # create new forward function with additional arguments
-        comments = [f"{i}: {type(self.callbacks[i]).__name__}: {inspect.signature(self.callbacks[i].forward)}, {list(self.callbacks[0]._bending_shapes.keys())}" for i in range(len(self.callbacks))]
+        comments = [f"{i}: {type(self.callbacks[i]).__name__}: {inspect.signature(self.callbacks[i].forward)}" for i in range(len(self.callbacks))]
+        # comments = []
         if len(fn_counter) != 0: 
             func = _create_forward_function(additional_args, additional_controllables, comments) 
             setattr(self, "forward", MethodType(func, self))

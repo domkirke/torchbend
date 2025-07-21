@@ -155,17 +155,22 @@ class BendingParamType():
 
     @staticmethod
     def _from_tensor(tensor) -> _VALID_PARAM_NATIVE_TYPES:
-        if tensor.dtype in [torch.bool]:
-            return bool(tensor) 
-        if tensor.dtype in [torch.int, torch.int8, torch.int16, torch.int32, torch.int64]:
-            return int(tensor)
-        elif tensor.dtype in [torch.float, torch.float16, torch.float32, torch.float64]:
-            return float(tensor)
-        elif tensor.dtype in [torch.complex, torch.complex32, torch.complex64, torch.complex128]: 
-            raise NotImplementedError
-            return complex(tensor)
+        if tensor.numel() == 0: 
+            raise ValueError('got empty tensor in _from_tensor')
+        elif tensor.numel() == 1:
+            if tensor.dtype in [torch.bool]:
+                return bool(tensor) 
+            if tensor.dtype in [torch.int, torch.int8, torch.int16, torch.int32, torch.int64]:
+                return int(tensor)
+            elif tensor.dtype in [torch.float, torch.float16, torch.float32, torch.float64]:
+                return float(tensor)
+            elif tensor.dtype in [torch.complex, torch.complex32, torch.complex64, torch.complex128]: 
+                raise NotImplementedError
+                return complex(tensor)
+            else:
+                raise TypeError('cannot parse tensor %s as a native python value'%tensor)
         else:
-            raise TypeError('cannot parse tensor %s as a native python value'%tensor)
+            return tensor
 
 def get_param_type(param_type: str):
     #damn torchscipt, don't judge me
