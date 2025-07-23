@@ -20,7 +20,8 @@ def make_wrapper_class_dict(obj):
         if k in class_dict:
             print('[Warning] method %s is being overrided'%k)
         class_dict[k] = v
-    del class_dict['__dict__']
+    if '__dict__' in class_dict:
+        del class_dict['__dict__']
     return class_dict
 
 def make_wrapper_class_for_obj(obj):
@@ -37,6 +38,7 @@ class BendedWrapper(BendedModule):
     def __init__(self, module, _wrapped_methods=[]):
         super().__init__(make_wrapper_for_obj(module), _wrapped_methods=_wrapped_methods)
         self.__original_obj__ = module
+        # no __call__ callback for BendingWrapper
 
     def __repr__(self):
         return "BendedWrapper(%s)"%(type(self.__original_obj__).__name__)

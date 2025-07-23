@@ -1,10 +1,13 @@
 from inspect import ismethod
+import functools
+import torch
 from typing import NoReturn
 from collections import OrderedDict
 import abc
 from ..tracing import BendedWrapper, BendedModule
 
 def wrap_model_method(ext, func, hook=None):
+    @functools.wraps(func)
     def wrapped_function(*args, **kwargs):
         out = getattr(ext, func)(*args, **kwargs)
         if hook is not None:
@@ -36,20 +39,26 @@ class Interface(object):
     def _getmodel_(self):
         return self._model
     def _setmodel_(self, model):
-        self._model = BendedModule(model)
+        self._model = self._import_model(model)
         self._import_methods(self._model)
         self._bend_model(self._model)
+        
     def _delmodel_(self):
         raise BendingInterfaceException('cannot delete model of interface')
     model = property(_getmodel_, _setmodel_, _delmodel_)
 
     def to(self, device):
-        #TODO better
-        self._model = self._model.to(device)
+        return self._model.to(device)
+
+    def _import_model(self, model):
+        if isinstance(model, torch.nn.Module):
+            return BendedModule(model)
+        else: 
+            return BendedWrapper(model)
 
     def _import_callbacks_(self):
         for cb in self._imported_callbacks_:
-            if not cb in dir(self._model):
+            if cb not in dir(self._model):
                 assert "method %s not present in base class %s"%(cb, type(self._model))
             setattr(self, cb, wrap_model_method(self._model, cb))
 
@@ -91,7 +100,7 @@ class Interface(object):
             if ismethod(attr) and (hasattr(attr,"__import_to_interface")):
                 if hasattr(self, attr_name):
                     if not getattr(getattr(self, attr_name), "__overload_module", False):
-                        raise BendingInterfaceException("method %s seems in conflict with original module method. Add _overload_module decorator, or remove"%attr_name)
+                        raise BendingInterfaceException("method %s seems in conflict with original module method. Add _overload_module decorator, or remove"%(attr_name,))
                 hook = getattr(self, f"{attr_name}_hook", None)
                 if getattr(attr, "__import_to_interface"):
                     setattr(self, attr_name, wrap_model_method(self._model, attr_name, hook=hook))

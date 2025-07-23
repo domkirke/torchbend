@@ -1,4 +1,5 @@
 import torch, re
+
 import logging
 import abc
 from collections import OrderedDict
@@ -8,7 +9,7 @@ import copy
 import torch.nn as nn
 from types import MethodType, UnionType
 from collections import OrderedDict
-from typing import Union, List, Optional, Any
+from typing import Union, List, Optional, Any, Iterable
 from .parameter import BendingParameter, _VALID_PARAM_TYPES, BendingParamType, BendingParameterException, get_param_type
 from ..utils import _import_defs_from_tmpfile, _replace_placeholders, checktuple
 
@@ -101,6 +102,34 @@ def create_callback_forward_function(module):
     funcs = _import_defs_from_tmpfile(codes, gl=globals(), lo=locals())
     return funcs['dynamic_forward']
 
+static_controllable_pattern = """
+import torch
+from torchbend import BendingParamType
+
+@torch.jit.export
+def static_getter(self, name: str):
+{{RETURN_SETTER:LOOP}}
+\traise ValueError("controllable %s not present in callback")
+"""
+
+static_controllable_return_pattern = """
+\tif name == "{{C_NAME[]}}": return BendingParamType._to_tensor(self.{{C_NAME[]}}, {{C_TYPE[]}})
+"""
+
+def create_static_controllable_callback(module, controllable_dict):
+    controllable_names = []
+    controllable_types = []
+    for name, c in controllable_dict.items():
+        if isinstance(getattr(module, name), BendingParameter): continue
+        controllable_names.append(name)
+        controllable_types.append(BendingParamType.param_type_from_type(type(getattr(module, name))))
+    codes = _replace_placeholders(static_controllable_pattern, 
+                                  return_setter = static_controllable_return_pattern, c_name=controllable_names, c_type=controllable_types, 
+                                  _return_setter_loop = len(controllable_names))
+    funcs = _import_defs_from_tmpfile(codes, gl=globals(), lo=locals())
+    return funcs['static_getter']
+                                
+
 
 class BendingCallbackException(Exception):
     pass
@@ -120,7 +149,7 @@ class BendingCallback(nn.Module):
     different_output = False
 
 
-    def __init__(self, seed=None, **controllables):
+    def __init__(self, **controllables):
         super().__init__()
         self._init_compatibility_attributes()
         # controllables points to the dynamic controls used. 
@@ -137,9 +166,6 @@ class BendingCallback(nn.Module):
         self._not_ready_str = "BendingCallback is not ready"
         self._init_forward_callback()
         self._for_nntilde = False
-
-        # stochasticity management
-        self._seed = seed
 
     @torch.jit.ignore
     def bended_activations(self, fn = None):
@@ -166,6 +192,10 @@ class BendingCallback(nn.Module):
             else:
                 self.__setattr__(k, v[1])
 
+        self._init_static_controllable_callback(self.controllable_params)
+
+    
+
     def _init_forward_callback(self):
         self.forward = MethodType(create_callback_forward_function(self), self)
 
@@ -178,6 +208,9 @@ class BendingCallback(nn.Module):
             attr_name = f"{attr}_compatible"
             setattr(self, attr_name, getattr(type(self), attr_name, False))
         setattr(self, "applied_to_node", getattr(type(self), "applied_to_node", False))
+
+    def _init_static_controllable_callback(self, controllable_dict):
+        setattr(self, "_get_static_controllable", MethodType(create_static_controllable_callback(self, controllable_dict), self))
 
     def __contains__(self, i: BendingParameter):
         """checks if a parameter is used by the callback instance"""
@@ -204,9 +237,14 @@ class BendingCallback(nn.Module):
     def stop(self) -> None:
         self._is_capturing = False
 
-    # manage torch seeds
-    def _reset_seed(self):
-        if self._seed is not None: torch.manual_seed(self._seed)
+    def _get_operative_dims(self, dims: List[int], x: torch.Tensor) -> List[int]:
+        """resolves negative dim indexes with a concrete tensor dimension."""
+        operative_dims: List[int] = []
+        for i, d in enumerate(dims):
+            if d < 0:
+                d =  x.ndim + d 
+            operative_dims.append(d)
+        return operative_dims
 
     # controllables
     @property
@@ -246,7 +284,7 @@ class BendingCallback(nn.Module):
             for i, b in dict(self.named_buffers()).items():
                 if i == name:
                     return b
-            raise BendingCallbackAttributeException(name)
+            return self._get_static_controllable(name)
         else:
             if name in self._controllables: 
                 return self._controllables[name].get_value()
@@ -349,7 +387,6 @@ class BendingCallback(nn.Module):
         """applies in place a transformation to cached parameters."""
         if update:
             self.update()
-        self._reset_seed()
         for i, v in enumerate(self._bending_targets):
             v_cached = self.cache_from_id(i).data
             self.apply_to_param(i, v, v_cached)

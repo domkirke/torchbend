@@ -1,4 +1,5 @@
 import torch
+import math
 import copy
 from operator import mul
 from functools import reduce
@@ -8,6 +9,7 @@ from torch.nn.parameter import Parameter as Parameter
 from .callback import BendingCallback, BendingCallbackException
 from .parameter import BendingParamType, BendingParameter
 from .utils import prod
+from ..utils import checklist
 
 
 
@@ -19,7 +21,7 @@ class Mask(BendingCallback):
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
-    controllable_params = {'prob': ((float, torch.Tensor), 1.)}
+    controllable_params = {'prob': ((float, torch.Tensor), 1.), 'seed': (int, 0)}
 
     def __init__(self, prob: BendingParameter | float | None = None, seed: int = None, dim: Optional[Union[int, List[int]]]=None):
         super().__init__(seed=seed, prob=prob)
@@ -30,6 +32,7 @@ class Mask(BendingCallback):
         self._masks = torch.nn.ParameterList()
         self._mask_names = []
         self._mask_shapes = torch.jit.Attribute([], List[List[int]])
+        self._generator = torch.Generator().manual_seed(self.get("seed"))
 
     def script(self):
         mod = copy.copy(self)
@@ -53,13 +56,13 @@ class Mask(BendingCallback):
         return mask_shape
     
     def _init_mask(self, shape: List[int]):
-        #TODO generator not scriptable
         prob = float(self.get('prob'))
         mask_shape = self._get_mask_shape(shape)
+
         if torch.jit.is_scripting():
-            mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob))
+            mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob), generator=self._generator)
         else:
-            mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob))
+            mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob), generator=self._generator)
         return mask
 
     def _add_mask(self, name, shape):
@@ -94,20 +97,20 @@ class Mask(BendingCallback):
     def get_mask(self, param, prob: torch.Tensor | None = None, name: str | None = None) -> torch.Tensor:
         if prob is None or not self._prob_as_input: 
             if name is None:
-                return torch.bernoulli(torch.full_like(param, fill_value=float(self.prob))).to(param)
+                return torch.bernoulli(torch.full_like(param, fill_value=float(self.prob)), generator=self._generator).to(param)
             else:
                 return self._mask_from_name(name)
         else:
             if isinstance(prob, float):
-                return torch.bernoulli(torch.full_like(param, fill_value=float(self.prob))).to(param)
+                return torch.bernoulli(torch.full_like(param, fill_value=float(self.prob)), generator=self._generator).to(param)
             elif isinstance(prob, torch.Tensor):
                 #TODO perform some broadcast? 
-                return torch.bernoulli(prob.expand_as(param)).to(param)
+                return torch.bernoulli(prob.expand_as(param), generator=self._generator).to(param)
             else:
                 raise TypeError('wrong type for prob : %s'%type(prob))
 
-
     def update(self):
+        self._generator.manual_seed(self.get('seed'))
         for i, v in enumerate(self._masks):
             with torch.no_grad():
                 v.set_(self._init_mask(v.shape))
@@ -116,7 +119,7 @@ class Mask(BendingCallback):
         with torch.no_grad():
             param.set_(self.get_mask_from_id(idx) * cache)
 
-    def bend_input(self, x: torch.Tensor, prob: torch.Tensor | None = None, name: str | None = None):
+    def bend_input(self, x: torch.Tensor, prob: torch.Tensor | None = None, seed: torch.Tensor | None = None, name: str | None = None):
         mask = self.get_mask(x, prob, name)
         return x * mask
         
@@ -167,14 +170,14 @@ class OrderedMask(Mask):
             mask_idx = self._mask_from_name(name)
             mask = self._mask_from_randperm(mask_idx, prob, param.shape).to(param)
         else:
-            mask = torch.bernoulli(torch.full_like(param, fill_value=float(self.prob))).to(param)
+            mask = torch.bernoulli(torch.full_like(param, fill_value=float(self.get("prob")))).to(param)
         return mask
     
     def get_mask_from_id(self, idx: int, cached: torch.Tensor) -> torch.nn.Parameter:
         #grrrr
         for i, v in enumerate(self._masks):
             if i == idx:
-                return self._mask_from_randperm(v, self.prob.get_value(), cached.shape).to(cached)
+                return self._mask_from_randperm(v, self.get("prob"), cached.shape).to(cached)
         raise BendingCallbackException('%s not present in masks'%idx)
 
     def update(self):
@@ -188,31 +191,36 @@ class OrderedMask(Mask):
 
 class ThresholdActivation(BendingCallback):
     activation_compatible = True
-    controllable_params = {'threshold': None}
-    def __init__(self, threshold: float = 0.5, dim: Union[int, List[int], None]=None, invert: bool = False):
-        super().__init__()
-        self.register_controllable('threshold', threshold)
-        self.dim = dim
+    controllable_params = {'threshold': (None, 0.5)}
+    def __init__(self, threshold: BendingParameter | float | None = None, dim: Union[int, List[int], None] = [1, 2], invert: bool = False):
+        super().__init__(threshold = threshold)
+        self.dim = checklist(dim)
         self.invert = invert
 
-    def forward(self, x: torch.Tensor, name: Optional[str] = None):
-        dim = self.dim
-        if dim < 0:
-            dim =  x.ndim + dim
-        threshold = self.get('threshold')
+    def bend_input(self, x: torch.Tensor, threshold: torch.Tensor, name: Optional[str] = None):
 
-        vals = x.mean(tuple(range(dim+1, x.ndim)))
+        dims = self._get_operative_dims(self.dim, x)
 
-        idx = torch.argsort(vals, dim=-1, descending=not self.invert)
-        idx_sorted = idx[..., :int(threshold * idx.shape[-1])]
+        mean_dims: List[int] = []
+        for n in range(x.ndim):
+            if n not in dims:
+                mean_dims.append(n)
 
-        mask = torch.zeros_like(x)
-        index = []
-        for d in mask.shape[:(dim)]:
-            d = torch.arange(d) 
-            for _ in range(dim+1):
-                d = d.unsqueeze(-1)
-            index.append(d)
-            index += [idx_sorted]
-        mask.__setitem__(index, 1)
+        vals = x.mean(mean_dims)
+
+        values = torch.sort(vals.flatten()).values
+        idx_limit = int(math.floor(threshold * (values.numel() - 1)))
+        threshold_value = values.flatten()[idx_limit]
+
+        if self.invert:
+            idx = torch.nonzero(vals >= threshold_value)
+        else:
+            idx = torch.nonzero(vals <= threshold_value)
+
+        mask = torch.zeros_like(vals)
+        mask.index_put_(list(idx.t()), torch.tensor(1.))
+        for i in range(x.ndim):
+            if i not in dims:
+                mask = mask.unsqueeze(i)
+        
         return x * mask
