@@ -37,6 +37,7 @@ import torch
 import typing
 from typing import Optional
 from torchbend import BendingParamType
+from torchbend.bending.parameter import _VALID_PARAM_TYPES
 
 @torch.jit.export
 def dynamic_forward(self, x, name: Optional[str] = None, {{CALLBACK_ARGS_SIG}}):
@@ -107,7 +108,7 @@ import torch
 from torchbend import BendingParamType
 
 @torch.jit.export
-def static_getter(self, name: str):
+def static_getter(self, name: str) -> torch.Tensor:
 {{RETURN_SETTER:LOOP}}
 \traise ValueError("controllable %s not present in callback")
 """

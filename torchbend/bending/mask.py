@@ -32,7 +32,18 @@ class Mask(BendingCallback):
         self._masks = torch.nn.ParameterList()
         self._mask_names = []
         self._mask_shapes = torch.jit.Attribute([], List[List[int]])
-        self._generator = torch.Generator().manual_seed(self.get("seed"))
+        self._generator = torch.Generator().manual_seed(int(self.get("seed")))
+
+    def __getstate__(self):
+        out_dict = dict(self.__dict__)
+        del out_dict["generator"]
+        return out_dict
+
+    def __setstate__(self, obj):
+        self.__dict__.update(obj)
+        self.generator = torch.Generator()
+        if obj.get('seed'):
+            self.generator.manual_seed(int(obj.get('seed')))
 
     def script(self):
         mod = copy.copy(self)
@@ -97,12 +108,12 @@ class Mask(BendingCallback):
     def get_mask(self, param, prob: torch.Tensor | None = None, name: str | None = None) -> torch.Tensor:
         if prob is None or not self._prob_as_input: 
             if name is None:
-                return torch.bernoulli(torch.full_like(param, fill_value=float(self.prob)), generator=self._generator).to(param)
+                return torch.bernoulli(torch.full_like(param, fill_value=float(self.get('prob'))), generator=self._generator).to(param)
             else:
                 return self._mask_from_name(name)
         else:
             if isinstance(prob, float):
-                return torch.bernoulli(torch.full_like(param, fill_value=float(self.prob)), generator=self._generator).to(param)
+                return torch.bernoulli(torch.full_like(param, fill_value=float(self.get("prob"))), generator=self._generator).to(param)
             elif isinstance(prob, torch.Tensor):
                 #TODO perform some broadcast? 
                 return torch.bernoulli(prob.expand_as(param), generator=self._generator).to(param)
@@ -110,14 +121,15 @@ class Mask(BendingCallback):
                 raise TypeError('wrong type for prob : %s'%type(prob))
 
     def update(self):
-        self._generator.manual_seed(self.get('seed'))
+        self._generator.manual_seed(int(self.get('seed')))
         for i, v in enumerate(self._masks):
             with torch.no_grad():
                 v.set_(self._init_mask(v.shape))
 
-    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor) -> None:
-        with torch.no_grad():
-            param.set_(self.get_mask_from_id(idx) * cache)
+    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: Optional[torch.Tensor] = None) -> None:
+        if cache is not None:
+            with torch.no_grad():
+                param.set_(self.get_mask_from_id(idx) * cache)
 
     def bend_input(self, x: torch.Tensor, prob: torch.Tensor | None = None, seed: torch.Tensor | None = None, name: str | None = None):
         mask = self.get_mask(x, prob, name)
@@ -180,9 +192,9 @@ class OrderedMask(Mask):
                 return self._mask_from_randperm(v, self.get("prob"), cached.shape).to(cached)
         raise BendingCallbackException('%s not present in masks'%idx)
 
-    def update(self):
-        """no update is needed with OrderedMask, as mask is updated in real time"""
-        pass
+    # def update(self):
+    #     """no update is needed with OrderedMask, as mask is updated in real time"""
+    #     pass
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor | None = None):
         assert cache is not None

@@ -86,10 +86,13 @@ def test_mask_script(cb_class, module_config, jit, as_controllable, as_input):
 
         if as_controllable:
             prob = tb.bending.BendingParameter('mask', 1., as_input=as_input)
+            seed = tb.bending.BendingParameter('seed', 0)
         else:
             prob = 1.
-        mask_callback = cb_class(prob=prob)
+            seed = 0
+        mask_callback = cb_class(prob=prob, seed=seed)
         mask_callback.get('prob')
+        mask_callback.get('seed')
         if len(weight_targets) > 0: mod.bend(mask_callback, *weight_targets, bend_graph=False)
         if len(activation_targets) > 0: mod.bend(mask_callback, *activation_targets, bend_param=False)
 
@@ -100,10 +103,10 @@ def test_mask_script(cb_class, module_config, jit, as_controllable, as_input):
             for i, a in enumerate(targets):
                 if len(targets) == 1:
                     kwargs_nomask['mask'] = torch.Tensor([1.])
-                    kwargs_masked['mask'] = torch.Tensor([0.])
+                    kwargs_masked['mask'] = torch.Tensor([0.1])
                 else:
                     kwargs_nomask['mask_%d'%i] = torch.Tensor([1.])
-                    kwargs_masked['mask_%d'%i] = torch.Tensor([0.])
+                    kwargs_masked['mask_%d'%i] = torch.Tensor([0.1])
 
         mod_scripted = mod.script(script=jit)
         if len(weight_targets) > 0 and as_controllable: mod_scripted._set_bending_control('mask', 1.)
@@ -111,9 +114,13 @@ def test_mask_script(cb_class, module_config, jit, as_controllable, as_input):
         assert bool(tb.compare_outs(out_orig, out_scripted))
 
         if as_controllable:
-            mod_scripted._set_bending_control('mask', 0.)
+            mod_scripted._set_bending_control('mask', 0.5)
             out_scripted = getattr(mod_scripted, method)(*args, **kwargs_masked)
             assert not bool(tb.compare_outs(out_orig, out_scripted))
+
+            mod_scripted._set_bending_control('seed', 1234)
+            out_scripted_2 = getattr(mod_scripted, method)(*args, **kwargs_masked)
+            assert not bool(tb.compare_outs(out_scripted_2, out_scripted))
 
 
 @pytest.mark.parametrize('cb_class', [partial(tb.ThresholdActivation, invert=False)])
