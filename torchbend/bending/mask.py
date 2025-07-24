@@ -13,8 +13,6 @@ from ..utils import checklist
 
 
 
-#TODO : (philippe's idea), thresholding activations keeping N% of maximum amplitudes
-#TODO : register a quantile function to have dynamic masking from the prob parameter (either ordered permutation, or beta distribution over mean and selection trough parameter)
 
 class Mask(BendingCallback):
     weight_compatible = True
@@ -32,18 +30,6 @@ class Mask(BendingCallback):
         self._masks = torch.nn.ParameterList()
         self._mask_names = []
         self._mask_shapes = torch.jit.Attribute([], List[List[int]])
-        self._generator = torch.Generator().manual_seed(int(self.get("seed")))
-
-    def __getstate__(self):
-        out_dict = dict(self.__dict__)
-        del out_dict["_generator"]
-        return out_dict
-
-    def __setstate__(self, obj):
-        self.__dict__.update(obj)
-        self._generator = torch.Generator()
-        if obj.get('seed'):
-            self.generator.manual_seed(int(obj.get('seed')))
 
     def script(self):
         mod = copy.copy(self)
@@ -69,11 +55,9 @@ class Mask(BendingCallback):
     def _init_mask(self, shape: List[int]):
         prob = float(self.get('prob'))
         mask_shape = self._get_mask_shape(shape)
-
-        if torch.jit.is_scripting():
-            mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob), generator=self._generator)
-        else:
-            mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob), generator=self._generator)
+        #TODO goddamn generator is not pickable.
+        torch.manual_seed(int(self.get("seed")))
+        mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob))
         return mask
 
     def _add_mask(self, name, shape):
@@ -106,22 +90,23 @@ class Mask(BendingCallback):
         raise BendingCallbackException('%s not present in masks'%idx)
     
     def get_mask(self, param, prob: torch.Tensor | None = None, name: str | None = None) -> torch.Tensor:
+        torch.manual_seed(int(self.get("seed")))
+        generator = None
         if prob is None or not self._prob_as_input: 
             if name is None:
-                return torch.bernoulli(torch.full_like(param, fill_value=float(self.get('prob'))), generator=self._generator).to(param)
+                return torch.bernoulli(torch.full_like(param, fill_value=float(self.get('prob'))), generator=generator).to(param)
             else:
                 return self._mask_from_name(name)
         else:
             if isinstance(prob, float):
-                return torch.bernoulli(torch.full_like(param, fill_value=float(self.get("prob"))), generator=self._generator).to(param)
+                return torch.bernoulli(torch.full_like(param, fill_value=float(self.get("prob"))), generator=generator).to(param)
             elif isinstance(prob, torch.Tensor):
                 #TODO perform some broadcast? 
-                return torch.bernoulli(prob.expand_as(param), generator=self._generator).to(param)
+                return torch.bernoulli(prob.expand_as(param), generator=generator).to(param)
             else:
                 raise TypeError('wrong type for prob : %s'%type(prob))
 
     def update(self):
-        self._generator.manual_seed(int(self.get('seed')))
         for i, v in enumerate(self._masks):
             with torch.no_grad():
                 v.set_(self._init_mask(v.shape))

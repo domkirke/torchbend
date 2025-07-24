@@ -68,6 +68,7 @@ def test_mask_activation(cb_class, module_config, as_input):
 
         prob.set_value(0.)
         out_masked = getattr(mod, method)(*args, **kwargs_masked)
+
         assert not bool(tb.compare_outs(out_orig, out_masked))
 
 
@@ -122,6 +123,11 @@ def test_mask_script(cb_class, module_config, jit, as_controllable, as_input):
             out_scripted_2 = getattr(mod_scripted, method)(*args, **kwargs_masked)
             assert not bool(tb.compare_outs(out_scripted_2, out_scripted))
 
+        if jit:
+            test_name = f"./.{os.environ.get('PYTEST_CURRENT_TEST').split(':')[-1].split(' ')[0]}.ts"
+            torch.jit.save(mod_scripted, test_name)
+            os.remove(test_name)
+
 
 @pytest.mark.parametrize('cb_class', [partial(tb.ThresholdActivation, invert=False)])
 @pytest.mark.parametrize('module_config', modules_to_test)
@@ -131,6 +137,7 @@ def test_threshold_activation(cb_class, module_config, jit, as_input):
     mod = module_config.get_bended_module()
 
     for method, (args, kwargs, _, activation_targets) in module_config.scriptable():
+        if len(activation_targets) == 0: continue
         mod.reset()
         mod.trace(method, **kwargs)
         out_orig = getattr(mod, method)(*args, **kwargs)
@@ -146,13 +153,16 @@ def test_threshold_activation(cb_class, module_config, jit, as_input):
             for i, a in enumerate(targets):
                 if len(targets) == 1:
                     kwargs_nomask['threshold'] = torch.Tensor([1.])
+                    kwargs_masked['threshold'] = torch.Tensor([0.2])
                 else:
                     kwargs_nomask['threshold_%d'%i] = torch.Tensor([1.])
+                    kwargs_masked['threshold_%d'%i] = torch.Tensor([0.2])
 
         mod_scripted = mod.script(script=jit)
         out_scripted = getattr(mod_scripted, method)(*args, **kwargs_nomask)
         assert bool(tb.compare_outs(out_orig, out_scripted))
 
+        mod_scripted._set_bending_control('threshold', 0.2)
         out_scripted = getattr(mod_scripted, method)(*args, **kwargs_masked)
         assert not bool(tb.compare_outs(out_orig, out_scripted))
 

@@ -12,23 +12,11 @@ class Permute(BendingCallback):
     nntilde_compatible = True
     controllable_params = {'seed': (int, -1)}
 
-    def __getstate__(self):
-        out_dict = dict(self.__dict__)
-        del out_dict["_generator"]
-        return out_dict
-
-    def __setstate__(self, obj):
-        self.__dict__.update(obj)
-        self._generator = torch.Generator()
-        if obj.get('seed'):
-            self._set_seed(int(obj.get('seed')))
-
     def __init__(self, dim: int, seed: int = -1):
         super().__init__(seed=seed)
         if isinstance(self.seed, BendingParameter):
             if self.seed.as_input: 
                 raise ValueError('seed cannot be fed as input in graph. Please set as_input=False')
-        self._generator = torch.Generator()
         self._set_seed(int(self.get('seed')))
         self.register_buffer('dim', torch.tensor(dim).int())
         self._perms = torch.nn.ParameterList()
@@ -52,8 +40,9 @@ class Permute(BendingCallback):
     def _init_permute_(self, name, shape):
         assert shape is not None, "mask preinit must be given target shape"
         self.dim = len(shape) + self.dim if self.dim < 0 else self.dim
+        torch.manual_seed(int(self.get("seed")))
         if self.dim < len(shape): 
-            perm = torch.randperm(shape[self.dim], generator=self._generator, requires_grad=False)
+            perm = torch.randperm(shape[self.dim], requires_grad=False)
             self._perms.append(torch.nn.Parameter(perm, requires_grad=False))
             self._perm_keys.append(name)
         else: 
@@ -68,16 +57,17 @@ class Permute(BendingCallback):
             self._bypass = True
         else: 
             self._bypass = False
-            self._generator.manual_seed(seed)
     
     def update(self):
-        self._set_seed(int(self.get('seed')))
+        seed = int(self.get('seed'))
+        self._set_seed(seed)
         if self._bypass:
             return
         for i, perm in enumerate(self._perms):
             if perm.numel() != 0:
+                torch.manual_seed(seed)
                 with torch.no_grad():
-                    perm.set_(torch.randperm(perm.shape[0], generator=self._generator))
+                    perm.set_(torch.randperm(perm.shape[0]))
 
     def register_weight(self, parameter, name=None, cache: bool = True):
         name = super().register_weight(parameter, name=name, cache=cache) 

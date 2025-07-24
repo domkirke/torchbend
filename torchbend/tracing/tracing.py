@@ -246,7 +246,8 @@ class BendedGraph(torch.fx.Graph):
         self._find_nodes_lookup_table = _FindNodesLookupTable()
         self._attached_bending_callbacks = graph._attached_bending_callbacks
         for attr in type(self)._GRAPH_COPY_ATTR:
-            setattr(self, attr, getattr(graph, attr, None))
+            setattr(self, attr, copy.copy(getattr(graph, attr, None)))
+
 
     @property
     def fn(self):

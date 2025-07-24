@@ -253,6 +253,7 @@ class BendedModule(object):
         return obj
 
     # -- parameters & weights --
+    @_import_to_interface
     def weights(self, *flt, exclude=None):
         """get valid weight names from a regexp"""
         parameters = OrderedDict(self.named_parameters())
@@ -851,7 +852,7 @@ class BendedModule(object):
                 bending_callbacks = self._bended_activations[fn][node.name]
                 for cb in bending_callbacks:
                     cb.copy_activation(f"{fn}:{node.name}", f"{method_name}:{node.name}")
-                for k, v in self.bended_activations().items():
+                for k, v in self.bended_activations(fn=fn).items():
                     self._graphs[method_name].attach_bending_callback(f"{k}_callback", CallbackChain(*v))
         # node_names = [n.name for n in graph.nodes]
         # for act, bendings in self._bended_activations[fn].items():

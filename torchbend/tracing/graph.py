@@ -6,7 +6,7 @@ from torch.fx import Graph, Node
 from torch.fx._compatibility import compatibility
 # from torch.fx.graph_module import GraphModule
 from typing import List, Dict, Any, Optional, Type
-from .tracing import BendedGraph, TraceError
+from .tracing import BendedGraph, TraceError, ActivationProperties
 
 
 
@@ -141,6 +141,14 @@ def graph_insert_callbacks(graph, callbacks, verbose=False, fn=None):
                 bended_node = new_graph.create_node("call_module", hack_obj_name, args=(env[node.name],), kwargs=callback_kwargs, name=bended_node_name)
                 env[bended_node_name] = bended_node
                 bended_lookup[node.name] = bended_node
+                #TODO how could we get shape? 
+                new_graph.activations[bended_node_name] = ActivationProperties(op=node.op, 
+                                                            target=node.target, 
+                                                            type=node.type, 
+                                                            name=node.name, 
+                                                            args=node.args,
+                                                            kwargs=node.kwargs,
+                                                            fn=fn)
     # _import_attr_from_original_graph(graph, new_graph)
     # regularize placeholder names
     _parse_placeholder_names(new_graph)
@@ -237,6 +245,7 @@ def graph_from_activations(graph, activations, remove_placeholders=True, parse_i
                 else:
                     if not name in additional_inputs: additional_inputs[name] = []
                     additional_inputs[name].append((bended_activation_name, param))
+            
 
     placeholder_map = {}
     for k, v in additional_inputs.items():

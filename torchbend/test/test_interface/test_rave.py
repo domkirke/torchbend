@@ -184,9 +184,12 @@ def test_nntilde_export(model_path):
 @pytest.mark.parametrize("jit", [True, False])
 def test_nntilde_split(model_path, jit):
     model = BendedRAVE(model_path, scriptable=True, strict=RAVE_STRICT_LOADING)
+    forward_acts = model.aliases()['encoder_act'][0]
     x = torch.zeros(1, model.channels, 8192)
 
-    forward_acts = model.aliases()['encoder_act'][0]
+    bending_op = tb.Mask(prob=tb.BendingParameter("mask", 0.), dim=-2)
+    model.bend(bending_op, *model.aliases()['encoder_act'])
+
     out = model.get_activations(f"{forward_acts}", x=x, _save_as_method=f"get_{forward_acts}")
     out = model.from_activations(f"{forward_acts}", x=x, **out, _save_as_method=f"from_{forward_acts}")
 
