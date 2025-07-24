@@ -124,6 +124,9 @@ class BendedRAVE(Interface):
     def load_checkpoint(model_path, strict=True, scriptable: bool = True, device: str | torch.device = "cpu", load_ema: bool = False):
 
         model, model_path = ravelib.load_rave_checkpoint(model_path, name=None, ema=load_ema)
+        
+        if scriptable: model = script_rave_model(model)
+
         _ = model.pqmf(torch.zeros(cc.MAX_BATCH_SIZE, model.pqmf.forward_conv.weight.shape[1], 8192))
         _ = model.pqmf.inverse(torch.zeros(cc.MAX_BATCH_SIZE, model.pqmf.inverse_conv.weight.shape[1], 8192))
         model(torch.zeros(1, model.n_channels, 8192))
@@ -133,7 +136,6 @@ class BendedRAVE(Interface):
             if hasattr(m, "weight_g"):
                 nn.utils.remove_weight_norm(m)        
 
-        if scriptable: model = script_rave_model(model)
         return model
 
     @staticmethod

@@ -124,7 +124,7 @@ class BendedGraphModule(GraphModule):
             assert isinstance(v, torch.fx.Graph), f"GraphModule must be initialized with a valid sequence of Graph; got {type(v)} for callback {k}"
 
         self._activations: Dict[str, Dict[str, ActivationProperties] | None] = {}
-        self.graph = kwargs 
+        self.graph = dict(kwargs)
 
         # import tracer cls
         tracers = set([getattr(t, "_tracer_cls") for t in self.graph.values()])
@@ -175,7 +175,6 @@ class BendedGraphModule(GraphModule):
             assert isinstance(g, Graph), f"Expected a Graph instance, but got {type(g)}"
             g.owning_module = self
             g.lint()
-            g.eliminate_dead_code()
             self._activations[method] = getattr(g, "activations", None)
             # self.recompile()
         self._graph = graphs
