@@ -48,16 +48,16 @@ class BendingParamType():
         elif dtype in [torch.complex, torch.complex32, torch.complex64, torch.complex128]: 
             raise NotImplementedError
         else:
-            raise TypeError('cannot parse tensor %s as a native python value'%tensor)
+            raise TypeError('cannot parse tensor %s as a native python value'%dtype)
 
     @staticmethod 
     def _str_from_type(obj: type) -> int:
         if issubclass(obj, torch.Tensor):
             if obj == torch.Tensor: obj = BendingParamType._get_default_tensor_type()
-        if issubclass(obj, (int, numbers.Integral)):
-            return 'int'
-        elif issubclass(obj, bool):
+        if issubclass(obj, bool):
             return 'bool'
+        elif issubclass(obj, (int, numbers.Integral)):
+            return 'int'
         elif issubclass(obj, (float, numbers.Real)):
             return 'float'
         elif issubclass(obj, (complex, numbers.Complex)):
@@ -197,15 +197,20 @@ class BendingParameter(nn.Module):
         self.as_input = as_input
         if self.param_type in [BendingParamType.get_type('bool')]:
             self._make_init_warnings_for_bool(weight=weight, bias=bias, min_range=range[0], max_range=range[1], clamp=clamp)
+            self.min_clamp = 0
+            self.max_clamp = 1
+            self.clamp = True
+            self.register_buffer("weight", torch.tensor(1.))
+            self.register_buffer("bias", torch.tensor(0.))
         else:
             self.register_buffer("weight", checktensor(weight if weight is not None else 1.))
             self.register_buffer("bias", checktensor(bias if bias is not None else 0.))
             self.min_clamp = range[0]
             self.max_clamp = range[1]
             self.clamp = clamp or False
-            self._nodes = {}
-            self._kwargs = kwargs
-            self._callbacks = {}
+        self._nodes = {}
+        self._kwargs = kwargs
+        self._callbacks = {}
 
     def _make_init_warnings_for_str(self, **attributes):
         for name, val in attributes:
@@ -213,7 +218,7 @@ class BendingParameter(nn.Module):
                 log_warning("provided keyword %s for BendingParameter of type str"%name)
 
     def _make_init_warnings_for_bool(self, **attributes):
-        for name, val in attributes:
+        for name, val in attributes.items():
             if val is not None:
                 log_warning("provided keyword %s for BendingParameter of type bool"%name)
 

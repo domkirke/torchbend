@@ -14,12 +14,12 @@ class Permute(BendingCallback):
 
     def __getstate__(self):
         out_dict = dict(self.__dict__)
-        del out_dict["generator"]
+        del out_dict["_generator"]
         return out_dict
 
     def __setstate__(self, obj):
         self.__dict__.update(obj)
-        self.generator = torch.Generator()
+        self._generator = torch.Generator()
         if obj.get('seed'):
             self._set_seed(int(obj.get('seed')))
 

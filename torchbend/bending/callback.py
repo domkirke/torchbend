@@ -382,7 +382,10 @@ class BendingCallback(nn.Module):
     @abc.abstractmethod
     def apply_to_param(self, idx: int, param: nn.Parameter, cache: Optional[torch.Tensor] = None):
         """callback-specific method to apply the bending on a weight"""
-        raise NotImplementedError()
+        if not self.weight_compatible:
+            pass
+        else:
+            raise NotImplementedError()
 
     def apply(self, update: bool = True, _reset_seed: bool = True):
         """applies in place a transformation to cached parameters."""

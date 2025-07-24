@@ -45,6 +45,13 @@ def _template_from_param(param: BendingParameter, template=attribute_template, *
         kwargs['dtype'] = kwargs.get('dtype', torch.int64)
         kwargs['type_expr'] = kwargs.get('type_expr', "int")
         return _resolve_code(template, **kwargs)
+    elif param.param_type == get_param_type("bool"):
+        kwargs['dtype'] = kwargs.get('dtype', torch.int8)
+        kwargs['type_expr'] = kwargs.get('type_expr', "bool")
+        return _resolve_code(template, **kwargs)
+    else:
+        raise TypeError('Type not handled by automatic attribute writing : %s'%(param.param_type))
+        
 
 class ScriptedBendedModule(nn.Module):
     method_template = method_template
