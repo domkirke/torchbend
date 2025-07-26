@@ -144,7 +144,7 @@ class OrderedMask(Mask):
         return mask_shape
 
     def _init_mask(self, shape: List[int]):
-        torch.manual_seed(self.get("seed"))
+        torch.manual_seed(int(self.get("seed")))
         mask_shape = self._get_mask_shape(shape)
         numel = prod(mask_shape)
         if torch.jit.is_scripting():
@@ -181,7 +181,7 @@ class OrderedMask(Mask):
         return mask.reshape(mask_shape)
 
     def get_mask(self, param, prob: torch.Tensor | None, name: str | None) -> torch.Tensor:
-        torch.manual_seed(self.get("prob"))
+        torch.manual_seed(int(self.get("prob")))
         if name is not None:
             mask_idx = self._mask_from_name(name)
             mask = self._mask_from_randperm(mask_idx, prob, param.shape).to(param)
