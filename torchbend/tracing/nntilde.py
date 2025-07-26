@@ -58,7 +58,7 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         assert isinstance(model, BendedModule), "NNBendedModule must be initialized with a BendedModule"
         self._init_nntilde_module(sr=sr)
         # self._methods = ListAttribute([], List[str])
-        # self._attributes = ListAttribute([], List[str])
+        self._attributes = ListAttribute([], List[str])
         self._get_set_candidates = {}
         ScriptedBendedModule.__init__(self, model, enable_grad=enable_grad)
         self._search_for_getter_and_setters(model.module)
@@ -66,11 +66,6 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         if hasattr(model, "register_nntilde_attributes"):
             if not getattr(getattr(model, "register_nntilde_attributes"), "__isabstractmethod__", False):
                 model.register_nntilde_attributes(self)
-
-        # if hasattr(model, "nn_tilde_methods"):
-        #     if not getattr(getattr(model, "register_nntilde_methods"), "__isabstractmethod__", False):
-        #         if not force_default:
-        #             model.register_nntilde_methods(self)
 
         self._register_methods(model, force_default)
         self._reset_get_set_candidates()

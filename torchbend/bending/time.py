@@ -9,14 +9,14 @@ class Reverse(BendingCallback):
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
-    controllable_params = {'reverse': (bool, False)}
+    controllable_params = {'reverse': (int, 0)}
 
-    def __init__(self, dim: int, reverse: bool = False):
+    def __init__(self, dim: int, reverse: int = 0):
         super().__init__(reverse=reverse)
         self.dim = dim
 
     def __repr__(self):
-        return f"Permute(dim={self.dim})"
+        return f"Reverse(reverse={self.get('reverse')})"
 
     def bend_input(self, x: torch.Tensor, reverse: Optional[torch.Tensor] = None, name: Optional[str] = None):
         perform = True

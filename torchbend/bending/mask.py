@@ -21,11 +21,12 @@ class Mask(BendingCallback):
     nntilde_compatible = True
     controllable_params = {'prob': ((float, torch.Tensor), 1.), 'seed': (int, 0)}
 
-    def __init__(self, prob: BendingParameter | float | None = None, seed: int = None, dim: Optional[Union[int, List[int]]]=None):
+    def __init__(self, prob: BendingParameter | float | None = None, seed: int = None, dim: Optional[Union[int, List[int]]]=None, learnable: bool = False):
         super().__init__(seed=seed, prob=prob)
         # register paramters
         # self.register_controllable('prob', prob)
         self.dim = dim
+        self.learnable = learnable
         # init masks
         self._masks = torch.nn.ParameterList()
         self._mask_names = []
@@ -57,7 +58,7 @@ class Mask(BendingCallback):
         mask_shape = self._get_mask_shape(shape)
         #TODO goddamn generator is not pickable.
         torch.manual_seed(int(self.get("seed")))
-        mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob))
+        mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob)).requires_grad_(self.learnable)
         return mask
 
     def _add_mask(self, name, shape):
@@ -109,7 +110,9 @@ class Mask(BendingCallback):
     def update(self):
         for i, v in enumerate(self._masks):
             with torch.no_grad():
-                v.set_(self._init_mask(v.shape))
+                for j, s in enumerate(self._mask_shapes.value):
+                    if i == j:
+                        v.set_(self._init_mask(s))
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: Optional[torch.Tensor] = None) -> None:
         if cache is not None:
@@ -124,20 +127,35 @@ class Mask(BendingCallback):
 class OrderedMask(Mask): 
 
     def __repr__(self): 
-        return f"Mask(prob={float(self.prob):.3f})"
+        return f"OrderedMask(prob={float(self.prob):.3f})"
+
+    def _get_mask_shape(self, shape: List[int]) -> List[int]:
+        dim = self.dim
+        if dim is None:
+            return shape
+        if len(shape) == 0:
+            return []
+        mask_shape = [1] * len(shape)
+        if isinstance(dim, int):
+            mask_shape[dim] = int(shape[dim])
+        elif isinstance(dim, list):
+            for d in dim:
+                mask_shape[d] = int(shape[d])
+        return mask_shape
 
     def _init_mask(self, shape: List[int]):
+        torch.manual_seed(self.get("seed"))
         mask_shape = self._get_mask_shape(shape)
         numel = prod(mask_shape)
         if torch.jit.is_scripting():
-            mask = torch.randperm(numel)
+            mask = torch.randperm(numel).requires_grad_(self.learnable)
         else:
-            mask = torch.randperm(numel, requires_grad=False)
+            mask = torch.randperm(numel).requires_grad_(self.learnable)
         # stupid but otherwise cannot be added to ParameterList
         return mask.float()
 
     def _update_mask(self, name: str, shape: List[int]):
-        new_mask = self._init_mask(shape).requires_grad_(False)
+        new_mask = self._init_mask(shape).requires_grad_(self.learnable)
         good_idx = -1
         for idx, mask_name in enumerate(self._mask_names):
             if mask_name == name:
@@ -163,6 +181,7 @@ class OrderedMask(Mask):
         return mask.reshape(mask_shape)
 
     def get_mask(self, param, prob: torch.Tensor | None, name: str | None) -> torch.Tensor:
+        torch.manual_seed(self.get("prob"))
         if name is not None:
             mask_idx = self._mask_from_name(name)
             mask = self._mask_from_randperm(mask_idx, prob, param.shape).to(param)
@@ -177,9 +196,16 @@ class OrderedMask(Mask):
                 return self._mask_from_randperm(v, self.get("prob"), cached.shape).to(cached)
         raise BendingCallbackException('%s not present in masks'%idx)
 
-    # def update(self):
-    #     """no update is needed with OrderedMask, as mask is updated in real time"""
-    #     pass
+    def update(self):
+        if torch.jit.is_scripting(): 
+            mask_shapes = self._mask_shapes
+        else:
+            mask_shapes = self._mask_shapes.value
+        for i, v in enumerate(self._masks):
+            with torch.no_grad():
+                for j, s in enumerate(mask_shapes):
+                    if i == j:
+                        v.set_(self._init_mask(s))
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor | None = None):
         assert cache is not None

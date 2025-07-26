@@ -12,7 +12,7 @@ from typing import Union, Optional
 import rave as ravelib
 from ..base import Interface, _export_to_module, _overload_module
 from ...tracing import BendedModule, NNBendedMethodAttributes
-from .scripting import pre_process_fn, post_process_fn, script_rave_model
+from .scripting import pre_process_fn, post_process_fn, script_rave_model, VariationalScriptedRAVE
 import cached_conv as cc
 import gin
 
@@ -79,18 +79,18 @@ def rave_get_model_paths(path):
 class BendedRAVE(Interface):
     _imported_callbacks_ = []
 
-    def __init__(self, model_path, strict=True, scriptable=True):
+    def __init__(self, model_path, strict=True, scriptable=True, **kwargs):
         model = self.load_model(model_path, strict=strict)
 
         self.scriptable = scriptable
         if scriptable:
-            self.model = script_rave_model(model)
+            self.model = script_rave_model(model, **kwargs)
         else:
             self.model = model
 
         # warmup model cache
-        self.pre_process_latent = MethodType(pre_process_fn[type(self.model.encoder)], self)
-        self.post_process_latent = MethodType(post_process_fn[type(self.model.encoder)], self)
+        # self.pre_process_latent = MethodType(pre_process_fn[type(self.model.encoder)], self)
+        # self.post_process_latent = MethodType(post_process_fn[type(self.model.encoder)], self)
 
     @property
     @_export_to_module
@@ -130,7 +130,6 @@ class BendedRAVE(Interface):
         _ = model.pqmf(torch.zeros(cc.MAX_BATCH_SIZE, model.pqmf.forward_conv.weight.shape[1], 8192))
         _ = model.pqmf.inverse(torch.zeros(cc.MAX_BATCH_SIZE, model.pqmf.inverse_conv.weight.shape[1], 8192))
         model(torch.zeros(1, model.n_channels, 8192))
-        
 
         for m in model.modules():
             if hasattr(m, "weight_g"):
@@ -145,12 +144,19 @@ class BendedRAVE(Interface):
 
     def _bend_model(self, model: BendedModule):
         model.trace("forward", x=torch.zeros(1, 1, 65536),  _proxied_buffers=self._proxied_buffers)
+        is_variational = isinstance(model._module, VariationalScriptedRAVE)
         _, (decoder_out,) = model.trace("encode", x=torch.zeros(1, 1, 65536), _proxied_buffers=self._proxied_buffers, _return_out=True)
+        if is_variational:
+            _, (decoder_out_full,) = model.trace("encode_full", x=torch.zeros(1, 1, 65536), _proxied_buffers=self._proxied_buffers, _return_out=True)
+            _ = model.trace("encode_dist", x=torch.zeros(1, 1, 65536), _proxied_buffers=self._proxied_buffers, _return_out=True)
         if self.scriptable:
             latent_out = decoder_out
         else:
             latent_out = model.encoder.reparametrize(decoder_out)[:2][0]
         model.trace("decode", z=latent_out, _proxied_buffers=self._proxied_buffers)
+        if is_variational:
+            model.trace("decode_full", z=decoder_out_full, _proxied_buffers=self._proxied_buffers)
+        
 
     def _load_single_audio(self, path: str):
         audio, sr = torchaudio.load(path)
@@ -247,7 +253,9 @@ class BendedRAVE(Interface):
         if isinstance(x, str):
             x = self.load_audio(x)
         if self.scriptable:
-            z = self._model.encode(x, postprocess)
+            z = self._model.encode(x)
+            if postprocess: 
+                z = self.post_process_latent(z)
         else:
             decoder_out = self._model.encode(x)
             z = self._model.encoder.reparametrize(decoder_out)[:2][0]
@@ -257,6 +265,8 @@ class BendedRAVE(Interface):
 
     def decode(self, z: torch.Tensor, out: Optional[str] = None, preprocess=False):
         if self.scriptable:
+            if preprocess: 
+                z = self.pre_process_latent(z)
             audio = self._model.decode(z, preprocess=preprocess)
         else:
             if preprocess: 
@@ -299,7 +309,45 @@ class BendedRAVE(Interface):
                         input_labels=['(signal) Channel %d'%d for d in range(1, self.channels + 1)],
                         output_labels=['(signal) Channel %d'%d for d in range(1, self.model.target_channels+1)]
                     )}
-        if self.model.has_prior:
+        if isinstance(self.model._module, VariationalScriptedRAVE): 
+            methods['encode_full'] = NNBendedMethodAttributes(
+                    in_channels=self.model.n_channels,
+                    in_ratio=methods['encode'].in_ratio,
+                    out_channels=self.model.full_latent_size,
+                    out_ratio=methods['encode'].out_ratio,
+                    input_labels=['(signal) Channel %d'%d for d in range(1, self.channels+1)],
+                    output_labels=[
+                        f'(signal) Latent dimension {i + 1}'
+                        for i in range(self.model.full_latent_size)
+                        ]
+            )
+            methods['decode_full'] = NNBendedMethodAttributes(
+                    in_channels=self.model.full_latent_size,
+                    in_ratio=methods['decode'].out_ratio,
+                    out_channels=self.model.target_channels,
+                    out_ratio=methods['decode'].out_ratio,
+                    input_labels=[
+                        f'(signal) Latent dimension {i + 1}'
+                        for i in range(self.model.full_latent_size)
+                        ],
+                    output_labels=['(signal) Channel %d'%d for d in range(1, self.model.target_channels+1)],
+            )
+            methods['encode_dist'] = NNBendedMethodAttributes(
+                    in_channels=self.model.n_channels,
+                    in_ratio=methods['encode'].in_ratio,
+                    out_channels=self.model.latent_size * 2,
+                    out_ratio=methods['encode'].out_ratio,
+                    input_labels=['(signal) Channel %d'%d for d in range(1, self.model.target_channels+1)],
+                    output_labels=[
+                            f'(signal) Latent mean {i + 1}'
+                            for i in range(self.model.latent_size)
+                        ] + [
+                            f'(signal) Latent std {i + 1}'
+                            for i in range(self.model.latent_size) 
+                        ]
+            )
+            
+        if self.model._has_prior:
             methods['prior'] = NNBendedMethodAttributes(
                 in_channels=1,
                 in_ratio=self.prior.ratio,
@@ -308,55 +356,10 @@ class BendedRAVE(Interface):
             )
         return methods
 
-    # @_export_to_module
-    # def register_nntilde_methods(self, nn_module):
-    #     assert self.scriptable, "Cannot convert a non-scriptable instance of RAVE for nn~. Please use scriptable=True during BendedRAVE initialization"
-    #     nn_module.register_method(
-    #         "encode",
-    #         in_channels=self.channels,
-    #         in_ratio=1,
-    #         out_channels=self.latent_size,
-    #         out_ratio=self.model.ratio_encode,
-    #         input_labels=['(signal) Channel %d'%d for d in range(1, self.model.target_channels+1)],
-    #         output_labels=[
-    #             f'(signal) Latent dimension {i + 1}'
-    #             for i in range(self.latent_size)
-    #         ],
-    #     )
-    #     nn_module.register_method(
-    #         "decode",
-    #         in_channels=self.latent_size,
-    #         in_ratio=self.model.ratio_encode,
-    #         out_channels=self.model.target_channels,
-    #         out_ratio=1,
-    #         input_labels=[
-    #             f'(signal) Latent dimension {i+1}'
-    #             for i in range(self.latent_size)
-    #         ],
-    #         output_labels=['(signal) Channel %d'%d for d in range(1, self.model.target_channels+1)]
-    #     )
-
-    #     nn_module.register_method(
-    #         "forward",
-    #         in_channels=self.channels,
-    #         in_ratio=1,
-    #         out_channels=self.model.target_channels,
-    #         out_ratio=1,
-    #         input_labels=['(signal) Channel %d'%d for d in range(1, self.channels + 1)],
-    #         output_labels=['(signal) Channel %d'%d for d in range(1, self.model.target_channels+1)]
-    #     )
-
-    #     if self.model.has_prior:
-    #         nn_module.register_method(
-    #             "prior",
-    #             in_channels=1,
-    #             in_ratio=self.prior.ratio,
-    #             out_channels = self.latent_size,
-    #             out_ratio=self.prior.ratio
-    #         )
-
     @_export_to_module
     def register_nntilde_attributes(self, nn_module):
+        nn_module.register_attribute('temperature', 1.)
+        nn_module.register_attribute('projection', 'default')
         nn_module.register_attribute("learn_target", False)
         nn_module.register_attribute("reset_target", False)
         nn_module.register_attribute("learn_source", False)
@@ -370,6 +373,7 @@ class BendedRAVE(Interface):
     @_overload_module
     def nntilde(self, *args, **kwargs):
         assert self.scriptable, "BendedRAVE must be initialized with scriptable=True to allow jit scripting"
+        self.clear_cache()
         return self.model.nntilde(*args, **kwargs)
 
 

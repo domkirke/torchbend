@@ -46,7 +46,7 @@ def _template_from_param(param: BendingParameter, template=attribute_template, *
         kwargs['type_expr'] = kwargs.get('type_expr', "int")
         return _resolve_code(template, **kwargs)
     elif param.param_type == get_param_type("bool"):
-        kwargs['dtype'] = kwargs.get('dtype', torch.int8)
+        kwargs['dtype'] = kwargs.get('dtype', torch.uint8)
         kwargs['type_expr'] = kwargs.get('type_expr', "bool")
         return _resolve_code(template, **kwargs)
     else:
@@ -89,23 +89,22 @@ class ScriptedBendedModule(nn.Module):
         self._bended_modules = []
         self._available_methods = []
         self.graph_module = model.graph_module(jit_compatible=True)
+        self._import_attributes(model)
         self._available_methods = list(self.graph_module.graph.keys())
 
-        # for method in model._graphs.keys():
-        #     bended_module = model.bend_module(fn=method)
-        #     graph = model.graph(method)
-        #     self._graphs[method] = graph
-        #     module = model.graph_module(method, module=bended_module, make_jit_compatible=True)
-        #     if self.graph_module is None:
-        #         self.graph_module = module
-        #     setattr(self, f"_{method}", module)
-        #     self._bended_modules.append(getattr(self, f"_{method}"))
-        #     self._available_methods.append(method)
         for attr in dir(model):
             if hasattr(getattr(model, attr), "_export_to_module"):
                 assert attr not in dir(self)
                 setattr(self, attr, getattr(model, attr))
         self._register_imported_methods(model._graphs.keys())
+
+    def _import_attributes(self, model, import_buffers=True):
+        _attrs_to_import = getattr(model, "_attributes_for_tb_scripting")
+        for attr in _attrs_to_import:
+            if getattr(model, attr, None):
+                setattr(self, attr, getattr(model, attr))
+        for name, buff in dict(self.graph_module.named_buffers()).items():
+            setattr(self, name, buff)
     
     def _make_method(self, method_name: str, callback_name: Optional[str] = None):
         callback_name = callback_name or method_name

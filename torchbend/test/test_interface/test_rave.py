@@ -176,6 +176,11 @@ def test_nntilde_export(model_path):
     z = model.encode(x)
     out = model.decode(z)
 
+    out_full = model.encode_full(x)
+    out = model.encode_dist(x)
+    out = model.decode_full(out_full)
+
+
 
 
 

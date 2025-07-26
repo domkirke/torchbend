@@ -14,10 +14,8 @@ class Permute(BendingCallback):
 
     def __init__(self, dim: int, seed: int = -1):
         super().__init__(seed=seed)
-        if isinstance(self.seed, BendingParameter):
-            if self.seed.as_input: 
-                raise ValueError('seed cannot be fed as input in graph. Please set as_input=False')
-        self._set_seed(int(self.get('seed')))
+        if getattr(self.seed, "as_input", False):
+            raise ValueError('seed cannot be fed as input in graph. Please set as_input=False')
         self.register_buffer('dim', torch.tensor(dim).int())
         self._perms = torch.nn.ParameterList()
         self._perm_keys = []
@@ -50,18 +48,9 @@ class Permute(BendingCallback):
             self._perms.append(torch.nn.Parameter(torch.Tensor([]), requires_grad=False))
             self._perm_keys.append(name)
 
-
-    def _set_seed(self, seed: int | None = -1):
-        if seed is None: seed = -1
-        if seed == -1: 
-            self._bypass = True
-        else: 
-            self._bypass = False
-    
     def update(self):
         seed = int(self.get('seed'))
-        self._set_seed(seed)
-        if self._bypass:
+        if seed < 0:
             return
         for i, perm in enumerate(self._perms):
             if perm.numel() != 0:
@@ -94,7 +83,9 @@ class Permute(BendingCallback):
 
     def bend_input(self, x: torch.Tensor, seed: Optional[torch.Tensor] = None, name: Optional[str] = None):
         permute = self.get_permutation(x, name).to(device=x.device)
-        if permute.numel() == 0 or self._bypass: 
+        # return permute.float().unsqueeze(-1).unsqueeze(0).expand_as(x)
+        # return torch.full(x.shape, float(permute.numel()))
+        if self.get("seed") == -1:
             return x
         else:
             return torch.index_select(x, self.dim, permute)
