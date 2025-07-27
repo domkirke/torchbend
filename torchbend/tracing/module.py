@@ -560,15 +560,17 @@ class BendedModule(object):
     #  -- Bending callbacks --
     def _bended_state_dict_from_version(self, version=None):
         version = version or self.version
-        state_dict = copy.copy(self.state_dict(version=version))
+        state_dict = copy.copy(self._param_dict[version])
         for k, v in self._param_dict[self._default_version_key].items():
             if k not in state_dict:
                 state_dict[k] = v
-            clone_parameters(state_dict, [k])
             if k in self._bended_params[version]:
+                clone_parameters(state_dict, [k])
+                param = state_dict[k]
+                if isinstance(param, StateDictReference): param = param.resolve()
                 for bc in self._bended_params[version][k]:
-                    state_dict[k] = bc(state_dict[k], name=k.replace(".", "_"))
-        return state_dict
+                    state_dict[k] = bc(param, name=k.replace(".", "_"))
+        return resolve_state_dict(state_dict)
 
     def _bended_state_dict_from_interp(self):
         dicts = {}
@@ -593,10 +595,11 @@ class BendedModule(object):
     @_import_to_interface
     def bended_state_dict(self, version=None):
         if self._interp_dict is None:
-            return self._bended_state_dict_from_version(version)
+            state_dict = self._bended_state_dict_from_version(version)
         else:
             # assert version is not None, "cannot specify version when interpolation weights are defined. Call remove_interpolation_weights to remove"
-            return self._bended_state_dict_from_interp()
+            state_dict = self._bended_state_dict_from_interp()
+        return state_dict
 
     @property
     @_import_to_interface

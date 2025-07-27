@@ -13,7 +13,7 @@ import torch
 from .. import distributions as dist
 from ..bending.parameter import BendingParameter, get_param_type
 from ..bending.config import BendingConfig
-from ..utils import get_parameter
+from ..utils import get_parameter, StateDictReference
 
 
 ## Utils
@@ -278,7 +278,13 @@ def clone_parameters(module_or_dict: Union[Dict, torch.nn.Module], params: List[
             get_parameter(module_or_dict, p).set_(get_parameter(module_or_dict, p).data.clone())
     elif isinstance(module_or_dict, dict):
         for p in params:
-            module_or_dict[p] = module_or_dict[p].clone()
+            if isinstance(module_or_dict[p], torch.nn.Parameter):
+                module_or_dict[p] = module_or_dict[p].clone()
+            elif isinstance(module_or_dict[p], StateDictReference):
+                module_or_dict[p] = module_or_dict[p].copy()
+            else:
+                raise TypeError('wrong paramter type : %s'%module_or_dict[p])
+
     else:
         raise BendingError('clone_parameters only takes module or dictionaries as inputs, got : %s'%(type(module_or_dict)))
 

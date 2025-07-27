@@ -642,6 +642,9 @@ class StateDictReference(object):
         else:
             self._no_more_module_exception()
 
+    def copy(self): 
+        return self.__copy__()
+
     def _set_module(self, module):
         self._module = weakref.ref(module)
         self._finalize = weakref.finalize(module, lambda m=self: m.finalize())
