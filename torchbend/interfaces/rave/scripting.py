@@ -14,6 +14,7 @@ import rave.resampler
 from rave.prior import model as prior
 
 from torchbend import mark
+from .projections import PCAProjection
 
 
 class DumbPrior(nn.Module):
@@ -31,7 +32,19 @@ def get_noise(z: torch.Tensor, full_latent_size: int):
     ).type_as(z)
 
 
+@torch.fx.wrap
+def project(z, projection_idx, projection_objs):
+    for i, proj in enumerate(projection_objs):
+        if i == projection_idx: 
+            return proj(z)
+    raise ValueError('projection not found : %s'%projection_idx)
 
+@torch.fx.wrap
+def inverse_project(z, projection_idx, projection_objs):
+    for i, proj in enumerate(projection_objs):
+        if i == projection_idx: 
+            return proj.inverse(z)
+    raise ValueError('projection not found : %s'%projection_idx)
 
 def script_rave_model(pretrained, **kwargs):
     cc.use_cached_conv(True)
@@ -154,21 +167,24 @@ class ScriptedRAVE(nn_tilde.Module):
         self.register_buffer("_temperature", torch.tensor(1.))
 
         # projection handling
-        self.register_attribute("projection", "default")
         self._has_projections = hasattr(pretrained, "projections")
         self.projections_names = ['default']
-        self.projections = nn.ParameterList([torch.cat([pretrained.latent_mean[None], pretrained.fidelity[None], pretrained.latent_pca], 0)])
-        self.projections_types = [0]
+        self.projections = nn.ModuleList([PCAProjection.from_params(pretrained.latent_mean, pretrained.fidelity, pretrained.latent_pca, name="default")])
         if self._has_projections:
             for k, v in pretrained.projections.items():
                 if k.startswith('pca'):
-                    self.projections_types.append(0)
-                elif k.startswith('ica'):
-                    self.projections_types.append(1)
-                elif k.startswith('mapper'):
-                    self.projections_types.append(2)
+                    projection = PCAProjection.from_buffer(v, name=k)
+                # elif k.startswith('ica'):
+                #     self.projections_types.append(1)
+        #         elif k.startswith('mapper'):
+        #             self.projections_types.append(2)
+                else: 
+                    continue
                 self.projections_names.append(k)
-                self.projections.append(v)
+                self.projections.append(projection)
+
+        self.register_attribute("projection", "default")
+        self.register_buffer("projection_idx", torch.tensor(0))
 
         receptive_field = getattr(pretrained, "receptive_field", None)
         self.register_attribute("receptive_field", (int(receptive_field[0]), int(receptive_field[1])))
@@ -262,15 +278,18 @@ class ScriptedRAVE(nn_tilde.Module):
             # return -1
         for i, k in enumerate(self.projections_names):
             if projection == k:
-                self.projection = projection,
+                self.projection_idx = torch.tensor(i)
                 return 0
         return -1
         
     def get_projection(self) -> str:
-        return self.projection
+        for i, n in enumerate(self.projection_names):
+            if i == self.projection_idx.item():
+                return n
+        
 
     @torch.jit.export
-    def encode(self, x):
+    def encode(self, x, postprocess: bool = True):
         if self.stereo_mode:
             if self.n_channels == 1:
                 x = x[:, 0].unsqueeze(0)
@@ -295,12 +314,13 @@ class ScriptedRAVE(nn_tilde.Module):
             else:
                 raise RuntimeError()
         z = self.encoder(x)
-        z = self.post_process_latent(z)
+        if postprocess:
+            z = self.post_process_latent(z)
         return z
 
 
     @torch.jit.export
-    def decode(self, z, from_forward: bool = False):
+    def decode(self, z, from_forward: bool = False, preprocess: bool = True):
         if self.is_using_adain and not from_forward:
             self.update_adain()
         n_batch = z.shape[0]
@@ -310,7 +330,9 @@ class ScriptedRAVE(nn_tilde.Module):
         if self.target_channels > self.n_channels:
             z = z.repeat(math.ceil(self.target_channels / self.n_channels), 1, 1)[:self.target_channels]
 
-        z = self.pre_process_latent(z)
+        if preprocess:
+            z = self.pre_process_latent(z)
+
         y = self.decoder(z)
 
         batch_size = z.shape[:-2]
@@ -516,8 +538,7 @@ class VariationalScriptedRAVE(ScriptedRAVE):
     def post_process_latent_full(self, z):
         z = self.encoder.reparametrize(z, temperature=self._temperature)[0]
         if self.use_pca:
-            z = z - self.latent_mean.unsqueeze(-1)
-            z = F.conv1d(z, self.latent_pca.unsqueeze(-1))
+            project(z, self.projection_idx, self.projections)
         return z
 
     def post_process_latent(self, z):
@@ -527,8 +548,7 @@ class VariationalScriptedRAVE(ScriptedRAVE):
 
     def pre_process_latent_full(self, z):
         if self.use_pca:
-            z = F.conv1d(z, self.latent_pca.T.unsqueeze(-1))
-            z = z + self.latent_mean.unsqueeze(-1)
+            inverse_project(z, self.projection_idx, self.projections)
         return z
 
     def pre_process_latent(self, z):

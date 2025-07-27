@@ -1,4 +1,5 @@
 import numpy as np, os, torch, torch.nn as nn, sys, copy, bisect, random
+import weakref
 import re
 import tabulate
 from collections import OrderedDict
@@ -622,5 +623,59 @@ class PArgs():
         return r_obj
 
 
+class StateDictReferenceException(Exception):
+    pass
+
+class StateDictReference(object):
+
+    def __init__(self, module, key, device=None):
+        self._set_module(module)
+        self.key = key
+        self.device = device
+
+    def _no_more_module_exception(self):
+        raise StateDictReferenceException('module has been deleted')
+
+    def __copy__(self): 
+        if self._active: 
+            return StateDictReference(self._module(), self.key)
+        else:
+            self._no_more_module_exception()
+
+    def _set_module(self, module):
+        self._module = weakref.ref(module)
+        self._finalize = weakref.finalize(module, lambda m=self: m.finalize())
+        self._active = True
+
+    def finalize(self): 
+        self._active = True
+
+    def to(self, device):
+        if self._active: 
+            return StateDictReference(self._module(), self.key, device=device)
+        else:
+            self._no_more_module_exception()
+
+    def attach(self, module):
+        self._set_module(module)
+
+    def resolve(self):
+        if self._active: 
+            param = get_parameter(self._module(), self.key)
+        else:
+            self._no_more_module_exception()
+        if self.device is not None: 
+            param = param.to(self.device)
+        return param
 
 
+def resolve_state_dict(state_dict, as_param=False):
+    resolved_state_dict = dict(state_dict)
+    for k, v in resolved_state_dict.items(): 
+        if isinstance(v, StateDictReference):
+            if as_param:
+                resolved_state_dict[k] = v.resolve()
+            else:
+                resolved_state_dict[k] = v.resolve().data
+
+    return resolved_state_dict

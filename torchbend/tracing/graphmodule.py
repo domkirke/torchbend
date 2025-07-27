@@ -98,6 +98,7 @@ class BendedGraphModule(GraphModule):
             for node in graph_nodes:
                 if node.op in ["get_attr", "call_module"]:
                     assert isinstance(node.target, str)
+                    #TODO crashes when an external function argument is "self"; makes an _unnamed node
                     _copy_attr(root, self, node.target)
 
         elif isinstance(root, dict):

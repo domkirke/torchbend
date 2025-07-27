@@ -1,4 +1,5 @@
 from tabulate import tabulate
+import weakref
 import typing
 from collections import OrderedDict
 from functools import partial
@@ -23,7 +24,7 @@ from .tracing import BendingTracer, ActivationProperties, BendedGraph
 from .utils import BendingError, get_model_copy, _get_weight_properties, _get_signature_from_graph, _get_graph_inputs
 from .utils import _import_to_interface, make_graph_jit_compatible, clone_parameters, display_table_for_jupyter, get_kwargs_from_gm
 from .graph import graph_insert_callbacks, graph_get_activations, graph_from_activations, graph_transform_nodes
-from ..utils import checklist, checktuple, get_parameter, _resolve_code
+from ..utils import checklist, checktuple, get_parameter, _resolve_code, resolve_state_dict, StateDictReference
 from ..bending import BendingCallback, CallbackChain, is_bending_callback, BendingConfig, BendingParameter
 
 _DEFAULT_ACT_EXCLUDE_LIST = ['getattr.*', 'cat.*', 'getitem.*', 'copy.*', 'reshape.*']
@@ -125,6 +126,8 @@ class BendedModuleCaptureContext(object):
     def __exit__(self, *args):
         self._module.disable_capture(*(self._callbacks or tuple()))
 
+
+
 class BendedModule(object):
     _default_version_key = "_default"
     _default_bending_key = "_default"
@@ -148,10 +151,11 @@ class BendedModule(object):
         self._config = self._default_bending_key
         self._bconfig_dict = {self._default_bending_key: BendingConfig()}
         for k, v in self._module.state_dict().items():
-            if isinstance(v, nn.Parameter):
-                self._param_dict[self._default_version_key][k] = v.data
-            else:
-                self._param_dict[self._default_version_key][k] = v
+            self._param_dict[self._default_bending_key][k] = StateDictReference(self._module, k)
+            # if isinstance(v, nn.Parameter):
+            #     self._param_dict[self._default_version_key][k] = v.data
+            # else:
+            #     self._param_dict[self._default_version_key][k] = v
     def _setmodule_(self, module) -> NoReturn:
         raise BendingError('Cannot set module of BendedModule after initaliazation.')
         #TODO : allow? why? good idea?
@@ -319,10 +323,11 @@ class BendedModule(object):
     def state_dict(self, version=None, with_versions=False):
         if with_versions:
             assert version is None, "either version or with_versions must be true."
-            return dict(self._param_dict)
+            state_dict = {k: resolve_state_dict(v, as_param=False) for k, v in self._param_dict.items()}
         else:
             version = version or self._version
-            return self._param_dict[version]
+            state_dict = resolve_state_dict(self._param_dict[version], as_param=False)
+        return state_dict
 
     # -- activations --
 

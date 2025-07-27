@@ -99,7 +99,7 @@ class ScriptedBendedModule(nn.Module):
         self._register_imported_methods(model._graphs.keys())
 
     def _import_attributes(self, model, import_buffers=True):
-        _attrs_to_import = getattr(model, "_attributes_for_tb_scripting")
+        _attrs_to_import = getattr(model, "_attributes_for_tb_scripting", [])
         for attr in _attrs_to_import:
             if getattr(model, attr, None):
                 setattr(self, attr, getattr(model, attr))

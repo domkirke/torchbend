@@ -108,9 +108,13 @@ class Mask(BendingCallback):
                 raise TypeError('wrong type for prob : %s'%type(prob))
 
     def update(self):
+        if torch.jit.is_scripting(): 
+            mask_shapes = self._mask_shapes
+        else:
+            mask_shapes = self._mask_shapes.value
         for i, v in enumerate(self._masks):
             with torch.no_grad():
-                for j, s in enumerate(self._mask_shapes.value):
+                for j, s in enumerate(mask_shapes):
                     if i == j:
                         v.set_(self._init_mask(s))
 

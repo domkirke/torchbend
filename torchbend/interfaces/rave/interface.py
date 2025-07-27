@@ -16,7 +16,9 @@ from .scripting import pre_process_fn, post_process_fn, script_rave_model, Varia
 import cached_conv as cc
 import gin
 
+
 _VALID_AUDIO_EXT = ['.wav', '.aif', '.aiff', '.mp3']
+
 
 class BendingRAVEException(Exception):
     pass
@@ -32,7 +34,7 @@ class BendedRAVEImportException(Exception):
         if self.reason is not None:
             return s+f", reason={self.msg})"
         else:
-            return s+"p)"
+            return s+")"
 
 def _rave_get_model_paths_from_ckpt(path):
     ckpt_path = path
@@ -100,7 +102,7 @@ class BendedRAVE(Interface):
     @property
     def _proxied_buffers(self):
         if self.scriptable:
-            return ['.*pad', '.*cache', 'latent_mean', 'latent_pca', 'decode_params', 'encode_params', 'forward_params']
+            return ['.*pad', '.*cache', 'latent_mean', 'latent_pca', 'decode_params', 'encode_params', 'forward_params', 'projection_idx']
         else: 
             return ['.*pad', '.*cache', 'latent_mean', 'latent_pca']
 
@@ -265,8 +267,6 @@ class BendedRAVE(Interface):
 
     def decode(self, z: torch.Tensor, out: Optional[str] = None, preprocess=False):
         if self.scriptable:
-            if preprocess: 
-                z = self.pre_process_latent(z)
             audio = self._model.decode(z, preprocess=preprocess)
         else:
             if preprocess: 
