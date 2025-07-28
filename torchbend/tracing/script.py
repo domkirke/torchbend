@@ -101,10 +101,16 @@ class ScriptedBendedModule(nn.Module):
     def _import_attributes(self, model, import_buffers=True):
         _attrs_to_import = getattr(model, "_attributes_for_tb_scripting", [])
         for attr in _attrs_to_import:
-            if getattr(model, attr, None):
-                setattr(self, attr, getattr(model, attr))
-        for name, buff in dict(self.graph_module.named_buffers()).items():
-            setattr(self, name, buff)
+            current_attr = getattr(self.graph_module, attr, None)
+            if current_attr is not None:
+                setattr(self.graph_module, attr, current_attr)
+            else: 
+                current_attr = getattr(model, attr, None)
+                if current_attr is not None:
+                    setattr(self.graph_module, attr, current_attr)
+
+        # for name, buff in dict(model.named_buffers()).items():
+        #     setattr(self.graph_module, name, buff)
     
     def _make_method(self, method_name: str, callback_name: Optional[str] = None):
         callback_name = callback_name or method_name

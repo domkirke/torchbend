@@ -1,11 +1,12 @@
 import os, sys, math
 import torch, torch.nn as nn
+from types import MethodType
 
 import cached_conv as cc
 import nn_tilde
 import numpy as np
 import torch.nn.functional as F
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Callable
 
 import rave
 import rave.blocks
@@ -14,13 +15,16 @@ import rave.resampler
 from rave.prior import model as prior
 
 from torchbend import mark
-from .projections import PCAProjection
+from . import projections
+from .projections import PCAProjection, ICAProjection, MapperProjection, RAVEProjection
+
+from torchbend.utils import _import_defs_from_tmpfile, _replace_placeholders
+
 
 
 class DumbPrior(nn.Module):
     def forward(self, x: torch.Tensor):
         return x
-
 
         
 @torch.fx.wrap
@@ -31,20 +35,6 @@ def get_noise(z: torch.Tensor, full_latent_size: int):
             z.shape[-1],
     ).type_as(z)
 
-
-@torch.fx.wrap
-def project(z, projection_idx, projection_objs):
-    for i, proj in enumerate(projection_objs):
-        if i == projection_idx: 
-            return proj(z)
-    raise ValueError('projection not found : %s'%projection_idx)
-
-@torch.fx.wrap
-def inverse_project(z, projection_idx, projection_objs):
-    for i, proj in enumerate(projection_objs):
-        if i == projection_idx: 
-            return proj.inverse(z)
-    raise ValueError('projection not found : %s'%projection_idx)
 
 def script_rave_model(pretrained, **kwargs):
     cc.use_cached_conv(True)
@@ -64,7 +54,6 @@ def script_rave_model(pretrained, **kwargs):
         if hasattr(m, "weight_g"):
             nn.utils.remove_weight_norm(m)
     return scripted_model
-
 
 
 def post_process_variational(self, z):
@@ -119,11 +108,70 @@ post_process_fn = {rave.blocks.VariationalEncoder: post_process_variational,
                   rave.blocks.SphericalEncoder: post_process_sph
                  }            
 
+projection_call_pattern = "\tif {{ITERATION}} == projection_idx: return self.projection_list[{{ITERATION}}].forward(z, latent_size = latent_size)\n"
 
+inv_projection_call_pattern = "\tif {{ITERATION}} == projection_idx: return self.projection_list[{{ITERATION}}].inverse(z, latent_size = latent_size, temperature=temperature)\n"
+
+project_pattern = """
+import torch
+
+@torch.jit.export
+def project(self, z, projection_idx: int, latent_size: int | None = None):
+{{PROJECT_CALL:LOOP}}
+\traise ValueError("projection not valid: %s"%projection_idx)
+
+@torch.jit.export
+def project_inverse(self, z, projection_idx: int, latent_size: int | None = None, temperature: float | None = None):
+{{INVERSE_CALL:LOOP}}
+\traise ValueError("projection not valid: %s"%projection_idx)
+"""
+
+
+
+
+class ProjectionRouter(nn.Module):
+    def __init__(self, projection_list):
+        super().__init__()
+        self.projection_list = projection_list
+        self._init_callbacks()
+
+    def __len__(self):
+        return len(self.projection_list)
+
+    def __getitem__(self, idx): 
+        return self.projection_list[idx]
+
+    def _init_callbacks(self):
+        codes = _replace_placeholders(project_pattern,
+                                      project_call=projection_call_pattern, _project_call_loop = len(self.projection_list), 
+                                      inverse_call=inv_projection_call_pattern, _inverse_call_loop = len(self.projection_list),)
+
+        funcs = _import_defs_from_tmpfile(codes, gl=globals(), lo=locals())
+        # globals()['project'] = funcs['project']
+        # globals()['project_inverse'] = funcs['project_inverse']
+        project = MethodType(funcs['project'], self)
+        project_inverse = MethodType(funcs['project_inverse'], self)
+        setattr(self, 'project', project)
+        setattr(self, 'project_inverse', project_inverse)
+
+    def append(self, projection: RAVEProjection):
+        self.projection_list.append(projection)
+        self._init_callbacks()
+
+    @torch.jit.export
+    def forward(self, z, projection_idx: int, latent_size: int | None = None):
+        return self.project(z, projection_idx, latent_size=latent_size)
+        
+    @torch.jit.export
+    def inverse(self, z, projection_idx: int, latent_size: int | None = None, temperature: float | None = None):
+        return self.project_inverse(z, projection_idx, latent_size=latent_size, temperature=temperature)
+
+
+torch.fx._symbolic_trace._wrapped_methods_to_patch.extend([(ProjectionRouter, "forward"), (ProjectionRouter, "inverse")])
 
 class ScriptedRAVE(nn_tilde.Module):
 
-    _attributes_for_tb_scripting = ['projections_names', 'projections_types']
+    _attributes_for_tb_scripting = ['projections_names', 'projection_idx']
 
     def __init__(self,
                  pretrained: rave.RAVE,
@@ -169,25 +217,26 @@ class ScriptedRAVE(nn_tilde.Module):
         # projection handling
         self._has_projections = hasattr(pretrained, "projections")
         self.projections_names = ['default']
-        self.projections = nn.ModuleList([PCAProjection.from_params(pretrained.latent_mean, pretrained.fidelity, pretrained.latent_pca, name="default")])
+        projections = nn.ModuleList([PCAProjection.from_params(pretrained.latent_mean, pretrained.fidelity, pretrained.latent_pca, name="default")])
         if self._has_projections:
             for k, v in pretrained.projections.items():
                 if k.startswith('pca'):
                     projection = PCAProjection.from_buffer(v, name=k)
-                # elif k.startswith('ica'):
-                #     self.projections_types.append(1)
+                elif k.startswith('ica'):
+                    projection = ICAProjection.from_buffer(v, name=k)
         #         elif k.startswith('mapper'):
         #             self.projections_types.append(2)
                 else: 
                     continue
                 self.projections_names.append(k)
-                self.projections.append(projection)
+                projections.append(projection)
 
         self.register_attribute("projection", "default")
-        self.register_buffer("projection_idx", torch.tensor(0))
+        self.projections = ProjectionRouter(projections)
 
         receptive_field = getattr(pretrained, "receptive_field", None)
         self.register_attribute("receptive_field", (int(receptive_field[0]), int(receptive_field[1])))
+        self.projection_idx = nn.Parameter(torch.tensor(0.), requires_grad=False)
         self.register_buffer("latent_pca", pretrained.latent_pca)
         self.register_buffer("latent_mean", pretrained.latent_mean)
         self.register_buffer("fidelity", pretrained.fidelity)
@@ -243,6 +292,10 @@ class ScriptedRAVE(nn_tilde.Module):
     def pre_process_latent(self, z):
         raise NotImplementedError
 
+    def load_projection(self, projection_name, projection_file):
+        self.projections_names.append(projection_name)
+        self.projections.append(MapperProjection(projection_file, name=projection_name))
+
     def init_cache(self, x):
         self.forward(x)
         if self.pqmf is not None:
@@ -278,14 +331,17 @@ class ScriptedRAVE(nn_tilde.Module):
             # return -1
         for i, k in enumerate(self.projections_names):
             if projection == k:
-                self.projection_idx = torch.tensor(i)
+                self.projection_idx.set_(torch.tensor(float(i)))
+
                 return 0
         return -1
         
+    @torch.jit.export
     def get_projection(self) -> str:
-        for i, n in enumerate(self.projection_names):
+        for i, n in enumerate(self.projections_names):
             if i == self.projection_idx.item():
                 return n
+        raise TypeError("projection not found")
         
 
     @torch.jit.export
@@ -414,7 +470,6 @@ class ScriptedRAVE(nn_tilde.Module):
     def set_receptive_field(self, dimred: str) -> int:
         return -1
 
-
     @torch.jit.export
     def prior(self, temp: torch.Tensor):
         if self._has_prior:
@@ -538,24 +593,21 @@ class VariationalScriptedRAVE(ScriptedRAVE):
     def post_process_latent_full(self, z):
         z = self.encoder.reparametrize(z, temperature=self._temperature)[0]
         if self.use_pca:
-            project(z, self.projection_idx, self.projections)
+            z = self.projections.forward(z, self.projection_idx.int().item())
         return z
 
     def post_process_latent(self, z):
-        z = self.post_process_latent_full(z)
-        z = z[:, :self.latent_size]
+        z = self.encoder.reparametrize(z, temperature=self._temperature)[0]
+        z = self.projections.forward(z, self.projection_idx.int().item(), latent_size=self.latent_size)
         return z
 
     def pre_process_latent_full(self, z):
         if self.use_pca:
-            inverse_project(z, self.projection_idx, self.projections)
+            z = self.projections.inverse(z, self.projection_idx.int().item())
         return z
 
     def pre_process_latent(self, z):
-        if z.shape[1] < self.full_latent_size:
-            noise = get_noise(z, self.full_latent_size)
-            z = torch.cat([z, noise * self._temperature], 1)
-        z = self.pre_process_latent_full(z) 
+        z = self.projections.inverse(z, self.projection_idx.int().item(), latent_size=self.latent_size, temperature=self._temperature)
         return z
 
 

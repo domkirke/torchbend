@@ -426,12 +426,12 @@ class BendingTracer(torch.fx.Tracer):
         if isinstance(a, torch.nn.Parameter):
             for n, p in self.root.named_parameters():
                 if a is p:
-                    return self.create_node("get_attr", n, (), {})
+                    return self.create_node("get_attr", n, (), {}, concrete_value=p)
             raise NameError("parameter is not a member of this module")
         elif isinstance(a, torch.Tensor):
             for n_, p_ in self.root.named_buffers():
                 if a is p_:
-                    return self.create_node("get_attr", n_, (), {})
+                    return self.create_node("get_attr", n_, (), {}, concrete_value=p_)
         elif isinstance(a, torch.nn.Module):
             for n_, p_ in self.root.named_modules():
                 if a is p_:
@@ -510,12 +510,12 @@ class BendingTracer(torch.fx.Tracer):
             if isinstance(n, (tuple, list)):
                 new_args[i] = self._replace_args(n)
             elif isinstance(n, (Proxy, Node)):
-                if isinstance(n, ShapeAttribute):
-                    print('coucuo')
+                # if isinstance(n, ShapeAttribute):
+                #     print('coucuo')
                 if n.name in self._values:
                     new_args[i] = self._values[n.name]
                 elif hasattr(n, "concrete_value"):
-                    if n.concrete_value:
+                    if n.concrete_value is not None:
                         new_args[i] = n.concrete_value
             elif isinstance(n, slice):
                 new_args[i] = slice(
@@ -603,14 +603,17 @@ class BendingTracer(torch.fx.Tracer):
         with self.create_context(TracingState.RUNNING):
             args = self._replace_args(args)
             return target(*args, **kwargs)
-    
+
     def run_node(self, n):
         if n.op == "call_module":
             return self.call_module_run(n)
         elif n.op == "call_function":
             return self.call_function_run(n)
+        # elif n.op == "call_method":
+        #     return self.call_method_run(n)
         else:
-            return getattr(self, n.op)(n)
+            with self.create_context(TracingState.RUNNING):
+                return getattr(self, n.op)(n)
 
     def output(self, n: Node) -> Any:
         return self._replace_args(n.args)[0]
@@ -679,6 +682,9 @@ class BendingTracer(torch.fx.Tracer):
                 out = node.concrete_value
             else: 
                 out = self.run_node(node)
+            
+        if isinstance(out, BendingProxy):
+            raise TraceError('got abnormal output when executing graph with node : %s (op=%s, target=%s, args=%s, kwargs=%s)'%(node, node.op, node.target, node.args, node.kwargs))
 
         self._values[node.name] = out
         shape = self._get_shape(out)

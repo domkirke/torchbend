@@ -1,7 +1,9 @@
 import torch
+from collections import OrderedDict
+from functools import wraps
 from dataclasses import dataclass
 import re
-import math
+from ..utils import _replace_placeholders, _import_defs_from_tmpfile
 import inspect
 import math
 from typing import List, Optional, Any, Tuple
@@ -27,6 +29,26 @@ def {{METHOD_NAME}}{{SIGNATURE}}:
 {{SR_CONVERSION}}
     return self.graph_module.{{CALLBACK_NAME}}({{INS_PARSED}})
 """
+
+setter_wrapper_pattern = """
+@torch.jit.export
+def {{FUNC_NAME}}(self, {{SIGNATURE}}:
+    return self.graph_module.{{FUNC_NAME}}({{CALL_ARGS}})
+"""
+
+# def wrap_getter_or_setter(module, func):
+#     # def _closure(self, *args, **kwargs):
+#     #     return func(self.graph_module, *args, **kwargs) 
+
+#     return MethodType(_closure, module)
+
+def _get_wrapped_setter_and_getter(module, func_name, func):
+    signature = str(inspect.signature(func))[1:]
+    call_args = ", ".join([str(i) for i in OrderedDict(inspect.signature(func).parameters).keys()])
+    codes = _replace_placeholders(setter_wrapper_pattern,func_name=func_name, signature=signature, call_args=call_args)
+    funcs = _import_defs_from_tmpfile(codes, gl=globals(), lo=locals())
+    return MethodType(funcs[f"{func_name}"], module)
+
 
 class ListAttribute(torch.jit.Attribute):
 
@@ -255,11 +277,20 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
             self.register_method(method, **attrs.as_dict())
 
     def _search_for_getter_and_setters(self, module):
+
+
         _candidates = {}
         for attr_name in dir(module):
-            if not (attr_name.startswith("set_") or attr_name.startswith("get_")): continue
-            if not isinstance(getattr(module, attr_name), MethodType): continue
-            _candidates[attr_name] = getattr(module, attr_name)
+            if (attr_name.startswith("set_") or attr_name.startswith("get_")): 
+                target_attr = "_".join(attr_name.split('_')[1:])
+                if target_attr not in module._attributes: 
+                    continue
+            else:
+                continue
+            func = getattr(module, attr_name)
+            if not isinstance(func, MethodType): continue
+            # _candidates[attr_name] = _get_wrapped_setter_and_getter(self, module, attr_name, func)
+            _candidates[attr_name] = func
         self._get_set_candidates = _candidates
 
     def _reset_get_set_candidates(self):
@@ -313,10 +344,16 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         if not hasattr(self, getter_name):
             if getter_name not in self._get_set_candidates:
                 raise NNBendedModuleException(f"getter for attribute {attribute_name} not found.")
-            setattr(self, getter_name, self._get_set_candidates[getter_name])
+            getter = MethodType(self._get_set_candidates[getter_name].__func__, self.graph_module)
+            setattr(self.graph_module, getter_name, getter)
+            setattr(self, getter_name, _get_wrapped_setter_and_getter(self, getter_name, getter))
         if not hasattr(self, setter_name):
             if setter_name not in self._get_set_candidates:
                 raise NNBendedModuleException(f"setter for attribute {attribute_name} not found.")
-            setattr(self, setter_name, self._get_set_candidates[setter_name])
+            setter = MethodType(self._get_set_candidates[setter_name].__func__, self.graph_module)
+            setattr(self.graph_module, setter_name, setter)
+            setattr(self, setter_name, _get_wrapped_setter_and_getter(self, setter_name, setter))
         nn_tilde.Module.register_attribute(self, attribute_name, values)
+        setattr(self.graph_module, attribute_name, getattr(self, attribute_name))
+
 
