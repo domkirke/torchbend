@@ -15,28 +15,33 @@ class BendedWrapperModule(nn.Module):
                 self.__setattr__(k, v)
 
 def make_wrapper_class_dict(obj):
-    class_dict = dict(obj.__dict__)
+    class_dict = {}
+    imported_attrs = filter(lambda x: not x.startswith('__'), dir(obj))
+    for k in imported_attrs:
+        class_dict[k] = getattr(obj, k)
     for k, v in BendedWrapperModule.__dict__.items():
-        if k in class_dict:
+        if k in imported_attrs:
             print('[Warning] method %s is being overrided'%k)
         class_dict[k] = v
     if '__dict__' in class_dict:
         del class_dict['__dict__']
     return class_dict
 
-def make_wrapper_class_for_obj(obj):
+def make_wrapper_class_for_obj(obj, wrapped_methods):
     name = obj.__qualname__ + "_wrapper"
     class_dict = make_wrapper_class_dict(obj)
+    for w in wrapped_methods: 
+        class_dict[w] = getattr(obj, w)
     return type(name, (BendedWrapperModule,), class_dict)
 
-def make_wrapper_for_obj(obj):
-    return make_wrapper_class_for_obj(type(obj))(obj)
+def make_wrapper_for_obj(obj, wrapped_methods):
+    return make_wrapper_class_for_obj(type(obj), wrapped_methods)(obj)
 
 
 class BendedWrapper(BendedModule):
     __copy_attrs__ = BendedModule.__copy_attrs__ + ['__original_obj__']
     def __init__(self, module, _wrapped_methods=[]):
-        super().__init__(make_wrapper_for_obj(module), _wrapped_methods=_wrapped_methods)
+        super().__init__(make_wrapper_for_obj(module, _wrapped_methods), _wrapped_methods=_wrapped_methods)
         self.__original_obj__ = module
         # no __call__ callback for BendingWrapper
 
