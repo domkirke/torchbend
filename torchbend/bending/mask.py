@@ -121,11 +121,11 @@ class Mask(BendingCallback):
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: Optional[torch.Tensor] = None) -> None:
         if cache is not None:
             with torch.no_grad():
-                param.set_(self.get_mask_from_id(idx) * cache)
+                param.set_(self.get_mask_from_id(idx).to(param.device) * cache)
 
     def bend_input(self, x: torch.Tensor, prob: torch.Tensor | None = None, seed: torch.Tensor | None = None, name: str | None = None):
         mask = self.get_mask(x, prob, name)
-        return x * mask
+        return x * mask.to(x.device)
         
                   
 class OrderedMask(Mask): 

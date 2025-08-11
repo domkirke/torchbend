@@ -18,12 +18,12 @@ attribute_setter_pattern = """
 \t{{ATTRIBUTE[]}} = BendingParamType._to_tensor(self.{{ATTRIBUTE[]}}, {{ATTRIBUTE_TYPE[]}})"""
 
 controllable_setter_pattern = """
-\t{{CONTROLLABLE_NAME[]}} = self.get("{{ARG_NAME[]}}")
+\t{{CONTROLLABLE_NAME[]}} = self.get("{{ARG_NAME[]}}").to(x.device)
 """
 
 input_controllable_setter_pattern = """
 \tif {{INPUT_CONTROLLABLE_NAME[]}} is None:
-\t\t{{INPUT_CONTROLLABLE_NAME[]}} = self.get("{{INPUT_ARG_NAME[]}}")
+\t\t{{INPUT_CONTROLLABLE_NAME[]}} = self.get("{{INPUT_ARG_NAME[]}}").to(x.device)
 \telse:
 \t\t{{INPUT_CONTROLLABLE_NAME[]}} = self.parse_controllable({{INPUT_CONTROLLABLE_NAME[]}}, {{INPUT_CONTROLLABLE_TYPE[]}})
 """

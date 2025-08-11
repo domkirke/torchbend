@@ -127,6 +127,11 @@ class BendedModuleCaptureContext(object):
         self._module.disable_capture(*(self._callbacks or tuple()))
 
 
+# decorator to indicate that function has to be wrapped
+def bend(fn):
+    fn.__bended__ = True
+    return fn
+
 
 class BendedModule(object):
     _default_version_key = "_default"
@@ -156,6 +161,11 @@ class BendedModule(object):
             #     self._param_dict[self._default_version_key][k] = v.data
             # else:
             #     self._param_dict[self._default_version_key][k] = v
+        for attr in dir(module):
+            attr_obj = getattr(module, attr)
+            if callable(attr_obj) and hasattr(attr_obj, "__bended__") and attr not in self._wrapped_methods:
+                self._wrapped_methods.append(attr)
+
     def _setmodule_(self, module) -> NoReturn:
         raise BendingError('Cannot set module of BendedModule after initaliazation.')
         #TODO : allow? why? good idea?
@@ -264,7 +274,10 @@ class BendedModule(object):
         valid_parameters = {}
         if len(flt) > 0:
             for f in flt:
-                valid_parameters.update(dict(filter(lambda x, r=f: re.match(r, x[0]) is not None, parameters.items())))
+                if f.startswith('?'):
+                    valid_parameters.update(dict(filter(lambda x, r=f[1:]: re.match(r, x[0]) is not None, parameters.items())))
+                else:
+                    valid_parameters.update(dict(filter(lambda x, r=f: x[0] == r, parameters.items())))
         else:
             valid_parameters = parameters
         if exclude is not None:

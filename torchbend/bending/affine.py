@@ -34,12 +34,12 @@ class Bias(BendingCallback):
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: Optional[torch.Tensor] = None):
         assert cache is not None
-        param.set_(cache + self.get('bias'))
+        param.set_(cache + self.get('bias').to(param.device))
 
     def bend_input(self, x: torch.Tensor, bias: torch.Tensor, name: Optional[str] = None):
         if bias is not None: 
             if self._bias_as_input and self._for_nntilde: bias = _parse_affine_control(x, bias)
-        return x + bias
+        return x + bias.to(x.device)
 
 
 class Scale(BendingCallback):
@@ -57,12 +57,12 @@ class Scale(BendingCallback):
     
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: Optional[torch.Tensor] = None):
         assert cache is not None
-        param.set_(cache * self.get('scale'))
+        param.set_(cache * self.get('scale').to(param.device))
 
     def bend_input(self, x: torch.Tensor, scale: torch.Tensor, name: str | None = None):
         if scale is not None:
             if self._scale_as_input and self._for_nntilde: scale = _parse_affine_control(x, scale)
-        return x * scale
+        return x * scale.to(x.device)
         
 
 class Affine(BendingCallback):
@@ -86,14 +86,14 @@ class Affine(BendingCallback):
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: Optional[torch.Tensor] = None):
         if cache is not None: 
-            param.set_(cache * self.get('scale') + self.get('bias'))
+            param.set_(cache * self.get('scale').to(param.device) + self.get('bias').to(param.device))
 
     def bend_input(self, x: torch.Tensor, scale: torch.Tensor, bias: torch.Tensor, name: Optional[str] = None):
         if scale is not None:
             if self._scale_as_input and self._for_nntilde: scale = _parse_affine_control(x, scale)
         if bias is not None: 
             if self._bias_as_input and self._for_nntilde: bias = _parse_affine_control(x, bias)
-        return x * scale + bias
+        return x * scale.to(x.device) + bias.to(x.device)
 
         
 __all__ = ['Scale', 'Affine', 'Bias']

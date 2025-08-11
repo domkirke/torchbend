@@ -99,9 +99,9 @@ class Normal(BendingCallback):
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor) -> None:
         if self.op == "mul":
-            param.set_(self.get_noise_from_id(idx) * cache * self.get('std'))
+            param.set_(self.get_noise_from_id(idx) * cache * self.get('std').to(param))
         else: 
-            param.set_(self.get_noise_from_id(idx) * self.get('std') + cache)
+            param.set_(self.get_noise_from_id(idx) * self.get('std').to(param) + cache)
 
     def bend_input(self, x: torch.Tensor, std: torch.Tensor | None = None, name: str | None = None):
         if std is None: std = self.get('std')

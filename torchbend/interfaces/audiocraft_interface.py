@@ -1,9 +1,9 @@
 import os
+from pathlib import Path
 import torchaudio
 import torch, audiocraft, os, random
-from .base import Interface
+from .base import Interface, _export_to_module
 from audiocraft.models import MusicGen, AudioGen
-from ..tracing import BendedWrapper
 from .utils import get_random_hash
 
 _IMPORT_AS_INTERFACE_ = True
@@ -11,6 +11,7 @@ _IMPORT_AS_INTERFACE_ = True
 class BendedMusicGen(Interface):
 
     _imported_callbacks_ = ['generate', 
+                            'generate_unconditional',
                             'generate_continuation', 
                             'generate_with_chroma'] 
 
@@ -23,6 +24,14 @@ class BendedMusicGen(Interface):
         # init interfaces
         super(BendedMusicGen, self).__init__(model)
 
+    def _save_file(self, audio, out): 
+        out = Path(out).resolve()
+        if not out.parent.exists(): 
+            os.makedirs(out.parent)
+        for i, a in enumerate(audio):
+            filename = out.parent / f"{out.stem}{out.suffix}" if audio.shape[0] == 1 else out.parent / f"{out.stem}_{i}{out.suffix}"
+            torchaudio.save(str(filename), a.detach().cpu(), sample_rate=self.sample_rate)
+
     def frame_rate(self) -> float: 
         return self._model.frame_rate
 
@@ -31,6 +40,13 @@ class BendedMusicGen(Interface):
     
     def audio_channels(self) -> int: 
         return self._model.audio_channels
+
+    @_export_to_module
+    def generate_unconditional(self, *args, out=None, **kwargs):
+        audio_out = self._model.generate_unconditional(*args, **kwargs)
+        if out is not None:
+            self._save_file(audio_out, out)
+        return audio_out
 
     def get_pretrained(self, *args, **kwargs):
         model = MusicGen.get_pretrained(*args, **kwargs)
@@ -68,7 +84,7 @@ class BendedMusicGen(Interface):
 
 class BendedAudioGen(BendedMusicGen):
 
-    _imported_callbacks_ = ['generate', 'generate_continuation']
+    _imported_callbacks_ = ['generate', 'generate_unconditional', 'generate_continuation']
 
     def get_pretrained(self, *args, **kwargs):
         model = AudioGen.get_pretrained(*args, **kwargs)

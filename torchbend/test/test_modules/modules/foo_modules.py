@@ -2,6 +2,7 @@ import os
 import typing
 import torch, torch.nn as nn
 import gin
+from torchbend import bend
 from ..module_config import ModuleTestConfig
 
 
@@ -24,6 +25,7 @@ class Foo(nn.Module):
         return out
 
     # @torch.jit.export
+    @bend
     def forward_dist(self, x):
         out = self.pre_conv(x)
         for i, mod in enumerate(self.module_list):
@@ -42,6 +44,7 @@ class ShapedFoo(Foo):
         self.param = nn.Parameter(torch.tensor(1.))
 
     @torch.jit.export 
+    @bend
     def return_shape(self, x):
         out = self.pre_conv(x)
         for i, mod in enumerate(self.module_list):
@@ -50,6 +53,7 @@ class ShapedFoo(Foo):
         return out
 
     @torch.jit.export
+    @bend
     def loop_on_shape(self, x):
         out = self.pre_conv(x)
         for i, mod in enumerate(self.module_list):
@@ -77,6 +81,7 @@ class WrappedFoo(object):
         out2 = self._foo2(x)
         return out1, out2
 
+    @bend
     def forward_dist(self, x):
         x = self.preprocess(x)
         out1 = self._foo1.forward_dist(x)
@@ -90,6 +95,7 @@ class TorchFuncsFoo(nn.Module):
         super().__init__()
         self.param1 = nn.Parameter(torch.randn(10))
 
+    @bend
     def test_to(self, x: torch.Tensor):
         param1 = self.param1.to(x)
         param2 = self.param1.to(x.device, x.dtype)
@@ -109,14 +115,14 @@ modules_to_test = [
                      'forward': (
                          tuple(),
                          {"x": torch.randn(4, 1, 128)},
-                         [".*weight"],
+                         ["?.*weight"],
                          ["module_list_1"],
                          True
                      ), 
                      'forward_dist': (
                          tuple(),
                          {"x": torch.randn(4, 1, 128)},
-                         [".*weight"],
+                         ["?.*weight"],
                          ["module_list_1"],
                          True
                      )
@@ -128,14 +134,14 @@ modules_to_test = [
                      'forward': (
                          tuple(),
                          {"x": torch.randn(1, 1, 128)},
-                         [".*weight"],
+                         ["?.*weight"],
                          ["_foo1_module_list_1", "_foo2_module_list_1"],
                          True
                      ), 
                      'forward_dist': (
                          tuple(),
                          {"x": torch.randn(1, 1, 128)},
-                         [".*weight"],
+                         ["?.*weight"],
                          ["_foo1_module_list_1", "_foo2_module_list_1"],
                          True
                      )
@@ -147,21 +153,21 @@ modules_to_test = [
                      'forward': (
                          tuple(),
                          {"x": torch.randn(1, 1, 128)},
-                         [".*weight"],
+                         ["?.*weight"],
                          ["module_list_1"],
                          True
                      ),
                      'return_shape': (
                          tuple(),
                          {"x": torch.randn(1, 1, 128)},
-                         [".*weight", "param"],
+                         ["?.*weight", "param"],
                          ["module_list_1"],
                          True
                      ), 
                      'loop_on_shape': (
                          tuple(),
                          {"x": torch.randn(1, 1, 128)},
-                         [".*weight", "param"],
+                         ["?.*weight", "param"],
                          ["module_list_1"],
                          True
                     )

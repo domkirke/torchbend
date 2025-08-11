@@ -52,15 +52,16 @@ class Interface(object):
 
     def _import_model(self, model):
         if isinstance(model, torch.nn.Module):
-            return BendedModule(model)
+            return BendedModule(model, _wrapped_methods = self._imported_callbacks_)
         else: 
-            return BendedWrapper(model)
+            return BendedWrapper(model, _wrapped_methods = self._imported_callbacks_)
 
     def _import_callbacks_(self):
         for cb in self._imported_callbacks_:
             if cb not in dir(self._model):
                 assert "method %s not present in base class %s"%(cb, type(self._model))
-            setattr(self, cb, wrap_model_method(self._model, cb))
+            if not hasattr(self, cb):
+                setattr(self, cb, wrap_model_method(self._model, cb))
 
     def _retrieve_exported_methods(self):
         exported_methods = OrderedDict()
@@ -107,7 +108,7 @@ class Interface(object):
         # export methods to module
         for attr_name, attr in exported_methods.items():
             if hasattr(model, attr_name):
-                print('[Warning]: tried to export method %s to original module, but conflicting with existing attribute. Skipping'%attr_name)
+                # print('[Warning]: tried to export method %s to original module, but conflicting with existing attribute. Skipping'%attr_name)
                 continue
             if attr_name in self.__dict__:
                 setattr(model, attr_name, self.__dict__[attr_name])

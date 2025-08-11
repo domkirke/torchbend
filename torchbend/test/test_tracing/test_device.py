@@ -22,7 +22,7 @@ def to(args, kwargs, device):
     return tuple(args), kwargs
 
 @pytest.mark.parametrize("module_config", modules_to_test)
-@pytest.mark.parametrize("device", [torch.device('cpu'), torch.device('mps')])
+@pytest.mark.parametrize("device", devices)
 def test_to(module_config, device):
     bended = module_config.get_bended_module()
     for m in module_config.get_methods():
