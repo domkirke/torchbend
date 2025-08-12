@@ -15,3 +15,4 @@ nn-tilde>=1.6
 plotly
 flask
 flask-moment
+requests

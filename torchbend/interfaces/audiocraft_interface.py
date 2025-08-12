@@ -8,7 +8,7 @@ from .utils import get_random_hash
 
 _IMPORT_AS_INTERFACE_ = True
 
-class BendedMusicGen(Interface):
+class BendedAudiocraftGenenerator(Interface):
 
     _imported_callbacks_ = ['generate', 
                             'generate_unconditional',
@@ -23,6 +23,9 @@ class BendedMusicGen(Interface):
         # model = self._import_model(model)
         # init interfaces
         super(BendedMusicGen, self).__init__(model)
+
+    def _bend_model(self, model):
+        model.trace(num_samples=1, fn="generate_unconditional")
 
     def _save_file(self, audio, out): 
         out = Path(out).resolve()
@@ -42,8 +45,28 @@ class BendedMusicGen(Interface):
         return self._model.audio_channels
 
     @_export_to_module
-    def generate_unconditional(self, *args, out=None, **kwargs):
+    def generate_unconditional(self, *args, seed=None, out=None, **kwargs):
+        if seed is not None: 
+            torch.manual_seed(seed)
         audio_out = self._model.generate_unconditional(*args, **kwargs)
+        if out is not None:
+            self._save_file(audio_out, out)
+        return audio_out
+
+    @_export_to_module
+    def generate(self, *args, seed=None, out=None, **kwargs):
+        if seed is not None: 
+            torch.manual_seed(seed)
+        audio_out = self._model.generate(*args, **kwargs)
+        if out is not None:
+            self._save_file(audio_out, out)
+        return audio_out
+
+    @_export_to_module
+    def generate_continuation(self, *args, seed=None, out=None, **kwargs):
+        if seed is not None: 
+            torch.manual_seed(seed)
+        audio_out = self._model.generate_continuation(*args, **kwargs)
         if out is not None:
             self._save_file(audio_out, out)
         return audio_out
@@ -81,23 +104,26 @@ class BendedMusicGen(Interface):
         self.model.set_generation_params(**kwargs)
 
 
+class BendedMusicGen(BendedAudiocraftGenenerator):
 
-class BendedAudioGen(BendedMusicGen):
-
-    _imported_callbacks_ = ['generate', 'generate_unconditional', 'generate_continuation']
-
-    def get_pretrained(self, *args, **kwargs):
-        model = AudioGen.get_pretrained(*args, **kwargs)
-        model.set_generation_params(
-            use_sampling = True, top_k = 250,
-            top_p = 0.0, temperature = 1.0,
-            duration = 10.0, cfg_coef = 3.0,
-            two_step_cfg = False, extend_stride = 2
-        )
-        return model
+    @_export_to_module
+    def generate_with_chroma(self, *args, seed=None, out=None, **kwargs):
+        assert hasattr(self._model, "generate_with_chroma"), "model does not have generate_with_chroma method"
+        if seed is not None: 
+            torch.manual_seed(seed)
+        audio_out = self._model.generate_with_chroma(*args, **kwargs)
+        if out is not None:
+            self._save_file(audio_out, out)
+        return audio_out
 
 
-__all__ = ['BendedMusicGen', 'BendedAudioGen']
+class BendedAudioGen(BendedAudiocraftGenenerator):
+    pass
+
+
+__all__ = ['BendedMusicGen' 'BendedAudioGen']
+
+
 
 '''
 
