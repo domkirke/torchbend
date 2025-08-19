@@ -1,4 +1,5 @@
 import copy, re, os
+from torch._ops import OpOverload
 import pathlib, uuid, shutil
 from IPython.core.display import HTML
 from IPython import display as ipython_display
@@ -369,3 +370,12 @@ class TmpFileSession(object):
 
 def tmp_file_session(obj):
     return TmpFileSession(obj)
+
+
+def to_overloadpacket(gm):
+    for k, g in gm.graph.items():
+        for n in g.nodes:
+            if n.op == "call_function" and isinstance(n.target, OpOverload):
+                n.target = n.target.overloadpacket  # e.g., aten.sin instead of aten.sin.default
+    gm.recompile()
+    return gm

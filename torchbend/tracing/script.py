@@ -8,7 +8,7 @@ from .module import BendedModule
 from .graphmodule import BendedGraphModule
 from . import CONTROLLABLE_TYPES
 from ..utils import _resolve_code, _import_defs_from_tmpfile
-import nn_tilde
+from .utils import to_overloadpacket
 
 class ScriptedBendedException(Exception):
     pass
@@ -83,12 +83,18 @@ class ScriptedBendedModule(nn.Module):
     @property
     def available_methods(self):
         return self._available_methods
+
+    def _get_gm_from_module(self, model):
+        graph_module = model.graph_module(jit_compatible=True)
+        if graph_module._has_op_overloads:
+            graph_module = to_overloadpacket(graph_module)
+        return graph_module
     
     def _import_model(self, model):
         """Import all the registered methods of a BendedModule into GraphModule calls."""
         self._bended_modules = []
         self._available_methods = []
-        self.graph_module = model.graph_module(jit_compatible=True)
+        self.graph_module = self._get_gm_from_module(model)
         self._import_attributes(model)
         self._available_methods = list(self.graph_module.graph.keys())
 

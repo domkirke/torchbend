@@ -1,4 +1,5 @@
 import torch
+import copy
 import torch.nn
 import collections
 from .tracing import ActivationProperties
@@ -72,10 +73,11 @@ class BendedGraphModule(GraphModule):
         torch.nn.Module.__init__(self)
         self.__class__.__name__ = class_name
 
-
+        self._has_op_overloads = False
         for k, v in kwargs.items():
             assert isinstance(v, torch.fx.Graph), f"GraphModule must be initialized with a valid sequence of Graph; got {type(v)} for callback {k}"
-
+            if getattr(v, "_from_backend", None) == "proxy_tensor":
+                self._has_op_overloads= True
 
         #TODO check if graphs are graphing the same object
         graph_nodes = sum([list(g.nodes) for g in kwargs.values()], [])
@@ -205,7 +207,7 @@ class BendedGraphModule(GraphModule):
                 self._in_spec[method] = graph._codegen.pytree_info.in_spec
                 self._out_spec[method] = graph._codegen.pytree_info.out_spec
 
-            python_code = graph.python_code(root_module="self")
+            python_code = graph.python_code(root_module="self", fn_name=method)
             self._code += python_code.src
             self._lineno_map.update({k + _lineno_offset: v + _lineno_offset for k, v in python_code._lineno_map.items()})
 
@@ -222,6 +224,8 @@ class BendedGraphModule(GraphModule):
                     return self._wrapped_call(self, *args, **kwargs)
 
                 cls.__call__ = call_wrapped  # type: ignore[method-assign]
+
+            del graph
 
         return self._code
 

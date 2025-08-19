@@ -17,7 +17,7 @@ from torch.fx import Graph, GraphModule
 from torch.fx.proxy import TraceError
 from typing import Union , NoReturn, Optional, Tuple, List
 from .. import get_output, TorchbendOutput
-from . import interp
+from . import interp, tracing_experimental as tbe
 from .input import Inputs
 from .graphmodule import BendedGraphModule
 from .tracing import BendingTracer, ActivationProperties, BendedGraph
@@ -519,7 +519,7 @@ class BendedModule(object):
     def _register_forward_call(self, func, with_bended=False):
         setattr(self, func, types.MethodType(_get_wrapped_module_forward_call(func, with_bended), self))
 
-    def trace(self, fn="forward", *args, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
+    def _trace_vanilla(self, fn="forward", *args, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
         """Updates inner graph with the target method and inputs"""
         #TODO general split between kwargs with _ at the beginning for tracer
         inputs = Inputs(*args, **kwargs)
@@ -535,6 +535,25 @@ class BendedModule(object):
             return graph, tracer_out[1]
         else:
             return graph
+
+    def _trace_experimental(self, fn="forward", *args, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
+        inputs = Inputs(*args, **kwargs)
+        out_gm, self._activations[fn] = tbe.make_fx(self._module, inputs, fn=fn)
+        self._graphs[fn] = out_gm.graph
+        self._bended_activations[fn] = dict()
+        if _return_out: 
+            outs = out_gm(inputs)
+            return out_gm.graph, outs
+        else:
+            return out_gm.graph
+
+    def trace(self, fn="forward", trace_method="proxy_tensor", *args, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
+        if trace_method == "vanilla":
+            return self._trace_vanilla(fn=fn, *args, _return_out=_return_out, _proxied_buffers=_proxied_buffers, _no_tensor_for_args=_no_tensor_for_args, **kwargs)
+        elif trace_method == "proxy_tensor":
+            return self._trace_experimental(fn=fn, *args, _return_out=_return_out, _proxied_buffers=_proxied_buffers, _no_tensor_for_args=_no_tensor_for_args, **kwargs)
+        else:
+            raise ValueError('trace_method %s not handled.'%trace_method)
 
     @_import_to_interface
     def graph(self, fn="forward", bended: bool = False):
