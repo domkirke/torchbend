@@ -65,7 +65,7 @@ a given and fixed set of args.
 ??
 
 ## Loops 
-?? (idea : making a "LoopProxy" that would allow a maximum lenght, and specific graphing)
+?? (idea : making a "LoopProxy" that would allow a maximum length, and specific graphing)
 
 
 """
@@ -641,6 +641,8 @@ class BendingTracer(torch.fx.Tracer):
         else:
             node = super(BendingTracer, self).create_node(kind, target, args, kwargs, name=name, type_expr = type_expr)
         node.concrete_value = concrete_value
+        if concrete_value is not None: 
+            node.type_expr = type(concrete_value)
         
         return node
 
@@ -682,6 +684,8 @@ class BendingTracer(torch.fx.Tracer):
                 out = node.concrete_value
             else: 
                 out = self.run_node(node)
+                if node.type is None: 
+                    node.type = type(out)
             
         if isinstance(out, BendingProxy):
             raise TraceError('got abnormal output when executing graph with node : %s (op=%s, target=%s, args=%s, kwargs=%s)'%(node, node.op, node.target, node.args, node.kwargs))
