@@ -1,4 +1,5 @@
 import copy, re, os
+import functools
 from torch._ops import OpOverload
 import pathlib, uuid, shutil
 from IPython.core.display import HTML
@@ -43,6 +44,7 @@ __COPY_HOOKS = [
     "_load_state_dict_post_hooks",
 ]
 
+TORCHBEND_TS_DISPATCH_HASH = {}
 
 def get_model_copy(model, copy_parameters=False):
     """Make a bendable copy of a model, just copying internal dicts of submodules
@@ -372,6 +374,15 @@ def tmp_file_session(obj):
     return TmpFileSession(obj)
 
 
+def register_torchscript_dispatch(fn):
+    def __register_fn(target):
+        global TORCHBEND_TS_DISPATCH_HASH
+        # TORCHBEND_TS_DISPATCH_HASH[fn._qualname] = functools.wraps(fn)(target)
+        TORCHBEND_TS_DISPATCH_HASH[fn._qualname] = target
+        return target
+    return __register_fn
+
+
 def to_overloadpacket(gm):
     for k, g in gm.graph.items():
         for n in g.nodes:
@@ -379,3 +390,5 @@ def to_overloadpacket(gm):
                 n.target = n.target.overloadpacket  # e.g., aten.sin instead of aten.sin.default
     gm.recompile()
     return gm
+
+

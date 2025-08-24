@@ -1,11 +1,14 @@
 import torch
 from typing import Sequence
 import inspect
+
+import torch.fx.experimental
+import torch.fx.experimental.proxy_tensor
 from .tracing import ActivationProperties
 from .input import Inputs
 from .graph import BendedGraph
 from torch.fx.experimental.proxy_tensor import make_fx as tfe_make_fx
-from torch._subclasses.fake_tensor import FakeTensor
+from torch._subclasses.fake_tensor import FakeTensor, extract_tensor_metadata
 
 
 def _parse_fn_args(obj, inputs):
@@ -62,7 +65,10 @@ def rewire_to_original_module(module, gm, fn="forward"):
             n.name = current_input_param
         elif n.op == "get_attr":
             target = n.target
-            current_id = id(getattr(gm, target))
+            param = getattr(gm, target)
+            current_id = id(param)
+            if len(n.meta) == 0:
+                n.meta = {'val': param, 'tensor_meta': extract_tensor_metadata(param)}
             if current_id in id_dict: 
                 _rewire_node(n, id_dict[current_id])
             else:
@@ -71,6 +77,7 @@ def rewire_to_original_module(module, gm, fn="forward"):
     return torch.fx.GraphModule(module, gm.graph)
 
 from torch._ops import OpOverload
+import torch.fx.experimental.proxy_tensor
 
 def is_mark(n):
     if not isinstance(n.target, OpOverload): return False

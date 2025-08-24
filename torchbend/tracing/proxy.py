@@ -74,6 +74,34 @@ class ShapeAttribute(Attribute):
         return super(ShapeAttribute, self).__call__(*args, **kwargs)
 
 
+class SizeAttribute(Attribute):
+    def __init__(self, root: Proxy, attr: str, static_shape=None):
+        super().__init__(root, attr)
+        if static_shape is None:
+            if hasattr(root, "_value"):
+                self._static_shape = list(root._value.shape)
+            elif hasattr(root.node, "shape"):
+                self._static_shape = list(root.node.shape)
+            else:
+                self._static_shape = None
+        else:
+            self._static_shape is None
+        self._idx = None
+
+    @property
+    def static_shape(self):
+        if self._idx is None:
+            raise ValueError('no idx set in SizeAttribute')
+        return self._static_shape[self._idx]
+
+    def __repr__(self):
+        return "SizeAttribute(root=%s, value=%s)"%(self.root, self.attr)
+
+    def __call__(self, *args, **kwargs):
+        return super(SizeAttribute, self).__call__(*args, **kwargs)
+
+
+
 class BendingProxy(torch.fx.Proxy):
     def __init__(self, node: Node, tracer = None, value: Optional[Any] = None, type_expr=None):
         super(BendingProxy, self).__init__(node, tracer)
@@ -121,6 +149,8 @@ class BendingProxy(torch.fx.Proxy):
     def __getattr__(self, k) -> Union[Attribute, Iterable[int]]:
         if k == "shape":
             return ShapeAttribute(self, k)
+        if k == "size": 
+            return SizeAttribute(self, k)
         if k == "device":
            return None
 

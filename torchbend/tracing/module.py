@@ -1,4 +1,5 @@
 from tabulate import tabulate
+import logging
 import weakref
 import typing
 from collections import OrderedDict
@@ -908,6 +909,32 @@ class BendedModule(object):
             if arg in kwargs: inputs[arg] = kwargs[arg]
         return inputs
 
+    def inputs_for_fn(self, fn, inputs):
+        signature = inspect.signature(fn)
+        args = []
+        kwargs = {}
+        for k, v in dict(signature.parameters).items():
+            if v.kind == v.POSITIONAL_ONLY: 
+                assert k in inputs
+                args.append(inputs.pop(k))
+            elif v.kind == v.POSITIONAL_OR_KEYWORD:
+                if k in inputs: 
+                    args.append(inputs.pop(k))
+                else:
+                    args.append(v.default if v.default != inspect._empty else None)
+            elif v.kind == v.KEYWORD_ONLY:
+                if k in inputs: 
+                    kwargs[k] = inputs.pop(k)
+                else:
+                    kwargs[k] = v.default if v.default != inspect._empty else None
+
+            elif v.kind == v.VAR_POSITIONAL:
+                logging.warning("var positional are not handled with torchbend yet. May cause discrepencies")
+            elif v.kind == v.VAR_KEYWORD:
+                kwargs.update(inputs)
+
+        return Inputs(*args, **kwargs)
+
     @_import_to_interface
     def get_activations(self, 
                         *activations, 
@@ -924,20 +951,17 @@ class BendedModule(object):
         module = self.bend_module(fn=fn)
         graph = self.bend_graph(fn=fn)
 
-        # if bended: 
-        #     activations = list(activations)
-        #     bended_activations = self.bended_activations(fn)
-        #     for i, a in enumerate(activations):
-        #         if a in bended_activations: activations[i] += "_bended"
-
         activations = list(self.activations(*activations, _raise_notfound=True, fn=fn, with_bended = True).keys())
         #TODO parse node's children and remove then to get minimal graphs? 
         new_graph = graph_get_activations(graph, activations)
 
         # forward
         gm = BendedGraphModule(module, **{fn: new_graph})
+        
+        
         try:
-            outs = getattr(gm, fn)(**inputs)
+            inputs = self.inputs_for_fn(getattr(gm, fn), inputs)
+            outs = getattr(gm, fn)(*inputs, **inputs)
         except Exception as e:
             raise BendingError('Error by forwarding graph module. Caught error: \n %s'%e)
 
@@ -971,12 +995,15 @@ class BendedModule(object):
                 assert len(activations) != 0, "given callback does not seem to be bending any activation for method %s.\nCallback : %s"%(fn, callback)
 
         activations = list(self.activations(*activations, _raise_notfound=True, fn=fn, with_bended = False).keys())
+
         graph = self.bend_graph(fn=fn)
         bended_activations = list(filter(lambda a: a in self._bended_activations[fn], activations))
         callbacks = {a: CallbackChain(*self._bended_activations[fn][a]) for a in bended_activations}
         new_graph = graph_from_activations(graph, activations, remove_placeholders=True, parse_inputs_from_callbacks=callbacks)
-        gm =  BendedGraphModule(self.bend_module(fn=fn), **{fn: new_graph})
-        outs = getattr(gm, fn)(**get_kwargs_from_gm(gm, fn=fn, **inputs))
+
+        gm = BendedGraphModule(self.bend_module(fn=fn), **{fn: new_graph})
+        inputs = self.inputs_for_fn(getattr(gm, fn), inputs)
+        outs = getattr(gm, fn)(*inputs, **inputs)
         if _save_as_method:
             self._register_method_from_graph(activations, new_graph, fn, _save_as_method)
         if _return_graph:

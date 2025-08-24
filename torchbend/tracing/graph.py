@@ -288,3 +288,32 @@ def graph_from_activations(graph, activations, remove_placeholders=True, parse_i
     new_graph.__from_op = "from_activations"
 
     return new_graph
+
+
+
+def stitch_return_node(*args):
+    if len(args) > 1:
+        return args
+    else:
+        return args[0]
+
+
+def stitch_graph(target_graph, stitched_graph, input_nodes, out_node, env):
+    """stitches a target graph with another graph, representing a target op"""
+    placeholder_map = list(input_nodes[0]) + list(input_nodes[1].values())
+    new_env = {"arg%d_1"%i: placeholder_map[i] for i in range(len(placeholder_map))}
+    output_node = None
+    for n in stitched_graph.nodes:
+        if n.op == "placeholder": continue
+        elif n.op == "output": 
+            if isinstance(n.args[0], tuple):
+                output_node = target_graph.create_node("call_function", stitch_return_node, (tuple(new_env[i.name] for i in n.args[0]),))
+            else:
+                output_node = target_graph.create_node("call_function", stitch_return_node, tuple(new_env[i.name] for i in n.args[0]))
+            env[out_node.name] = output_node
+        else:
+            new_node = target_graph.node_copy(n, lambda x: new_env[x.name])
+            new_env[new_node.name] = new_node
+            env[new_node.name] = new_node
+    return target_graph, env
+

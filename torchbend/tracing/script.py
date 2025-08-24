@@ -3,12 +3,15 @@ from abc import abstractmethod
 from typing import List, Dict, Callable, Optional
 from types import MethodType
 import torch, torch.nn as nn
+from torch._ops import OpOverload
 from ..bending import BendingParameter, get_param_type, BendingCallback, CallbackChain
+from .tracing import BendedGraph
 from .module import BendedModule
+from .graph import stitch_graph
 from .graphmodule import BendedGraphModule
 from . import CONTROLLABLE_TYPES
 from ..utils import _resolve_code, _import_defs_from_tmpfile
-from .utils import to_overloadpacket
+from .utils import to_overloadpacket, TORCHBEND_TS_DISPATCH_HASH
 
 class ScriptedBendedException(Exception):
     pass
@@ -51,6 +54,25 @@ def _template_from_param(param: BendingParameter, template=attribute_template, *
         return _resolve_code(template, **kwargs)
     else:
         raise TypeError('Type not handled by automatic attribute writing : %s'%(param.param_type))
+
+
+def stitch_graph_for_torchscript(graph):
+    new_graph = BendedGraph(from_graph=graph)
+    env = {}
+    for n in graph.nodes:
+        new_node = new_graph.node_copy(n, lambda x: env[x.name])
+        if new_node.op == "call_function" and isinstance(new_node.target, OpOverload):
+                if n.target._name in TORCHBEND_TS_DISPATCH_HASH:
+                    ts_dispatch = TORCHBEND_TS_DISPATCH_HASH[n.target._name]
+                    # args = [m.meta['val'] for m in n.args]
+                    # kwargs = {k: v.meta['val'] for k, v in n.kwargs}
+                    # subgraph = torch.fx.experimental.proxy_tensor.make_fx(ts_dispatch, tracing_mode="symbolic")(*args, **kwargs)
+                    # stitch_graph(new_graph, subgraph.graph, (n.args, n.kwargs), n, env)
+                    new_node.target = ts_dispatch
+                    # continue
+        env[n.name] = new_node
+    return new_graph
+
         
 
 class ScriptedBendedModule(nn.Module):
@@ -86,6 +108,9 @@ class ScriptedBendedModule(nn.Module):
 
     def _get_gm_from_module(self, model):
         graph_module = model.graph_module(jit_compatible=True)
+        for k, g in graph_module.graph.items():
+            graph_module.graph[k] = stitch_graph_for_torchscript(g)
+        graph_module.recompile()
         if graph_module._has_op_overloads:
             graph_module = to_overloadpacket(graph_module)
         return graph_module

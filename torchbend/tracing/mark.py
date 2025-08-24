@@ -4,6 +4,7 @@ import torch
 import torch.fx as fx
 import torch.nn as nn
 from .proxy import BendingProxy
+from .utils import register_torchscript_dispatch
 from torch._subclasses.fake_tensor import FakeTensor
 
 
@@ -32,6 +33,12 @@ def mark_tensor(obj: torch.Tensor, name:Optional[str] = None) -> torch.Tensor:
 def _(obj: torch.Tensor, name:Optional[str] = None) -> torch.Tensor:
     return torch.empty_like(obj)
 
+@register_torchscript_dispatch(mark_tensor)
+def mark_ts(obj: torch.Tensor, name:Optional[str] = None) -> torch.Tensor:
+    return obj
+
+
+
 @torch.library.custom_op("torchbend::mark_tensor_pre", mutates_args=())
 def mark_tensor_pre(obj: Sequence[torch.Tensor], name:Optional[str] = None) -> List[torch.Tensor]:
     return obj.clone()
@@ -39,6 +46,10 @@ def mark_tensor_pre(obj: Sequence[torch.Tensor], name:Optional[str] = None) -> L
 @mark_tensor_pre.register_fake
 def _(obj: Sequence[torch.Tensor], name:Optional[str] = None) -> Sequence[torch.Tensor]:
     return tuple([torch.empty_like(o) for o in obj])
+
+@register_torchscript_dispatch(mark_tensor_pre)
+def mark_pre(obj: torch.Tensor, name:Optional[str] = None) -> torch.Tensor:
+    return obj
 
 
 @torch.jit.ignore
