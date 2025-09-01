@@ -56,7 +56,7 @@ class Capture(BendingCallback):
         self._buffer_tmp[name] = []
 
     def register_activation(self, name, shape):
-        name = super().register_activation(name, shape)
+        name, shape = super().register_activation(name, shape)
         self._buffer_tmp[name] = []
         return name
 

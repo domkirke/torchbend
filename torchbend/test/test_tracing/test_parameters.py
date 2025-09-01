@@ -218,8 +218,8 @@ def test_parameters_as_inputs(module_config):
         touched_kwargs = dict(kwargs)
         for i in [0, 1]:
             for act in acts: 
-                untouched_kwargs[f'{param.name}_{bended_idx}'] = torch.zeros(bended_module.activation_shape(act))
-                touched_kwargs[f'{param.name}_{bended_idx}'] = torch.ones(bended_module.activation_shape(act))
+                untouched_kwargs[f'{param.name}_{bended_idx}'] = torch.zeros(bended_module.activation_shape(act, symbolic=False))
+                touched_kwargs[f'{param.name}_{bended_idx}'] = torch.ones(bended_module.activation_shape(act, symbolic=False))
                 bended_idx += 1
         getattr(bended_module, method)(*args, **kwargs)
 

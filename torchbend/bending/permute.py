@@ -64,7 +64,7 @@ class Permute(BendingCallback):
         self._init_permute_(name, parameter.shape)
             
     def register_activation(self, name, shape):
-        name = super().register_activation(name, shape)
+        name, shape = super().register_activation(name, shape)
         name = name.replace('.', '_')
         self._init_permute_(name, shape)
     

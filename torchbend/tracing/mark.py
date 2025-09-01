@@ -41,7 +41,10 @@ def mark_ts(obj: torch.Tensor, name:Optional[str] = None) -> torch.Tensor:
 
 @torch.library.custom_op("torchbend::mark_tensor_pre", mutates_args=())
 def mark_tensor_pre(obj: Sequence[torch.Tensor], name:Optional[str] = None) -> List[torch.Tensor]:
-    return obj.clone()
+    if isinstance(obj, torch.Tensor):
+        return obj.clone()
+    else:
+        return type(obj)([o.clone() for o in obj])
 
 @mark_tensor_pre.register_fake
 def _(obj: Sequence[torch.Tensor], name:Optional[str] = None) -> Sequence[torch.Tensor]:

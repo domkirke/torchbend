@@ -516,10 +516,12 @@ def print_tensor_ids(*tensors, f=None):
             f.write(out_str)
 
 
-def _resolve_code(code,  _import_modules=[], **kwargs):
+def _resolve_code(code, _import_modules=[], _headers=[], **kwargs):
+    headers = ""
     for module in _import_modules:
-        code = f"import {module}\n" + code
-    # pattern = str(code)
+        headers = f"import {module}\n" + headers
+    headers += "\n".join(_headers)
+    
     for k, v in kwargs.items():
         pattern = re.compile(r'\{\{%s\}\}'%(k.upper()))
         iterations = list(pattern.finditer(code))
@@ -528,7 +530,7 @@ def _resolve_code(code,  _import_modules=[], **kwargs):
             code = code[:start] + str(v) + code[end:]
             iterations = list(pattern.finditer(code))
     #TODO check if no {{}} left
-    return code
+    return f"{headers}\n{code}"
 
 def _replace_placeholders(code, **kwargs):
     for k, v in kwargs.items():

@@ -1,4 +1,5 @@
 import torch, re
+import copy
 
 import logging
 import abc
@@ -355,8 +356,12 @@ class BendingCallback(nn.Module):
 
     def register_activation(self, name, shape):
         name = name.replace('.', '_')
+        shape = list(shape)
+        for i, a in enumerate(shape): 
+            if isinstance(a, torch.SymInt):
+                shape[i] = int(copy.deepcopy(a))
         self._bending_shapes[name] = shape
-        return name
+        return name, shape
 
     # generic callback for bending targets
     def add_bending_target(self, name, parameter=None, shape=None, cache=True):

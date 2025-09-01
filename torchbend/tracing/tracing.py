@@ -242,8 +242,10 @@ class BendedGraph(torch.fx.Graph):
             self.activations = {}
             self._co_fields: Dict[str, Any] = {}
             self._attached_bending_callbacks = {}
+            self._additional_tensor_constants = {} # when rewiring experimental make_fx graph modules
             self._find_nodes_lookup_table = _FindNodesLookupTable()
             self._from_backend = from_backend
+            self.flow_steps = None
 
     def attach_bending_callback(self, name, callback):
         """when bending operations were written within the graph, 
@@ -253,6 +255,9 @@ class BendedGraph(torch.fx.Graph):
 
     def get_attached_callbacks(self):
         return dict(self._attached_bending_callbacks)
+
+    def add_unmatched_params(self, param_dict):
+        self._additional_tensor_constants.update(param_dict)
 
     def _import_from_graph(self, graph, owning_module, fn=None):
         self._root: Node = Node(self, "", "root", "", (), {})
@@ -271,6 +276,8 @@ class BendedGraph(torch.fx.Graph):
         self._find_nodes_lookup_table = _FindNodesLookupTable()
         self._attached_bending_callbacks = getattr(graph, "_attached_bending_callbacks", {})
         self._from_backend = getattr(graph, "_from_backend", None)
+        self._additional_tensor_constants = getattr(graph, "_additional_tensor_constants", {})
+        self.flow_steps = getattr(graph, "flow_steps", None)
         for attr in type(self)._GRAPH_COPY_ATTR:
             setattr(self, attr, copy.copy(getattr(graph, attr, None)))
 

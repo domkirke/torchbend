@@ -11,7 +11,7 @@ from .graph import stitch_graph
 from .graphmodule import BendedGraphModule
 from . import CONTROLLABLE_TYPES
 from ..utils import _resolve_code, _import_defs_from_tmpfile
-from .utils import to_overloadpacket, TORCHBEND_TS_DISPATCH_HASH
+from .utils import to_overloadpacket, TORCHBEND_TS_DISPATCH_HASH#, _get_signature_for_ts_dispatch_from_graph
 
 class ScriptedBendedException(Exception):
     pass
@@ -54,6 +54,8 @@ def _template_from_param(param: BendingParameter, template=attribute_template, *
         return _resolve_code(template, **kwargs)
     else:
         raise TypeError('Type not handled by automatic attribute writing : %s'%(param.param_type))
+
+
 
 
 def stitch_graph_for_torchscript(graph):
@@ -152,8 +154,8 @@ class ScriptedBendedModule(nn.Module):
                 if v.annotation.__module__ == "typing":
                     # v._annotation = str(v.annotation)
                     new_params[k] = v
+
         signature._parameters = new_params
-            
         signature_str = "(self, " + str(signature)[1:]
         ins = "(" + ",".join([f"{i}={i}" for i in signature.parameters]) + ")"
 
@@ -162,7 +164,7 @@ class ScriptedBendedModule(nn.Module):
                              callback_name=callback_name, 
                              signature=signature_str, 
                              ins=ins, 
-                             _import_modules=['typing'])
+                             _headers=['from typing import *', 'import typing'])
         return code
 
     def _register_imported_methods(self, methods: List[str]):

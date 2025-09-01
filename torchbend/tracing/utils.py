@@ -1,10 +1,12 @@
 import copy, re, os
+import inspect
 import functools
 from torch._ops import OpOverload
 import pathlib, uuid, shutil
 from IPython.core.display import HTML
 from IPython import display as ipython_display
 import pandas as pd
+import typing as tp
 from typing import Any, Union, Dict, List
 import random
 from enum import Enum
@@ -374,11 +376,34 @@ def tmp_file_session(obj):
     return TmpFileSession(obj)
 
 
+# def _get_signature_for_ts_dispatch(fn):
+#     types = []
+#     for k, v in dict(inspect.signature(fn).parameters).items():
+#         if v.annotation == torch._empty:
+#             types.append(tp.Any)
+#         else:
+#             types.append(v.annotation)
+#     return tuple(types)
+
+
+# def _get_signature_for_ts_dispatch_from_graph(node):
+#     types = []
+#     for a in node.args:
+#         types.append(type(a))
+#     for k, v in node.kwargs.items():
+#         types.append(type(v))
+#     return tuple(types)    
+
+
 def register_torchscript_dispatch(fn):
     def __register_fn(target):
         global TORCHBEND_TS_DISPATCH_HASH
-        # TORCHBEND_TS_DISPATCH_HASH[fn._qualname] = functools.wraps(fn)(target)
-        TORCHBEND_TS_DISPATCH_HASH[fn._qualname] = target
+        fn_name = fn._qualname
+        # if fn_name not in TORCHBEND_TS_DISPATCH_HASH: 
+        #     TORCHBEND_TS_DISPATCH_HASH[fn_name] = {}
+        # signature = _get_signature_for_ts_dispatch(target)
+        # TORCHBEND_TS_DISPATCH_HASH[fn_name][signature] = target
+        TORCHBEND_TS_DISPATCH_HASH[fn_name] = target
         return target
     return __register_fn
 

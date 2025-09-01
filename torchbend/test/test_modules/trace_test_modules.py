@@ -62,7 +62,7 @@ def get_enum(n: int):
 class LoopFoo(nn.Module):
     test_int_loop_inputs = [{'x': torch.arange(10), 'n': 4}]
     test_int_nested_loop_inputs = [{'x': torch.arange(10), 'n': 4}]
-    test_list_loop_inputs = [{'x': [0, 1, 2, 3]}]
+    test_list_loop_inputs = [{'x': [0, 1, 2, 3]}, {'x': list(torch.Tensor([[0], [1], [2], [3]]))}]
     test_tensor_loop_inputs = [{'x': torch.arange(12).reshape(4, 3)}]
     test_shape_loop_inputs = [{'x': torch.zeros(4, 3)}]
     test_enumerate_inputs = [{'x': torch.zeros(4, 3)}]
