@@ -1,4 +1,5 @@
 from tabulate import tabulate
+from functools import reduce
 import logging
 import weakref
 import typing
@@ -23,7 +24,7 @@ from .input import Inputs
 from .graphmodule import BendedGraphModule
 from .tracing import BendingTracer, ActivationProperties, BendedGraph
 from .utils import BendingError, get_model_copy, _get_weight_properties, _get_signature_from_graph, _get_graph_inputs
-from .utils import _import_to_interface, make_graph_jit_compatible, clone_parameters, display_table_for_jupyter, get_kwargs_from_gm
+from .utils import _import_to_interface, make_graph_jit_compatible, clone_parameters, display_table_for_jupyter, get_kwargs_from_gm 
 from .graph import graph_insert_callbacks, graph_get_activations, graph_from_activations, graph_transform_nodes
 from ..utils import checklist, checktuple, get_parameter, _resolve_code, resolve_state_dict, StateDictReference
 from ..bending import BendingCallback, CallbackChain, is_bending_callback, BendingConfig, BendingParameter
@@ -277,7 +278,10 @@ class BendedModule(object):
     def weights(self, *flt, exclude=None):
         """get valid weight names from a regexp"""
         parameters = OrderedDict(self.named_parameters())
+        
         valid_parameters = {}
+        flt = reduce(lambda x, y: x + checklist(y), flt, list()) 
+
         if len(flt) > 0:
             for f in flt:
                 if f.startswith('?'):
@@ -385,6 +389,8 @@ class BendedModule(object):
 
         if len(flt) == 0: 
             raise ValueError('BendedModule.activations take at least one regexp (give "?.*" to retrieve everything)')
+
+        flt = reduce(lambda x, y: x + checklist(y), flt, list()) 
 
         if exclude is not None: 
             exclude = checklist(exclude)
@@ -519,13 +525,14 @@ class BendedModule(object):
         else:
             return graph
 
-    def _trace_experimental(self, fn="forward", *args, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
+    def _trace_experimental(self, fn="forward", *args, _save_as=None, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
         inputs = Inputs(*args, **kwargs)
-        out_gm, self._activations[fn] = tbe.make_fx(self._module, inputs, fn=fn)
-        self._graphs[fn] = out_gm.graph['forward']
-        self._bended_activations[fn] = dict()
-        if fn != "forward":
-            self._register_forward_call(fn, True)
+        if _save_as is None: _save_as = fn
+        out_gm, self._activations[_save_as] = tbe.make_fx(self._module, inputs, fn=fn)
+        self._graphs[_save_as] = out_gm.graph['forward']
+        self._bended_activations[_save_as] = dict()
+        if _save_as != "forward":
+            self._register_forward_call(_save_as, True)
         if _return_out: 
             exec_inputs = self.inputs_for_fn(getattr(out_gm, "forward"), inputs)
             outs = out_gm(*exec_inputs, **exec_inputs)
@@ -533,13 +540,13 @@ class BendedModule(object):
         else:
             return out_gm.graph
 
-    def trace(self, fn="forward", trace_method=None, *args, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
+    def trace(self, fn="forward", trace_method=None, *args, _save_as=None, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
         trace_method = trace_method or _TORCHBEND_DEFAULT_TRACE_METHOD
         assert trace_method in TORCHBEND_TRACE_METHODS
         if trace_method == "vanilla":
             return self._trace_vanilla(fn=fn, *args, _return_out=_return_out, _proxied_buffers=_proxied_buffers, _no_tensor_for_args=_no_tensor_for_args, **kwargs)
         elif trace_method == "proxy_tensor":
-            return self._trace_experimental(fn=fn, *args, _return_out=_return_out, _proxied_buffers=_proxied_buffers, _no_tensor_for_args=_no_tensor_for_args, **kwargs)
+            return self._trace_experimental(fn=fn, *args, _save_as=_save_as, _return_out=_return_out, _proxied_buffers=_proxied_buffers, _no_tensor_for_args=_no_tensor_for_args, **kwargs)
         else:
             raise ValueError('trace_method %s not handled. Available : %s'%(trace_method, TORCHBEND_TRACE_METHODS))
 

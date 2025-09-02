@@ -41,7 +41,7 @@ class Interface(object):
     def _setmodel_(self, model):
         self._model = self._import_model(model)
         self._import_methods(self._model)
-        self._bend_model(self._model)
+        self.bend_model(self._model)
         
     def _delmodel_(self):
         raise BendingInterfaceException('cannot delete model of interface')
@@ -114,10 +114,18 @@ class Interface(object):
                 setattr(model, attr_name, self.__dict__[attr_name])
             else:
                 setattr(model, attr_name, getattr(self, attr_name))
-                        
+
+
     @abc.abstractmethod
-    def _bend_model(self, model):
+    def bend_model(self, model):
         pass
+
+    def trace(self, fn = "forward", *args, _save_as=None, **kwargs):
+        outs = self.model.trace(fn=fn, _save_as=_save_as, **kwargs)
+        method_name = fn if _save_as is None else _save_as
+        if not hasattr(self, method_name):
+            setattr(self, method_name, wrap_model_method(self.model, method_name))
+        return outs
 
     def _register_method_from_graph(self, graph, fn, method_name) -> NoReturn:
         self._model._register_method_from_graph(graph, fn, method_name)

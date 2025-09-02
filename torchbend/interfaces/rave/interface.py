@@ -144,22 +144,23 @@ class BendedRAVE(Interface):
         model = torch.jit.load(model_path)
         return model
 
-    def _bend_model(self, model: BendedModule):
-        model.trace("forward", x=torch.zeros(2, 1, 65536),  _proxied_buffers=self._proxied_buffers)
+    def bend_model(self, model: BendedModule):
+        self.trace("forward", x=torch.zeros(2, 1, 65536),  _proxied_buffers=self._proxied_buffers)
+        self.trace("forward", x=torch.zeros(2, 1, 65536), crop_latent=True, _proxied_buffers=self._proxied_buffers, _save_as="forward_proj")
         is_variational = isinstance(model._module, VariationalScriptedRAVE) if self.scriptable else type(self.encoder._module) == ravelib.blocks.VariationalEncoder
         encoder_kwargs = {'postprocess': True} if self.scriptable else {'return_mb': False}
         enc_graph, decoder_out = model.trace("encode", x=torch.zeros(2, 1, 65536), **encoder_kwargs, _proxied_buffers=self._proxied_buffers, _return_out=True)
         if is_variational and self.scriptable:
             _, decoder_out_full = model.trace("encode_full", x=torch.zeros(2, 1, 65536), _proxied_buffers=self._proxied_buffers, _return_out=True)
-            _ = model.trace("encode_dist", x=torch.zeros(2, 1, 65536), _proxied_buffers=self._proxied_buffers, _return_out=True)
+            _ = self.trace("encode_dist", x=torch.zeros(2, 1, 65536), _proxied_buffers=self._proxied_buffers, _return_out=True)
         if self.scriptable:
             latent_out = decoder_out
         else:
             latent_out = model.encoder.reparametrize(decoder_out)[:2][0]
         encoder_kwargs = {'preprocess': True} if self.scriptable else {}
-        model.trace("decode", z=latent_out, _proxied_buffers=self._proxied_buffers)
+        self.trace("decode", z=latent_out, _proxied_buffers=self._proxied_buffers)
         if is_variational and self.scriptable:
-            model.trace("decode_full", z=decoder_out_full, _proxied_buffers=self._proxied_buffers)
+            self.trace("decode_full", z=decoder_out_full, _proxied_buffers=self._proxied_buffers)
         
 
     def _load_single_audio(self, path: str):
@@ -223,6 +224,14 @@ class BendedRAVE(Interface):
             x = self.load_audio(x)
         if clear_cache: self.clear_cache()
         audio = self._model.forward(x, **kwargs)
+        if out is not None: self.write_audio(out, audio[0])
+        return audio
+
+    def forward_proj(self, x: Union[torch.Tensor, str], out: Optional[str] = None, clear_cache:  bool = False, **kwargs):
+        if isinstance(x, str):
+            x = self.load_audio(x)
+        if clear_cache: self.clear_cache()
+        audio = self._model.forward_proj(x, **kwargs)
         if out is not None: self.write_audio(out, audio[0])
         return audio
     

@@ -684,3 +684,12 @@ def resolve_state_dict(state_dict, as_param=False):
                 resolved_state_dict[k] = v.resolve().data
 
     return resolved_state_dict
+
+
+def resolve_symbolic_shapes(shape):
+    shape = list(shape)
+    for i, s in enumerate(shape):
+        if isinstance(s, torch.SymInt):
+            shape[i] = int(copy.deepcopy(s))
+    return shape
+    

@@ -78,8 +78,9 @@ def stitch_graph_for_torchscript(graph):
         
 
 class ScriptedBendedModule(nn.Module):
-    method_template = method_template
-    attribute_template = attribute_template
+    method_template: str = method_template
+    attribute_template: str = attribute_template
+    scripted_methods: List[str] | None = None # set to a list of list to 
 
     def __init__(self, model: BendedModule, enable_grad: bool = False):
         """
@@ -129,7 +130,8 @@ class ScriptedBendedModule(nn.Module):
             if hasattr(getattr(model, attr), "_export_to_module"):
                 assert attr not in dir(self)
                 setattr(self, attr, getattr(model, attr))
-        self._register_imported_methods(model._graphs.keys())
+        scripted_methods = self.scripted_methods or model._graphs.keys()
+        self._register_imported_methods(scripted_methods)
 
     def _import_attributes(self, model, import_buffers=True):
         _attrs_to_import = getattr(model, "_attributes_for_tb_scripting", [])
