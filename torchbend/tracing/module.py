@@ -877,8 +877,8 @@ class BendedModule(object):
         self._activations[method_name] = {}
         self._bended_activations[method_name] = {}
         for node in graph.nodes:
-            if node.name.endswith('_bended'):
-               node.target = re.sub(rf"^{fn}", method_name, node.target)
+            # if node.name.endswith('_bended'):
+            #    node.target = re.sub(rf"^{fn}", method_name, node.target)
             if node.name in self._activations[fn]:
                 self._activations[method_name][node.name] = self._activations[fn][node.name]
             if node.name in self._bended_activations[fn]: 

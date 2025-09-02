@@ -83,8 +83,8 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         self._attributes = ListAttribute([], List[str])
         self._get_set_candidates = {}
         ScriptedBendedModule.__init__(self, model, enable_grad=enable_grad)
-        self._search_for_getter_and_setters(model.module)
 
+        self._search_for_getter_and_setters(model.module)
         if hasattr(model, "register_nntilde_attributes"):
             if not getattr(getattr(model, "register_nntilde_attributes"), "__isabstractmethod__", False):
                 model.register_nntilde_attributes(self)
@@ -292,15 +292,14 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         _candidates = {}
         for attr_name in dir(module):
             if (attr_name.startswith("set_") or attr_name.startswith("get_")): 
-                target_attr = "_".join(attr_name.split('_')[1:])
-                if target_attr not in self._attributes.value: 
-                    continue
+                # target_attr = "_".join(attr_name.split('_')[1:])
+                func = getattr(module, attr_name)
+                if not isinstance(func, MethodType): continue
+                # _candidates[attr_name] = _get_wrapped_setter_and_getter(self, module, attr_name, func)
+                _candidates[attr_name] = func
             else:
                 continue
-            func = getattr(module, attr_name)
-            if not isinstance(func, MethodType): continue
-            # _candidates[attr_name] = _get_wrapped_setter_and_getter(self, module, attr_name, func)
-            _candidates[attr_name] = func
+            
         self._get_set_candidates = _candidates
 
     def _reset_get_set_candidates(self):
