@@ -177,8 +177,8 @@ def _parse_fn_args(obj, inputs):
             has_varargs = True
         elif param.kind == param.VAR_KEYWORD:
             has_varkwargs = True
-            new_signature.append("**kwargs")
-            new_arguments.append("**kwargs")
+            # new_signature.append("**kwargs")
+            # new_arguments.append("**kwargs")
 
     if has_varkwargs:
         new_kwargs.update(kwargs)
@@ -208,6 +208,7 @@ def make_fx(module, inputs, fn="forward"):
     funcs = _import_defs_from_tmpfile(codes, gl=gl, lo=locals())
     obj_to_trace = funcs['fn']
         
+    obj_to_trace(*args, **kwargs)
     traced_gm = tfe_make_fx(obj_to_trace, tracing_mode="symbolic", _allow_non_fake_inputs=True, _allow_fake_constant=True, record_module_stack=True)(*args, **kwargs)
     unmatched_params = rewire_to_original_module(module, traced_gm, obj_to_trace, fn)
     
