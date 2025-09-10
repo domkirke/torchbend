@@ -262,7 +262,7 @@ class BendingCallback(nn.Module):
         if isinstance(value, BendingParameter):
             assert value.param_type in target_type_ids
         else:
-            assert type(value) == BendingParamType.param_hash[target_type]
+            assert type(value) == BendingParamType.param_hash()[target_type]
 
     def register_controllable(self, name, value, valid_types=None):
         assert name in self.controllable_params, "tried to register controllable value %s, but not compatible with %s"%(name, type(self))

@@ -142,6 +142,7 @@ class ActivationProperties():
     kwargs: Optional[Dict[str, Any]] = None
     type: Optional[Any] = None
     code: Optional[CodePosition] = None
+    aliases: str | None = None
 
     @staticmethod
     def _default_panel_fields():

@@ -32,6 +32,9 @@ from . import distributions
 
 _TORCHBEND_DEFAULT_TRACE_METHOD = os.environ.get('TORCHBEND_DEFAULT_TRACE_METHOD', 'proxy_tensor')
 
+from pathlib import Path
+_TORCHBEND_DEFAULT_MODEL_DIR = Path(os.environ.get('TORCHBEND_DEFAULT_MODEL_DIR') or Path(os.getcwd()) / "models")
+
 from .bending import *
 from .tracing import *
 

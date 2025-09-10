@@ -14,18 +14,36 @@ from .nntilde import *
 
 
 def script_method(self, script=True, **kwargs):
-    mod = ScriptedBendedModule(self, **kwargs)
-    if script: mod = torch.jit.script(mod)
-    return mod
-BendedModule.script = _import_to_interface(script_method)
+    if bool(self.scriptable):
+        mod = ScriptedBendedModule(self, **kwargs)
+        if script: mod = torch.jit.script(mod)
+        return mod
+    else:
+        raise ScriptedBendedException("%s cannot be scripted"%self)
 
+def default_scriptable(self): 
+    return ScriptableState.Unknown
+
+BendedModule.script = _import_to_interface(script_method)
+BendedModule.scriptable = property(_import_to_interface(default_scriptable))
+
+
+def default_nntildable(self): 
+    if self.scriptable: 
+        return ScriptableState.Unknown
+    else:
+        return ScriptableState.NotScriptable
 
 def script_method_for_nntilde(self, script=True, **kwargs):
-    mod = NNBendedModule(self, **kwargs)
-    if script: mod = torch.jit.script(mod)
-    return mod
-BendedModule.nntilde = _import_to_interface(script_method_for_nntilde)
+    if bool(self.nntilde_compatible): 
+        mod = NNBendedModule(self, **kwargs)
+        if script: mod = torch.jit.script(mod)
+        return mod
+    else:
+        raise ScriptedBendedException("%s cannot be scripted"%self)
 
+BendedModule.nntilde = _import_to_interface(script_method_for_nntilde)
+BendedModule.nntilde_compatible = property(_import_to_interface(default_scriptable))
 
 from .wrapper import *
 

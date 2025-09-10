@@ -17,7 +17,7 @@ def get_fn_filters_from_module(bended_module):
 def get_activation_names(bended_module, fn):
     with_fn = (len(fn) >= 2)
     if len(fn) == 1: fn = fn[0]
-    activations = bended_module.activations(fn=fn, _with_fn=with_fn)
+    activations = bended_module.activations(r"?.*", fn=fn, _with_fn=with_fn)
     return list(activations.keys())
 
 
@@ -42,7 +42,7 @@ def get_activation_list(fn_checkboxes, filter_input, bended_module=None, fields=
     with_fn = isinstance(fn, list)
 
     fields = fields or ActivationProperties._default_panel_fields()
-    flt = tuple() if flt.value_input == "" else (flt.value_input,)
+    flt = ("?.*",) if flt.value_input == "" else (flt.value_input,)
     activations = bended_module.activations(*flt, fn=fn, _with_fn=with_fn)
     parsed_activations = pd.DataFrame(
         {f: [str(getattr(p, f)) for p in activations.values()] for f in fields},

@@ -31,7 +31,7 @@ class BendingParamType():
 
     @staticmethod
     def param_types():
-        return {'float': 1, 'int': 2, 'bool': 3, 'complex': 4}
+        return {'float': 2, 'int': 1, 'bool': 0, 'complex': 7, 'tensor': 4, 'str': 3}
     @staticmethod
     def param_hash():
         return {v: k for k, v in BendingParamType.param_types().items()}
@@ -81,17 +81,20 @@ class BendingParamType():
         # if torch.is_tensor(obj):
         if torch.jit.isinstance(obj, torch.Tensor):
             # assert obj.numel() == 1, "Got non-scalar tensor for BendingParameter value"
-            if obj.dtype in [torch.float, torch.float16, torch.float32, torch.float64]:
-                return BendingParamType.param_types()['float']
-            elif obj.dtype in [torch.int, torch.int8, torch.int16, torch.int32, torch.int64]:
-                return BendingParamType.param_types()['int']
-            elif obj.dtype in [torch.complex, torch.complex32, torch.complex64, torch.complex128]:
-                raise NotImplementedError
-                return BendingParamType.param_types()['complex']
-            elif obj.dtype in [torch.bool]:
-                return BendingParamType.param_types()['bool']
-            else:
-                raise BendingParameterException("tensor dtype not handled : %s"%obj.dtype)
+            if obj.numel() == 1:
+                if obj.dtype in [torch.float, torch.float16, torch.float32, torch.float64]:
+                    return BendingParamType.param_types()['float']
+                elif obj.dtype in [torch.int, torch.int8, torch.int16, torch.int32, torch.int64]:
+                    return BendingParamType.param_types()['int']
+                elif obj.dtype in [torch.complex, torch.complex32, torch.complex64, torch.complex128]:
+                    raise NotImplementedError
+                    return BendingParamType.param_types()['complex']
+                elif obj.dtype in [torch.bool]:
+                    return BendingParamType.param_types()['bool']
+                else:
+                    raise BendingParameterException("tensor dtype not handled : %s"%obj.dtype)
+            else: 
+               return BendingParamType.param_types()['tensor'] 
         elif isinstance(obj, bool):
             return BendingParamType.param_types()['bool']
         elif isinstance(obj, numbers.Integral):

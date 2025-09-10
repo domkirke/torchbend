@@ -1,10 +1,14 @@
 from inspect import ismethod
+import urllib
+import re
 import functools
 import torch
 from typing import NoReturn
 from collections import OrderedDict
 import abc
-from ..tracing import BendedWrapper, BendedModule
+import os
+from ..tracing import BendedWrapper, BendedModule, ScriptableState
+from .. import _TORCHBEND_DEFAULT_MODEL_DIR
 
 def wrap_model_method(ext, func, hook=None):
     @functools.wraps(func)
@@ -24,10 +28,19 @@ def _overload_module(fn):
     fn.__overload_module = True
     return fn
 
+from pathlib import Path
+
+
 
 class BendingInterfaceException(Exception):
     pass
 
+def _get_name_from_url(url):
+    out = re.match("^.*=(.+).(pkl|ckpt|pth)", urllib.parse.urlparse(url).query)
+    if out is None:
+        return None
+    else:
+        return f"{out.groups()[0]}.{out.groups()[1]}"
 
 class Interface(object):
     _imported_callbacks_ = []
@@ -42,10 +55,55 @@ class Interface(object):
         self._model = self._import_model(model)
         self._import_methods(self._model)
         self.bend_model(self._model)
-        
     def _delmodel_(self):
         raise BendingInterfaceException('cannot delete model of interface')
     model = property(_getmodel_, _setmodel_, _delmodel_)
+
+    @classmethod
+    def _get_download_location(cls, url):
+        loc = Path(_TORCHBEND_DEFAULT_MODEL_DIR / getattr(cls, "_download_subdir", cls.__name__)).resolve()
+        os.makedirs(loc, exist_ok=True)
+        loc = loc / _get_name_from_url(url)
+        return loc
+
+    @classmethod
+    def _download_model_to(cls, url, download_location) -> Path:
+        assert download_location.parent.exists()
+        try:
+            res = urllib.request.urlretrieve(url, str(download_location))
+        except Exception as e: 
+            raise BendingInterfaceException("could not download model, got : %s"%e)
+        return res
+
+    @classmethod
+    def get_model_path(cls, model_path_or_url: str | Path, force_download: bool = False):
+        if isinstance(model_path_or_url, str):
+            parsed_url = urllib.parse.urlparse(model_path_or_url)
+            if parsed_url.scheme == "":
+                model_path_or_url = Path(model_path_or_url)
+            else:
+                try:
+                    destination = cls._get_download_location(model_path_or_url)
+                    if (not destination.exists()) or force_download:
+                        cls._download_model_to(model_path_or_url, destination)
+                    return destination
+                except BendingInterfaceException as e:
+                    raise e
+
+        if isinstance(model_path_or_url, Path):
+            return model_path_or_url
+        
+        raise BendingInterfaceException("could not find or download : %s"%model_path_or_url)
+
+
+    def _getoriginalmodel_(self):
+        return self._model._module
+    def _setoriginalmodel_(self): 
+        raise BendingInterfaceException("originalmodel cannot be set directly. Set model instead")
+    def _deloriginal_model_(self): 
+        raise BendingInterfaceException('cannot delete model of interface')
+    original_model = property(_getoriginalmodel_, _setoriginalmodel_, _deloriginal_model_)
+
 
     def to(self, device):
         return self._model.to(device)
@@ -66,6 +124,7 @@ class Interface(object):
     def _retrieve_exported_methods(self):
         exported_methods = OrderedDict()
         # list methods to export
+        _not_to_import_methods = []
         for attr_name in dir(self):
             if attr_name in type(self).__dict__:
                 # retrieving property callbacks instead of direct values.
@@ -73,7 +132,7 @@ class Interface(object):
             else:
                 attr = getattr(self, attr_name)
             if isinstance(attr, property):
-                if hasattr(attr.fget, "__export_to_module"):
+                if hasattr(attr.fget, "__export_to_module") and not hasattr(attr.fget, "_overload_module"):
                     exported_methods[attr_name] = attr
             else:
                 if hasattr(attr, "__export_to_module"):
@@ -97,7 +156,8 @@ class Interface(object):
         exported_methods = self._retrieve_exported_methods()        
         # import methods from module to interface
         for attr_name in dir(model):
-            attr = getattr(model, attr_name)
+            if attr_name.startswith('__'): continue
+            attr = getattr(model, attr_name, None)
             if ismethod(attr) and (hasattr(attr,"__import_to_interface")):
                 if hasattr(self, attr_name):
                     if not getattr(getattr(self, attr_name), "__overload_module", False):
@@ -120,6 +180,7 @@ class Interface(object):
     def bend_model(self, model):
         pass
 
+
     def trace(self, fn = "forward", *args, _save_as=None, **kwargs):
         outs = self.model.trace(fn=fn, _save_as=_save_as, **kwargs)
         method_name = fn if _save_as is None else _save_as
@@ -127,10 +188,23 @@ class Interface(object):
             setattr(self, method_name, wrap_model_method(self.model, method_name))
         return outs
 
+    @_overload_module
     def _register_method_from_graph(self, graph, fn, method_name) -> NoReturn:
         self._model._register_method_from_graph(graph, fn, method_name)
         setattr(self, method_name, wrap_model_method(self._model, method_name))
 
+    @property
+    def scriptable(self): 
+        return ScriptableState.Unknown
+
+    @property
+    def nntilde_compatible(self):
+        return ScriptableState.NotScriptable
+
+    @_overload_module
+    def script(self, *args, **kwargs):
+        assert bool(self.scriptable), "BendedRAVE must be initialized with scriptable=True to allow jit scripting"
+        return self.model.script(*args, **kwargs)
 
     # nntilde-related callbacks
     @abc.abstractmethod
@@ -141,5 +215,8 @@ class Interface(object):
     def register_nntilde_attributes(self, model):
         raise NotImplementedError
 
-
-    
+    @_overload_module
+    def nntilde(self, *args, **kwargs):
+        assert self.scriptable, "BendedRAVE must be initialized with scriptable=True to allow jit scripting"
+        self.clear_cache()
+        return self.model.nntilde(*args, **kwargs)

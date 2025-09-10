@@ -384,6 +384,10 @@ class BendedModule(object):
                 flt_out.append(flt)
         return flt_out
 
+
+            
+
+
     @_import_to_interface
     def activations(self, *flt, fn=None, op=None, exclude=None, with_bended: bool = True, _with_fn: bool = False, _raise_notfound: bool = False):
 
@@ -450,6 +454,7 @@ class BendedModule(object):
         if len(valid_activations) == 0 and _raise_notfound:
             raise BendingError(f"No corresponding key have been found for flt={flt}, fn={fn}, op={op}, exclude={exclude}")
 
+        valid_activations = self._add_aliases_to_act_props(valid_activations)
         if not _with_fn:
             valid_activations = {k.split(':')[1]: v for k, v in valid_activations.items()}
         return valid_activations
@@ -477,7 +482,7 @@ class BendedModule(object):
 
     @_import_to_interface
     def print_activations(self, *flt, fn="forward", op=None, exclude=None, out=None, fields=None, _with_fn: bool = False) -> str:
-        if len(flt) == 0: flt = [".*"]
+        if len(flt) == 0: flt = ["?.*"]
         activations = self.activations(*flt, fn=fn, op=op, exclude=exclude, _with_fn=_with_fn)
         fields = fields or _DEFAULT_ACTIVATION_FIELDS
         act_parsed = list(map(partial(_get_activations_properties, fields=fields), activations.values()))
@@ -508,6 +513,22 @@ class BendedModule(object):
     def _register_forward_call(self, func, with_bended=False):
         setattr(self, func, types.MethodType(_get_wrapped_module_forward_call(self, func, with_bended), self))
 
+    def _add_aliases_to_act_props(self, activations):
+        alias_map = {}
+        for fn in self._graphs.keys():
+            for alias_name, alias_list in self.aliases(fn).items():
+                for item in alias_list: 
+                    if isinstance(item, (tuple, list)):
+                        for i in item: 
+                            alias_map[f"{fn}:{i}"] = alias_name
+                    else:
+                        alias_map[f"{fn}:{item}"] = alias_name
+        for act_name, act_props in activations.items():
+            if f"{fn}:{act_name}" in alias_map:
+                activations[act_name].alias = alias_name
+        return activations
+            
+
     def _trace_vanilla(self, fn="forward", *args, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
         """Updates inner graph with the target method and inputs"""
         #TODO general split between kwargs with _ at the beginning for tracer
@@ -516,8 +537,8 @@ class BendedModule(object):
         tracer_out = tracer.trace(self._module, inputs, return_out=_return_out)#, proxied_buffers=_proxied_buffers)
         graph = tracer_out[0] if _return_out else tracer_out
         self._graphs[fn] = graph
-        self._activations[fn] = tracer._activations
         self._bended_activations[fn] = dict()
+        self._activations[fn] = self._add_aliases_to_act_props(tracer._activations)
         if fn != "forward":
             self._register_forward_call(fn, True)
         if _return_out:
@@ -528,9 +549,10 @@ class BendedModule(object):
     def _trace_experimental(self, fn="forward", *args, _save_as=None, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
         inputs = Inputs(*args, **kwargs)
         if _save_as is None: _save_as = fn
-        out_gm, self._activations[_save_as] = tbe.make_fx(self._module, inputs, fn=fn)
+        out_gm, activations = tbe.make_fx(self._module, inputs, fn=fn)
         self._graphs[_save_as] = out_gm.graph['forward']
         self._bended_activations[_save_as] = dict()
+        self._activations[_save_as] = self._add_aliases_to_act_props(activations)
         if _save_as != "forward":
             self._register_forward_call(_save_as, True)
         if _return_out: 
@@ -595,7 +617,8 @@ class BendedModule(object):
                 param = state_dict[k]
                 if isinstance(param, StateDictReference): param = param.resolve()
                 for bc in self._bended_params[version][k]:
-                    state_dict[k] = bc(param, name=k.replace(".", "_"))
+                    param = bc(param, name=k.replace(".", "_"))
+                state_dict[k] = param
         return resolve_state_dict(state_dict)
 
     def _bended_state_dict_from_interp(self):
@@ -634,7 +657,7 @@ class BendedModule(object):
 
     @property
     @_import_to_interface
-    def bended_params(self):
+    def bended_weights(self):
         return {k: list(v) for k, v in self._bended_params[self.version].items()}
 
     @_import_to_interface
@@ -844,7 +867,7 @@ class BendedModule(object):
     def _register_controllables(self, callback):
         #TODO be sure that controllables does not have the same name at creation
         for k, v in callback._controllables.items():
-            if k not in self._controllables:
+            if v.name not in self._controllables:
                 self._controllables[v.name] = v
                 self._controllable_hash[v.name] = self._controllable_hash.get(v.name, []) + [self._bending_callbacks.index(callback)]
 
@@ -852,6 +875,7 @@ class BendedModule(object):
     def controllables(self) -> List[BendingParameter]:
         return copy.copy(self._controllables)
 
+    @_import_to_interface
     def update(self, param_name, value):
         """updates value of a given BendingParameter object"""
         if param_name not in self._controllables:
@@ -1092,6 +1116,9 @@ class BendedModule(object):
     @_import_to_interface
     def interpolate_bending(self, *bending_parameters, **inputs):
         assert not False in [lambda x: x in self._controllables, bending_parameters]
+
+    
+  
 
 
 

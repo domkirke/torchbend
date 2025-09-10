@@ -16,6 +16,14 @@ from .utils import to_overloadpacket, TORCHBEND_TS_DISPATCH_HASH#, _get_signatur
 class ScriptedBendedException(Exception):
     pass
 
+
+import enum
+class ScriptableState(enum.Enum): 
+    Scriptable=False
+    NotScriptable=False
+    Unknown=True
+
+
 former_method_template = """
 @torch.jit.export
 def {{METHOD_NAME}}{{SIGNATURE}}:
@@ -65,6 +73,7 @@ def stitch_graph_for_torchscript(graph):
         new_node = new_graph.node_copy(n, lambda x: env[x.name])
         if new_node.op == "call_function" and isinstance(new_node.target, OpOverload):
                 if n.target._name in TORCHBEND_TS_DISPATCH_HASH:
+                    # TORCHBEND_TS_DISPATCH_HASH[n.target._name](*n.args, **n.kwargs)
                     ts_dispatch = TORCHBEND_TS_DISPATCH_HASH[n.target._name]
                     # args = [m.meta['val'] for m in n.args]
                     # kwargs = {k: v.meta['val'] for k, v in n.kwargs}
@@ -199,7 +208,7 @@ class ScriptedBendedModule(nn.Module):
     def _update_bended_weights(self, model):
         param_dict = self._full_param_dict()
         model_param_dict = dict(model.named_parameters())
-        for param, cb_list in model.bended_params.items():
+        for param, cb_list in model.bended_weights.items():
             if param not in param_dict:
                 print('[Warning] Bended parameter %s not found in current module.'%param)
                 continue

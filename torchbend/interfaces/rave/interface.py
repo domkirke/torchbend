@@ -382,10 +382,6 @@ class BendedRAVE(Interface):
         nn_module.register_attribute("learn_source", False)
         nn_module.register_attribute("reset_source", False)
 
-    @_overload_module
-    def script(self, *args, **kwargs):
-        assert self.scriptable, "BendedRAVE must be initialized with scriptable=True to allow jit scripting"
-        return self.model.script(*args, **kwargs)
 
     @_overload_module
     def nntilde(self, *args, **kwargs):
