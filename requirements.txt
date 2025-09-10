@@ -6,7 +6,7 @@ astor
 numpy
 matplotlib
 pandas
-jupyter
+jupyterlab
 torch
 torchaudio
 panel
