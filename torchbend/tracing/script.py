@@ -3,15 +3,26 @@ from abc import abstractmethod
 from typing import List, Dict, Callable, Optional
 from types import MethodType
 import torch, torch.nn as nn
+from torch._ops import OpOverload
 from ..bending import BendingParameter, get_param_type, BendingCallback, CallbackChain
+from .tracing import BendedGraph
 from .module import BendedModule
+from .graph import stitch_graph
 from .graphmodule import BendedGraphModule
 from . import CONTROLLABLE_TYPES
 from ..utils import _resolve_code, _import_defs_from_tmpfile
-import nn_tilde
+from .utils import to_overloadpacket, TORCHBEND_TS_DISPATCH_HASH#, _get_signature_for_ts_dispatch_from_graph
 
 class ScriptedBendedException(Exception):
     pass
+
+
+import enum
+class ScriptableState(enum.Enum): 
+    Scriptable=False
+    NotScriptable=False
+    Unknown=True
+
 
 former_method_template = """
 @torch.jit.export
@@ -51,11 +62,34 @@ def _template_from_param(param: BendingParameter, template=attribute_template, *
         return _resolve_code(template, **kwargs)
     else:
         raise TypeError('Type not handled by automatic attribute writing : %s'%(param.param_type))
+
+
+
+
+def stitch_graph_for_torchscript(graph):
+    new_graph = BendedGraph(from_graph=graph)
+    env = {}
+    for n in graph.nodes:
+        new_node = new_graph.node_copy(n, lambda x: env[x.name])
+        if new_node.op == "call_function" and isinstance(new_node.target, OpOverload):
+                if n.target._name in TORCHBEND_TS_DISPATCH_HASH:
+                    # TORCHBEND_TS_DISPATCH_HASH[n.target._name](*n.args, **n.kwargs)
+                    ts_dispatch = TORCHBEND_TS_DISPATCH_HASH[n.target._name]
+                    # args = [m.meta['val'] for m in n.args]
+                    # kwargs = {k: v.meta['val'] for k, v in n.kwargs}
+                    # subgraph = torch.fx.experimental.proxy_tensor.make_fx(ts_dispatch, tracing_mode="symbolic")(*args, **kwargs)
+                    # stitch_graph(new_graph, subgraph.graph, (n.args, n.kwargs), n, env)
+                    new_node.target = ts_dispatch
+                    # continue
+        env[n.name] = new_node
+    return new_graph
+
         
 
 class ScriptedBendedModule(nn.Module):
-    method_template = method_template
-    attribute_template = attribute_template
+    method_template: str = method_template
+    attribute_template: str = attribute_template
+    scripted_methods: List[str] | None = None # set to a list of list to 
 
     def __init__(self, model: BendedModule, enable_grad: bool = False):
         """
@@ -83,12 +117,21 @@ class ScriptedBendedModule(nn.Module):
     @property
     def available_methods(self):
         return self._available_methods
+
+    def _get_gm_from_module(self, model):
+        graph_module = model.graph_module(jit_compatible=True)
+        for k, g in graph_module.graph.items():
+            graph_module.graph[k] = stitch_graph_for_torchscript(g)
+        graph_module.recompile()
+        if graph_module._has_op_overloads:
+            graph_module = to_overloadpacket(graph_module)
+        return graph_module
     
     def _import_model(self, model):
         """Import all the registered methods of a BendedModule into GraphModule calls."""
         self._bended_modules = []
         self._available_methods = []
-        self.graph_module = model.graph_module(jit_compatible=True)
+        self.graph_module = self._get_gm_from_module(model)
         self._import_attributes(model)
         self._available_methods = list(self.graph_module.graph.keys())
 
@@ -96,7 +139,8 @@ class ScriptedBendedModule(nn.Module):
             if hasattr(getattr(model, attr), "_export_to_module"):
                 assert attr not in dir(self)
                 setattr(self, attr, getattr(model, attr))
-        self._register_imported_methods(model._graphs.keys())
+        scripted_methods = self.scripted_methods or model._graphs.keys()
+        self._register_imported_methods(scripted_methods)
 
     def _import_attributes(self, model, import_buffers=True):
         _attrs_to_import = getattr(model, "_attributes_for_tb_scripting", [])
@@ -121,8 +165,8 @@ class ScriptedBendedModule(nn.Module):
                 if v.annotation.__module__ == "typing":
                     # v._annotation = str(v.annotation)
                     new_params[k] = v
+
         signature._parameters = new_params
-            
         signature_str = "(self, " + str(signature)[1:]
         ins = "(" + ",".join([f"{i}={i}" for i in signature.parameters]) + ")"
 
@@ -131,7 +175,7 @@ class ScriptedBendedModule(nn.Module):
                              callback_name=callback_name, 
                              signature=signature_str, 
                              ins=ins, 
-                             _import_modules=['typing'])
+                             _headers=['from typing import *', 'import typing'])
         return code
 
     def _register_imported_methods(self, methods: List[str]):
@@ -164,7 +208,7 @@ class ScriptedBendedModule(nn.Module):
     def _update_bended_weights(self, model):
         param_dict = self._full_param_dict()
         model_param_dict = dict(model.named_parameters())
-        for param, cb_list in model.bended_params.items():
+        for param, cb_list in model.bended_weights.items():
             if param not in param_dict:
                 print('[Warning] Bended parameter %s not found in current module.'%param)
                 continue

@@ -412,8 +412,6 @@ class ScriptedRAVE(nn_tilde.Module):
             y = y[:, :self.target_channels]
         return y
 
-    def forward(self, x):
-        return self.decode(self.encode(x), from_forward=True)
 
     @torch.jit.export
     def get_learn_target(self) -> bool:
@@ -487,8 +485,18 @@ class VariationalScriptedRAVE(ScriptedRAVE):
         if self.use_pca:
             assert self.latent_size <= self.full_latent_size, "latent_size must be <= %d"%(self.full_latent_size)
 
+    
+    def forward(self, x, crop_latent: bool = False):
+        z = self.encode_full(x)
+        if crop_latent:
+            z_dec = mark(z[..., :self.latent_size, :], "latent_pca")
+        else:
+            z_dec = z
+        return self.decode_full(z_dec, from_forward=True)
+
+
     @torch.jit.export
-    def encode_full(self, x):
+    def encode_full(self, x, postprocess:bool = True):
         if self.stereo_mode:
             if self.n_channels == 1:
                 x = x[:, 0].unsqueeze(0)
@@ -513,7 +521,8 @@ class VariationalScriptedRAVE(ScriptedRAVE):
             else:
                 raise RuntimeError()
         z = self.encoder(x)
-        z = self.post_process_latent_full(z)
+        if postprocess:
+            z = self.post_process_latent_full(z)
         return z
 
 
@@ -548,10 +557,6 @@ class VariationalScriptedRAVE(ScriptedRAVE):
         elif self.target_channels < self.n_channels:
             y = y[:, :self.target_channels]
         return y
-
-    
-    def forward(self, x):
-        return self.decode_full(self.encode_full(x), from_forward=True)
 
     @torch.jit.export
     def encode_dist(self, x):
@@ -590,7 +595,7 @@ class VariationalScriptedRAVE(ScriptedRAVE):
         std = std[:, :self.latent_size]
         return torch.cat([z, std], dim=-2)
 
-    def post_process_latent_full(self, z):
+    def post_process_latent_full(self, z, reparametrize = True):
         z = self.encoder.reparametrize(z, temperature=self._temperature)[0]
         if self.use_pca:
             z = self.projections.forward(z, self.projection_idx.int().item())

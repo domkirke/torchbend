@@ -142,10 +142,32 @@ class ActivationProperties():
     kwargs: Optional[Dict[str, Any]] = None
     type: Optional[Any] = None
     code: Optional[CodePosition] = None
+    aliases: str | None = None
 
     @staticmethod
     def _default_panel_fields():
         return ['name', 'op', 'target', 'args', 'kwargs', 'shape']
+
+    @staticmethod
+    def from_node(node, fn=None):
+        shape = None
+        if hasattr(node, "shape"):
+            shape = node.shape
+        else:
+            if "tensor_meta" in node.meta:
+                shape = tuple(node.meta["tensor_meta"].shape)
+                
+        return ActivationProperties(
+            name = node.name, 
+            op = node.op, 
+            fn = getattr(node, "fn", fn),
+            target = node.target, 
+            args = node.args, 
+            kwargs = node.kwargs, 
+            type = node.type, 
+            code = getattr(node, "code", None), 
+            shape = shape
+        )
 
 class TracingContext():
     
@@ -196,13 +218,14 @@ class BendedGraph(torch.fx.Graph):
         owning_module: Optional["BendedGraphModule"] = None,
         tracer_cls: Optional[Type["BendingTracer"]] = None,
         tracer_extras: Optional[Dict[str, Any]] = None,
-        from_graph: Optional["BendedGraph"] = None
+        from_graph: Optional["BendedGraph"] = None, 
+        from_backend: Optional[str] = None
     ):
         """
         Construct an empty Graph.
         """
         if from_graph is not None:
-            self._import_from_graph(from_graph, owning_module=owning_module)
+            self._import_from_graph(from_graph, owning_module=owning_module, fn=func)
         else:
             self._root: Node = Node(self, "", "root", "", (), {})
             self._used_names: Dict[str, int] = {}  # base name -> number
@@ -216,9 +239,14 @@ class BendedGraph(torch.fx.Graph):
             self._original_func_name = None
             self._codegen = CodeGen()
             self._codegen._func_name = func
+            self.aliases = {}
+            self.activations = {}
             self._co_fields: Dict[str, Any] = {}
             self._attached_bending_callbacks = {}
+            self._additional_tensor_constants = {} # when rewiring experimental make_fx graph modules
             self._find_nodes_lookup_table = _FindNodesLookupTable()
+            self._from_backend = from_backend
+            self.flow_steps = None
 
     def attach_bending_callback(self, name, callback):
         """when bending operations were written within the graph, 
@@ -229,7 +257,10 @@ class BendedGraph(torch.fx.Graph):
     def get_attached_callbacks(self):
         return dict(self._attached_bending_callbacks)
 
-    def _import_from_graph(self, graph, owning_module):
+    def add_unmatched_params(self, param_dict):
+        self._additional_tensor_constants.update(param_dict)
+
+    def _import_from_graph(self, graph, owning_module, fn=None):
         self._root: Node = Node(self, "", "root", "", (), {})
         self._used_names: Dict[str, int] = {}  # base name -> number
         self._insert = self._root.prepend
@@ -238,16 +269,18 @@ class BendedGraph(torch.fx.Graph):
         self._owning_module = owning_module
         self._tracer_cls = graph._tracer_cls
         self._tracer_extras = graph._tracer_extras
-        self._func_name = graph._func_name
-        self._original_func_name = graph._func_name
+        self._func_name = fn if fn is not None else getattr(graph, "_func_name")
+        self._original_func_name = getattr(graph, "_original_func_name", self._func_name)
         self._codegen = CodeGen()
-        self._codegen._func_name = graph._func_name
+        self._codegen._func_name = getattr(graph, "_func_name", self._func_name)
         self._co_fields: Dict[str, Any] = {}
         self._find_nodes_lookup_table = _FindNodesLookupTable()
-        self._attached_bending_callbacks = graph._attached_bending_callbacks
+        self._attached_bending_callbacks = getattr(graph, "_attached_bending_callbacks", {})
+        self._from_backend = getattr(graph, "_from_backend", None)
+        self._additional_tensor_constants = getattr(graph, "_additional_tensor_constants", {})
+        self.flow_steps = getattr(graph, "flow_steps", None)
         for attr in type(self)._GRAPH_COPY_ATTR:
             setattr(self, attr, copy.copy(getattr(graph, attr, None)))
-
 
     @property
     def fn(self):
@@ -269,6 +302,14 @@ class BendedGraph(torch.fx.Graph):
     @property
     def inputs(self):
         return list(filter(lambda x: x.op == "placeholder", self.nodes))
+
+    def python_code(self, *args, fn_name=None, **kwargs):
+        _orig_codegen_fn = self._codegen._func_name
+        if fn_name is not None: 
+            self._codegen._func_name = fn_name
+        code = super().python_code(*args, **kwargs)
+        self._codegen._func_name = _orig_codegen_fn
+        return code
 
 
 

@@ -35,7 +35,7 @@ def test_logical_flow(module, method):
             log_to_file(f, "input", inp)
             log_to_file(f, "out", out)
             log_to_file(f, "graph", graph)
-            log_to_file(f, "flow", graph.flow_steps)
+            log_to_file(f, "flow", graph['forward'].flow_steps)
             gm = getattr(module.graph_module(), method)(**inp)
     return True
 
@@ -50,7 +50,7 @@ def test_loop(module, method):
             log_to_file(f, "input", inp)
             log_to_file(f, "out", out)
             log_to_file(f, "graph", graph)
-            log_to_file(f, "flow", graph.flow_steps)
+            log_to_file(f, "flow", graph['forward'].flow_steps)
     return True
 
 @pytest.mark.parametrize("module", ttm.split_graph_test_modules)

@@ -144,20 +144,23 @@ class BendedRAVE(Interface):
         model = torch.jit.load(model_path)
         return model
 
-    def _bend_model(self, model: BendedModule):
-        model.trace("forward", x=torch.zeros(1, 1, 65536),  _proxied_buffers=self._proxied_buffers)
-        is_variational = isinstance(model._module, VariationalScriptedRAVE)
-        _, (decoder_out,) = model.trace("encode", x=torch.zeros(1, 1, 65536), _proxied_buffers=self._proxied_buffers, _return_out=True)
-        if is_variational:
-            _, (decoder_out_full,) = model.trace("encode_full", x=torch.zeros(1, 1, 65536), _proxied_buffers=self._proxied_buffers, _return_out=True)
-            _ = model.trace("encode_dist", x=torch.zeros(1, 1, 65536), _proxied_buffers=self._proxied_buffers, _return_out=True)
+    def bend_model(self, model: BendedModule):
+        self.trace("forward", x=torch.zeros(2, 1, 65536),  _proxied_buffers=self._proxied_buffers)
+        self.trace("forward", x=torch.zeros(2, 1, 65536), crop_latent=True, _proxied_buffers=self._proxied_buffers, _save_as="forward_proj")
+        is_variational = isinstance(model._module, VariationalScriptedRAVE) if self.scriptable else type(self.encoder._module) == ravelib.blocks.VariationalEncoder
+        encoder_kwargs = {'postprocess': True} if self.scriptable else {'return_mb': False}
+        enc_graph, decoder_out = model.trace("encode", x=torch.zeros(2, 1, 65536), **encoder_kwargs, _proxied_buffers=self._proxied_buffers, _return_out=True)
+        if is_variational and self.scriptable:
+            _, decoder_out_full = model.trace("encode_full", x=torch.zeros(2, 1, 65536), _proxied_buffers=self._proxied_buffers, _return_out=True)
+            _ = self.trace("encode_dist", x=torch.zeros(2, 1, 65536), _proxied_buffers=self._proxied_buffers, _return_out=True)
         if self.scriptable:
             latent_out = decoder_out
         else:
             latent_out = model.encoder.reparametrize(decoder_out)[:2][0]
-        model.trace("decode", z=latent_out, _proxied_buffers=self._proxied_buffers)
-        if is_variational:
-            model.trace("decode_full", z=decoder_out_full, _proxied_buffers=self._proxied_buffers)
+        encoder_kwargs = {'preprocess': True} if self.scriptable else {}
+        self.trace("decode", z=latent_out, _proxied_buffers=self._proxied_buffers)
+        if is_variational and self.scriptable:
+            self.trace("decode_full", z=decoder_out_full, _proxied_buffers=self._proxied_buffers)
         
 
     def _load_single_audio(self, path: str):
@@ -223,6 +226,14 @@ class BendedRAVE(Interface):
         audio = self._model.forward(x, **kwargs)
         if out is not None: self.write_audio(out, audio[0])
         return audio
+
+    def forward_proj(self, x: Union[torch.Tensor, str], out: Optional[str] = None, clear_cache:  bool = False, **kwargs):
+        if isinstance(x, str):
+            x = self.load_audio(x)
+        if clear_cache: self.clear_cache()
+        audio = self._model.forward_proj(x, **kwargs)
+        if out is not None: self.write_audio(out, audio[0])
+        return audio
     
     @property
     def latent_size(self):
@@ -242,9 +253,17 @@ class BendedRAVE(Interface):
         return BendedModule(self._model.discriminator)
 
     def pre_process_latent(self, z):
-        raise NotImplementedError 
+        if self.scriptable:
+            return self._model.pre_process_latent(z) 
+        else:
+            return pre_process_fn[type(self._model.encoder)](self, z)
+
     def post_process_latent(self, z):
-       raise NotImplementedError 
+        if self.scriptable:
+            return z
+        else:
+            return post_process_fn[type(self._model.encoder)](self, z)
+
     def get_dims_for_fidelity(self, fidelity: float):
         latent_size = max(np.argmax(self.model.fidelity.numpy() > fidelity), 1)
         return latent_size
@@ -255,12 +274,10 @@ class BendedRAVE(Interface):
         if isinstance(x, str):
             x = self.load_audio(x)
         if self.scriptable:
-            z = self._model.encode(x)
-            if postprocess: 
-                z = self.post_process_latent(z)
+            z = self._model.encode(x, postprocess=postprocess)
         else:
-            decoder_out = self._model.encode(x)
-            z = self._model.encoder.reparametrize(decoder_out)[:2][0]
+            encoder_out = self._model.encode(x)
+            z = self._model.encoder.reparametrize(encoder_out)[:2][0]
             if postprocess: 
                 z = self.post_process_latent(z)
         return z
@@ -365,10 +382,6 @@ class BendedRAVE(Interface):
         nn_module.register_attribute("learn_source", False)
         nn_module.register_attribute("reset_source", False)
 
-    @_overload_module
-    def script(self, *args, **kwargs):
-        assert self.scriptable, "BendedRAVE must be initialized with scriptable=True to allow jit scripting"
-        return self.model.script(*args, **kwargs)
 
     @_overload_module
     def nntilde(self, *args, **kwargs):

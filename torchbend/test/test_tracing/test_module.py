@@ -293,7 +293,6 @@ def test_bending_with_configs(module_config):
     cb1 = tb.Mask(tb.BendingParameter("mask", 0.0))
 
     # default bended version
-    weight_bended = False
     for method in module_config.get_methods():
         args, kwargs, bw, ba = module_config.get_method_args(method)
         bended_module.trace(method, *args, **kwargs)
@@ -307,7 +306,7 @@ def test_bending_with_configs(module_config):
     cb2 = tb.Scale(tb.BendingParameter("scale", 4.))
     for method in module_config.get_methods():
         args, kwargs, bw, ba = module_config.get_method_args(method)
-        bended_module.bend(cb2, *bw, *ba, fn=method)
+        bended_module.bend(cb2, *ba, *bw, fn=method)
     bended_module.save_config_as("bending_2")
     bended_module.reset_bending()
 

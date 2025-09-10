@@ -1,8 +1,12 @@
 import copy, re, os
+import inspect
+import functools
+from torch._ops import OpOverload
 import pathlib, uuid, shutil
 from IPython.core.display import HTML
 from IPython import display as ipython_display
 import pandas as pd
+import typing as tp
 from typing import Any, Union, Dict, List
 import random
 from enum import Enum
@@ -42,6 +46,7 @@ __COPY_HOOKS = [
     "_load_state_dict_post_hooks",
 ]
 
+TORCHBEND_TS_DISPATCH_HASH = {}
 
 def get_model_copy(model, copy_parameters=False):
     """Make a bendable copy of a model, just copying internal dicts of submodules
@@ -369,3 +374,46 @@ class TmpFileSession(object):
 
 def tmp_file_session(obj):
     return TmpFileSession(obj)
+
+
+# def _get_signature_for_ts_dispatch(fn):
+#     types = []
+#     for k, v in dict(inspect.signature(fn).parameters).items():
+#         if v.annotation == torch._empty:
+#             types.append(tp.Any)
+#         else:
+#             types.append(v.annotation)
+#     return tuple(types)
+
+
+# def _get_signature_for_ts_dispatch_from_graph(node):
+#     types = []
+#     for a in node.args:
+#         types.append(type(a))
+#     for k, v in node.kwargs.items():
+#         types.append(type(v))
+#     return tuple(types)    
+
+
+def register_torchscript_dispatch(fn):
+    def __register_fn(target):
+        global TORCHBEND_TS_DISPATCH_HASH
+        fn_name = fn._qualname
+        # if fn_name not in TORCHBEND_TS_DISPATCH_HASH: 
+        #     TORCHBEND_TS_DISPATCH_HASH[fn_name] = {}
+        # signature = _get_signature_for_ts_dispatch(target)
+        # TORCHBEND_TS_DISPATCH_HASH[fn_name][signature] = target
+        TORCHBEND_TS_DISPATCH_HASH[fn_name] = target
+        return target
+    return __register_fn
+
+
+def to_overloadpacket(gm):
+    for k, g in gm.graph.items():
+        for n in g.nodes:
+            if n.op == "call_function" and isinstance(n.target, OpOverload):
+                n.target = n.target.overloadpacket  # e.g., aten.sin instead of aten.sin.default
+    gm.recompile()
+    return gm
+
+

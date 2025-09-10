@@ -10,10 +10,10 @@ class Normal(BendingCallback):
     jit_compatible = True
     nntilde_compatible = True
     valid_ops = ['add', 'mul']
-    controllable_params = {'std': ((float, torch.FloatTensor), 0.3)}
+    controllable_params = {'std': ((float, torch.FloatTensor), 0.3), 'seed': (int, 0)}
 
-    def __init__(self, std: float | torch.Tensor | BendingParameter = 0.3, seed: int = None, dim=None, op = "add"):
-        super().__init__(std=std)
+    def __init__(self, std: float | torch.Tensor | BendingParameter = 0.3, seed: int | BendingParameter = 0, dim=None, op = "add"):
+        super().__init__(std=std, seed=seed)
         assert op in self.valid_ops
         self.op = op
         self.dim = dim
@@ -25,8 +25,8 @@ class Normal(BendingCallback):
 
     def __repr__(self):
         rp =  f"{type(self).__name__}(std={float(self.std):.3f}"
-        if self._seed is not None:
-            rp += f", seed={int(self._seed)}"
+        if self.seed is not None:
+            rp += f", seed={int(self.seed)}"
         rp+=")"
         return rp
 
@@ -43,6 +43,7 @@ class Normal(BendingCallback):
         return rnd_shape
     
     def _init_rnd_(self, shape: List[int]):
+        torch.manual_seed(int(self.get("seed")))
         assert shape is not None, "mask preinit must be given target shape"
         if torch.jit.is_scripting():
             noise = torch.randn(self._get_rnd_shape(shape))
@@ -99,11 +100,11 @@ class Normal(BendingCallback):
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor) -> None:
         if self.op == "mul":
-            param.set_(self.get_noise_from_id(idx) * cache * self.get('std').to(param))
+            param.set_(self.get_noise_from_id(idx).to(cache) * cache * self.get('std').to(cache))
         else: 
-            param.set_(self.get_noise_from_id(idx) * self.get('std').to(param) + cache)
+            param.set_(self.get_noise_from_id(idx).to(param) * self.get('std').to(param) + cache)
 
-    def bend_input(self, x: torch.Tensor, std: torch.Tensor | None = None, name: str | None = None):
+    def bend_input(self, x: torch.Tensor, std: torch.Tensor | None = None, seed: torch.Tensor | None = None, name: str | None = None):
         if std is None: std = self.get('std')
         noise = self.get_noise(x, name).to(x)
         if self.op == "mul":

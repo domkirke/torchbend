@@ -12,7 +12,7 @@ import nn_tilde
 from .module import BendedModule
 from .script import ScriptedBendedModule, ScriptedBendedException
 from .utils import tmp_file_session
-from ..utils import _resolve_code
+from ..utils import _resolve_code, resolve_symbolic_shapes
 
 
 method_template = """
@@ -83,8 +83,8 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         self._attributes = ListAttribute([], List[str])
         self._get_set_candidates = {}
         ScriptedBendedModule.__init__(self, model, enable_grad=enable_grad)
-        self._search_for_getter_and_setters(model.module)
 
+        self._search_for_getter_and_setters(model.module)
         if hasattr(model, "register_nntilde_attributes"):
             if not getattr(getattr(model, "register_nntilde_attributes"), "__isabstractmethod__", False):
                 model.register_nntilde_attributes(self)
@@ -131,13 +131,14 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         # parse channel split
         channel_split = [s[-2] for s in self._get_input_shapes_from_method(callback_name)]
         input_args = self.graph_module.graph[method_name].find_nodes(op="placeholder")
-        input_args = input_args + list(filter(lambda x: hasattr(x, "from_callback"), input_args))
+        input_args = list(filter(lambda x: self._check_input_type_for_export(x), input_args))
+        # input_args = list(filter(lambda x: x.meta.get("from_callback") is not None, input_args))
         ins = ", ".join([f"in{i}" for i in range(len(channel_split))])
         ins_parsed = ", ".join([f"{input_args[i].name}=in{i}" for i in range(len(channel_split))])
         sections = "(" + ", ".join([str(sp) for sp in channel_split]) + ",)"
 
         # parse upsampling 
-        n_samples = [s[-1] for s in self._get_input_shapes_from_method(callback_name)]
+        n_samples = resolve_symbolic_shapes([s[-1] for s in self._get_input_shapes_from_method(callback_name)])
         sr_conversion = []
         for i, n in enumerate(n_samples):
             if i == 0: continue
@@ -167,15 +168,15 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         for i in input_placeholders:
             activation = method_graph.activations.get(i.name)
             if activation is None: 
-                if hasattr(i, "from_callback"):
-                    for k, p in i.from_callback.input_controllables().items(): 
+                if "from_callback" in i.meta:
+                    for k, p in i.meta['from_callback'].input_controllables().items(): 
                         if re.match(rf'{i.name}((_\d)*)?$', p.name):
                             if p.value is not None: 
-                                input_shapes.append(p.value.shape)
+                                input_shapes.append(resolve_symbolic_shapes(p.value.shape))
                             else:
                                 raise ValueError('Could not obtain shape for input %s'%i.name)                                
             else:
-                input_shapes.append(activation.shape)
+                input_shapes.append(torch.Size(resolve_symbolic_shapes(activation.shape)))
         return input_shapes
 
     def _default_method_attributes(self, method):
@@ -185,9 +186,19 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
         # get inputs
         input_placeholders = list(filter(lambda x: x.op == "placeholder", method_graph.nodes))
         input_placeholders = list(filter(lambda x: self._check_input_type_for_export(x), input_placeholders))
-        input_shapes = self._get_input_shapes_from_method(method)
-        # if len(set(input_shapes)) != 1:
-        #     raise ScriptedBendedException("Found different input shapes for method %s. Multi-input is available if sharing same shapes"%method)
+        try:
+            input_shapes = []
+            for n in input_placeholders:
+                if "tensor_meta" in n.meta:
+                    shape = resolve_symbolic_shapes(n.meta['tensor_meta'].shape)
+                elif "shape_from_controllable" in n.meta:
+                    shape = resolve_symbolic_shapes(n.meta['shape_from_controllable'])
+                else:
+                    raise KeyError()
+                input_shapes.append(shape) 
+        except KeyError as e:
+            input_shapes = self._get_input_shapes_from_method(method)
+
         input_shape = input_shapes[0]
         assert len(input_shape) == 3
         input_shape = input_shape[-1]
@@ -203,6 +214,7 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
             if current_act.shape is None: 
                 raise ScriptedBendedException("shape for activation %s not found, or None."%(current_act.shape))
             output_shapes.append(current_act.shape)
+        output_shapes = list(map(lambda x: torch.Size(resolve_symbolic_shapes(x)), output_shapes))
         if len(set(output_shapes)) != 1:
             raise ScriptedBendedException("Found different output shapes for method %s. Multi-input is available if sharing same shapes"%method)
         output_shape = output_shapes[0]
@@ -277,20 +289,17 @@ class NNBendedModule(nn_tilde.Module, ScriptedBendedModule):
             self.register_method(method, **attrs.as_dict())
 
     def _search_for_getter_and_setters(self, module):
-
-
         _candidates = {}
         for attr_name in dir(module):
             if (attr_name.startswith("set_") or attr_name.startswith("get_")): 
-                target_attr = "_".join(attr_name.split('_')[1:])
-                if target_attr not in module._attributes: 
-                    continue
+                # target_attr = "_".join(attr_name.split('_')[1:])
+                func = getattr(module, attr_name)
+                if not isinstance(func, MethodType): continue
+                # _candidates[attr_name] = _get_wrapped_setter_and_getter(self, module, attr_name, func)
+                _candidates[attr_name] = func
             else:
                 continue
-            func = getattr(module, attr_name)
-            if not isinstance(func, MethodType): continue
-            # _candidates[attr_name] = _get_wrapped_setter_and_getter(self, module, attr_name, func)
-            _candidates[attr_name] = func
+            
         self._get_set_candidates = _candidates
 
     def _reset_get_set_candidates(self):

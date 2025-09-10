@@ -1,4 +1,5 @@
 import torch, re
+import copy
 
 import logging
 import abc
@@ -261,7 +262,7 @@ class BendingCallback(nn.Module):
         if isinstance(value, BendingParameter):
             assert value.param_type in target_type_ids
         else:
-            assert type(value) == BendingParamType.param_hash[target_type]
+            assert type(value) == BendingParamType.param_hash()[target_type]
 
     def register_controllable(self, name, value, valid_types=None):
         assert name in self.controllable_params, "tried to register controllable value %s, but not compatible with %s"%(name, type(self))
@@ -355,8 +356,12 @@ class BendingCallback(nn.Module):
 
     def register_activation(self, name, shape):
         name = name.replace('.', '_')
+        shape = list(shape)
+        for i, a in enumerate(shape): 
+            if isinstance(a, torch.SymInt):
+                shape[i] = int(copy.deepcopy(a))
         self._bending_shapes[name] = shape
-        return name
+        return name, shape
 
     # generic callback for bending targets
     def add_bending_target(self, name, parameter=None, shape=None, cache=True):

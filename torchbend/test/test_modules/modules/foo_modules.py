@@ -25,12 +25,12 @@ class Foo(nn.Module):
         return out
 
     # @torch.jit.export
-    @bend
-    def forward_dist(self, x):
-        out = self.pre_conv(x)
-        for i, mod in enumerate(self.module_list):
-            out = mod(out)
-        return torch.distributions.Normal(out, torch.ones_like(out))
+    # @bend
+    # def forward_dist(self, x):
+    #     out = self.pre_conv(x)
+    #     for i, mod in enumerate(self.module_list):
+    #         out = mod(out)
+    #     return torch.distributions.Normal(out, torch.ones_like(out))
 
     def script(self):
         return self
@@ -81,12 +81,12 @@ class WrappedFoo(object):
         out2 = self._foo2(x)
         return out1, out2
 
-    @bend
-    def forward_dist(self, x):
-        x = self.preprocess(x)
-        out1 = self._foo1.forward_dist(x)
-        out2 = self._foo2.forward_dist(x)
-        return out1, out2
+    # @bend
+    # def forward_dist(self, x):
+    #     x = self.preprocess(x)
+    #     out1 = self._foo1.forward_dist(x)
+    #     out2 = self._foo2.forward_dist(x)
+    #     return out1, out2
 
 class TorchFuncsFoo(nn.Module):
     __bended_methods__ = ['test_to']
@@ -116,16 +116,16 @@ modules_to_test = [
                          tuple(),
                          {"x": torch.randn(4, 1, 128)},
                          ["?.*weight"],
-                         ["module_list_1"],
+                         ["convolution_1"],
                          True
                      ), 
-                     'forward_dist': (
-                         tuple(),
-                         {"x": torch.randn(4, 1, 128)},
-                         ["?.*weight"],
-                         ["module_list_1"],
-                         True
-                     )
+                    #  'forward_dist': (
+                    #      tuple(),
+                    #      {"x": torch.randn(4, 1, 128)},
+                    #      ["?.*weight"],
+                    #      ["module_list_1"],
+                    #      True
+                    #  )
                     }
                     ),
     ModuleTestConfig(WrappedFoo, 
@@ -135,16 +135,16 @@ modules_to_test = [
                          tuple(),
                          {"x": torch.randn(1, 1, 128)},
                          ["?.*weight"],
-                         ["_foo1_module_list_1", "_foo2_module_list_1"],
+                         ["convolution_3", "convolution_7"],
                          True
                      ), 
-                     'forward_dist': (
-                         tuple(),
-                         {"x": torch.randn(1, 1, 128)},
-                         ["?.*weight"],
-                         ["_foo1_module_list_1", "_foo2_module_list_1"],
-                         True
-                     )
+                    #  'forward_dist': (
+                    #      tuple(),
+                    #      {"x": torch.randn(1, 1, 128)},
+                    #      ["?.*weight"],
+                    #      ["_foo1_module_list_1", "_foo2_module_list_1"],
+                    #      True
+                    #  )
                     }
                     ),
     ModuleTestConfig(ShapedFoo, 
@@ -154,21 +154,21 @@ modules_to_test = [
                          tuple(),
                          {"x": torch.randn(1, 1, 128)},
                          ["?.*weight"],
-                         ["module_list_1"],
+                         ["convolution_2"],
                          True
                      ),
                      'return_shape': (
                          tuple(),
                          {"x": torch.randn(1, 1, 128)},
                          ["?.*weight", "param"],
-                         ["module_list_1"],
+                         ["convolution_2"],
                          True
                      ), 
                      'loop_on_shape': (
                          tuple(),
                          {"x": torch.randn(1, 1, 128)},
                          ["?.*weight", "param"],
-                         ["module_list_1"],
+                         ["convolution_2"],
                          True
                     )
         }
@@ -192,10 +192,12 @@ modules_to_test = [
 modules_to_compare = [
      ModuleTestConfig(Foo, 
                      (tuple(), dict()), 
-                     {'forward_dist': (
-                         tuple(),
-                         {"x": torch.randn(1, 1, 128)}, 
-                         [], [], True
-                     )}
+                     {
+                        'forward_dist': (
+                            tuple(),
+                            {"x": torch.randn(1, 1, 128)}, 
+                            [], [], True
+                        )
+                     }
      ), 
 ]

@@ -516,10 +516,12 @@ def print_tensor_ids(*tensors, f=None):
             f.write(out_str)
 
 
-def _resolve_code(code,  _import_modules=[], **kwargs):
+def _resolve_code(code, _import_modules=[], _headers=[], **kwargs):
+    headers = ""
     for module in _import_modules:
-        code = f"import {module}\n" + code
-    # pattern = str(code)
+        headers = f"import {module}\n" + headers
+    headers += "\n".join(_headers)
+    
     for k, v in kwargs.items():
         pattern = re.compile(r'\{\{%s\}\}'%(k.upper()))
         iterations = list(pattern.finditer(code))
@@ -528,7 +530,7 @@ def _resolve_code(code,  _import_modules=[], **kwargs):
             code = code[:start] + str(v) + code[end:]
             iterations = list(pattern.finditer(code))
     #TODO check if no {{}} left
-    return code
+    return f"{headers}\n{code}"
 
 def _replace_placeholders(code, **kwargs):
     for k, v in kwargs.items():
@@ -682,3 +684,70 @@ def resolve_state_dict(state_dict, as_param=False):
                 resolved_state_dict[k] = v.resolve().data
 
     return resolved_state_dict
+
+
+def resolve_symbolic_shapes(shape):
+    shape = list(shape)
+    for i, s in enumerate(shape):
+        if isinstance(s, torch.SymInt):
+            shape[i] = int(copy.deepcopy(s))
+    return shape
+    
+
+def channel_correlation(x: torch.Tensor, dim: int = 2):
+    if dim!=2: raise NotImplementedError()
+    x_1 = x.reshape(x.size(0), x.size(1), -1) - x.mean((2, 3))[..., None]
+    var_x = x_1.std(2)
+    if torch.jit.is_scripting() or torch.jit.is_tracing():
+        clamp_value = 1.e-5
+    else: 
+        clamp_value = torch.finfo(x.dtype).eps
+    auto_corr = (x_1.bmm(x_1.permute(0, 2, 1))  / x_1.size(2)).clamp(-clamp_value, clamp_value)
+    corr_score = auto_corr * (1 - torch.eye(x_1.size(1)).to(x)[None]) / (var_x[:, None, :] * var_x[:, :, None]).clamp(1.e-7)
+    corr_score = corr_score.mean(-1)
+    return corr_score
+
+
+import math
+def upper_threshold(x: torch.Tensor, p: float, dim: int | None =None, keepdim: bool=False, interpolate: bool = True, method: str='linear'):
+    """
+    Returns t such that roughly a fraction p of values are >= t.
+    Uses q = 1 - p quantile.
+    - interpolate=True: uses torch.quantile (smooth).
+    - interpolate=False: uses kth smallest order statistic (no interpolation).
+    """
+    if not (0.0 <= p <= 1.0):
+        raise ValueError("p must be in [0, 1].")
+    q = 1.0 - p
+
+    if interpolate:
+        return torch.quantile(x, q, dim=dim, keepdim=keepdim, interpolation=method)
+    else:
+        # Order statistic: k = ceil(q * n), kth smallest value
+        if dim is None:
+            x_flat = x.flatten()
+            n = x_flat.numel()
+            if n == 0:
+                raise ValueError("Empty tensor.")
+            k = max(1, int(math.ceil(q * n)))
+            return torch.kthvalue(x_flat, k).values
+        else:
+            n = x.size(dim)
+            if n == 0:
+                raise ValueError("Empty tensor along dim.")
+            k = max(1, int(math.ceil(q * n)))
+            return torch.kthvalue(x, k, dim=dim, keepdim=keepdim).values
+
+
+def prime_factors(n):
+    i = 2
+    factors = []
+    while i * i <= n:
+        if n % i:
+            i += 1
+        else:
+            n //= i
+            factors.append(i)
+    if n > 1:
+        factors.append(n)
+    return factors

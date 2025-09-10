@@ -29,9 +29,20 @@ def get_output():
 Model = torch.nn.Module
 from .utils import *
 from . import distributions
+
+_TORCHBEND_DEFAULT_TRACE_METHOD = os.environ.get('TORCHBEND_DEFAULT_TRACE_METHOD', 'proxy_tensor')
+
+from pathlib import Path
+_TORCHBEND_DEFAULT_MODEL_DIR = Path(os.environ.get('TORCHBEND_DEFAULT_MODEL_DIR') or Path(os.getcwd()) / "models")
+
 from .bending import *
 from .tracing import *
-from .tracing.utils import compare_outs, compare_state_dict_tensors, _import_to_interface
+
+def set_trace_method(trace_method):
+    assert trace_method in TORCHBEND_TRACE_METHODS
+    _TORCHBEND_DEFAULT_TRACE_METHOD = trace_method
+
+from .tracing.utils import compare_outs, compare_state_dict_tensors, _import_to_interface, register_torchscript_dispatch
 
 from .ui import panel
 if panel is not None:

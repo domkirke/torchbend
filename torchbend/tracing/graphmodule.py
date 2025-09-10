@@ -1,4 +1,6 @@
 import torch
+import logging
+import copy
 import torch.nn
 import collections
 from .tracing import ActivationProperties
@@ -72,57 +74,62 @@ class BendedGraphModule(GraphModule):
         torch.nn.Module.__init__(self)
         self.__class__.__name__ = class_name
 
-
+        self._has_op_overloads = False
         for k, v in kwargs.items():
             assert isinstance(v, torch.fx.Graph), f"GraphModule must be initialized with a valid sequence of Graph; got {type(v)} for callback {k}"
+            if getattr(v, "_from_backend", None) == "proxy_tensor":
+                self._has_op_overloads= True
+            if hasattr(v, "_additional_tensor_constants"):
+                for k, p in v._additional_tensor_constants.items():
+                    root.register_buffer(k, p)
 
 
-        #TODO check if graphs are graphing the same object
-        graph_nodes = sum([list(g.nodes) for g in kwargs.values()], [])
+            if isinstance(root, torch.nn.Module):
+                if hasattr(root, "training"):
+                    self.training = root.training
 
-        if isinstance(root, torch.nn.Module):
-            if hasattr(root, "training"):
-                self.training = root.training
+                # When we pickle/unpickle graph module, we don't want to drop any module or attributes.
+                if isinstance(root, _CodeOnlyModule):
+                    for k, _ in root.named_children():
+                        _copy_attr(root, self, k)
 
-            # When we pickle/unpickle graph module, we don't want to drop any module or attributes.
-            if isinstance(root, _CodeOnlyModule):
-                for k, _ in root.named_children():
-                    _copy_attr(root, self, k)
+                    for k, _ in root.named_buffers():
+                        _copy_attr(root, self, k)
 
-                for k, _ in root.named_buffers():
-                    _copy_attr(root, self, k)
+                    for k, _ in root.named_parameters():
+                        _copy_attr(root, self, k)
 
-                for k, _ in root.named_parameters():
-                    _copy_attr(root, self, k)
+                for node in v.nodes:
+                    if node.op in ["get_attr", "call_module"]:
+                        assert isinstance(node.target, str)
+                        #TODO crashes when an external function argument is "self"; makes an _unnamed node
+                        try:
+                            _copy_attr(root, self, node.target)
+                        except Exception as e: 
+                            logging.error('could not copy %s from module to graph module.'%node.target)
+                            raise e
 
-            for node in graph_nodes:
-                if node.op in ["get_attr", "call_module"]:
-                    assert isinstance(node.target, str)
-                    #TODO crashes when an external function argument is "self"; makes an _unnamed node
-                    _copy_attr(root, self, node.target)
 
-        elif isinstance(root, dict):
-            targets_to_copy = []
-            for node in graph_nodes:
-                if node.op in ["get_attr", "call_module"]:
-                    assert isinstance(node.target, str)
-                    if node.target not in root:
-                        raise RuntimeError(
-                            "Node "
-                            + str(node)
-                            + " referenced target "
-                            + node.target
-                            + " but that target was not provided in ``root``!"
-                        )
-                    targets_to_copy.append(node.target)
-            targets_to_copy.sort(key=lambda t: t.count("."))
-            for target_to_copy in targets_to_copy:
-                _assign_attr(root[target_to_copy], self, target_to_copy)
-        else:
-            raise RuntimeError("Unsupported type " + str(root) + " passed for root!")
+            elif isinstance(root, dict):
+                targets_to_copy = []
+                for node in v.nodes:
+                    if node.op in ["get_attr", "call_module"]:
+                        assert isinstance(node.target, str)
+                        if node.target not in root:
+                            raise RuntimeError(
+                                "Node "
+                                + str(node)
+                                + " referenced target "
+                                + node.target
+                                + " but that target was not provided in ``root``!"
+                            )
+                        targets_to_copy.append(node.target)
+                targets_to_copy.sort(key=lambda t: t.count("."))
+                for target_to_copy in targets_to_copy:
+                    _assign_attr(root[target_to_copy], self, target_to_copy)
+            else:
+                raise RuntimeError("Unsupported type " + str(root) + " passed for root!")
 
-        for k, v in kwargs.items():
-            assert isinstance(v, torch.fx.Graph), f"GraphModule must be initialized with a valid sequence of Graph; got {type(v)} for callback {k}"
 
         self._activations: Dict[str, Dict[str, ActivationProperties] | None] = {}
         self.graph = dict(kwargs)
@@ -136,11 +143,6 @@ class BendedGraphModule(GraphModule):
             and "<locals>" not in tracers.__qualname__
         ):
             self._tracer_cls = tracers
-
-        #TODO wtf is that
-        # self._tracer_extras = {}
-        # if self.graph._tracer_extras:
-        #     self._tracer_extras = self.graph._tracer_extras
 
         # Dictionary to store metadata
         self.meta: Dict[str, Any] = {}
@@ -205,7 +207,7 @@ class BendedGraphModule(GraphModule):
                 self._in_spec[method] = graph._codegen.pytree_info.in_spec
                 self._out_spec[method] = graph._codegen.pytree_info.out_spec
 
-            python_code = graph.python_code(root_module="self")
+            python_code = graph.python_code(root_module="self", fn_name=method)
             self._code += python_code.src
             self._lineno_map.update({k + _lineno_offset: v + _lineno_offset for k, v in python_code._lineno_map.items()})
 
@@ -222,6 +224,8 @@ class BendedGraphModule(GraphModule):
                     return self._wrapped_call(self, *args, **kwargs)
 
                 cls.__call__ = call_wrapped  # type: ignore[method-assign]
+
+            del graph
 
         return self._code
 

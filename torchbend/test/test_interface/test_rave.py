@@ -189,7 +189,7 @@ def test_nntilde_export(model_path):
 @pytest.mark.parametrize("jit", [True, False])
 def test_nntilde_split(model_path, jit):
     model = BendedRAVE(model_path, scriptable=True, strict=RAVE_STRICT_LOADING)
-    forward_acts = model.aliases()['encoder_act'][0]
+    forward_acts = model.aliases()['encoder_act'][0][0]
     x = torch.zeros(1, model.channels, 8192)
 
     bending_op = tb.Mask(prob=tb.BendingParameter("mask", 0.), dim=-2)
@@ -225,8 +225,8 @@ def test_latent_steering_with_input_controllables(model_path):
     model = BendedRAVE(model_path, scriptable=True, strict=RAVE_STRICT_LOADING)
 
     x = torch.full((1, 1, 8192), 0.)
-    out_orig = model.forward(x, clear_cache=True)
-    out_orig2 = model.forward(x, clear_cache=True) 
+    out_orig = model.forward_proj(x, clear_cache=True)
+    out_orig2 = model.forward_proj(x, clear_cache=True) 
 
     target_activations = model.activations('#latent_pca')
     target_activations_b = [f"{t}_bended" for t in target_activations]
@@ -240,7 +240,7 @@ def test_latent_steering_with_input_controllables(model_path):
     affine_cb.nntilde()
     model.bend(affine_cb, *target_activations, fn="forward")
 
-    for m in ['forward', 'encode']:
+    for m in ['forward_proj']:
         target_act = model.activation_names('#latent_pca', fn=m)[0]
         out = model.get_activations(f"{target_act}_bended", x=x, latent_scale=torch.zeros_like(scale_value), latent_bias=bias_value, fn=m)
         assert tb.compare_outs(out[f"{target_act}_bended"], torch.zeros_like(out[f"{target_act}_bended"]))
@@ -251,8 +251,7 @@ def test_latent_steering_with_input_controllables(model_path):
         torch.full((x.shape[0], model.latent_size, x.shape[-1]), 1.), 
         torch.full((x.shape[0], model.latent_size, x.shape[-1]), 0.), 
     ], dim=-2)
-    out = scripted.encode(x_scripted)
-    out = scripted.forward(x_scripted)
+    out = scripted.forward_proj(x_scripted)
     save_scripted(scripted, test_name)
 
 
@@ -299,6 +298,7 @@ def test_modulation_with_input_controllables(model_path):
         torch.full((x.shape[0], len(target_activations), x.shape[-1]), 1.), 
     ], dim=-2)
     out = scripted.forward(x_scripted)
+
     save_scripted(scripted, test_name)
 
 

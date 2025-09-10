@@ -64,7 +64,7 @@ class Permute(BendingCallback):
         self._init_permute_(name, parameter.shape)
             
     def register_activation(self, name, shape):
-        name = super().register_activation(name, shape)
+        name, shape = super().register_activation(name, shape)
         name = name.replace('.', '_')
         self._init_permute_(name, shape)
     
@@ -77,9 +77,11 @@ class Permute(BendingCallback):
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor) -> None:
         with torch.no_grad():
+            if int(self.get("seed")) == -1:
+                return 
             perm = self._get_perm_from_id(idx)
             if perm.numel() == 0: return
-            param.set_(torch.index_select(cache, self.dim, perm))
+            param.set_(torch.index_select(cache, self.dim, perm.to(cache.device)))
 
     def bend_input(self, x: torch.Tensor, seed: Optional[torch.Tensor] = None, name: Optional[str] = None):
         permute = self.get_permutation(x, name).to(device=x.device)

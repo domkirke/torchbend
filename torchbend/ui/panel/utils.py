@@ -4,10 +4,10 @@ import torch
 from collections import OrderedDict
 import torchvision.transforms as transforms
 import panel as pn
-from . import _DEFAULT_PANEL_OUT
 from ... import  BendingParamType
 from ...utils import get_random_hash
 
+_TB_DEFAULT_PANEL_OUT = "/tmp/torchbend/ui/panel"
 
 def get_widget_from_controllable(ctrl):
     widget_type = BendingParamType.param_hash()[ctrl.param_type]
@@ -60,29 +60,3 @@ def batched(iterator, batch):
             raise StopIteration
         result, iterator = iterator[:batch], iterator[batch:]
         yield result
-
-def tensor_to_image(input_tensor, filename=None, upscale=None):
-    filename = filename or os.path.join(_DEFAULT_PANEL_OUT, get_random_hash(n=8)+".png")
-    # First convert back to cpu and detach from computational graph if linked
-    tensor = input_tensor.to('cpu').detach()
-    if upscale:
-        assert isinstance(upscale, int), "upscale keyword argument must be an int"
-        tensor = torch.nn.functional.interpolate(tensor[None], scale_factor=upscale)[0]
-
-    # Convert tensor to PIL Image
-    transform = transforms.ToPILImage()
-    image = transform(tensor)
-
-    # Save Image
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
-    image.save(filename)
-    return filename
-
-
-
-def tensor_to_audio(input_tensor, filename=None, sr=None):
-    filename = filename or os.path.join(_DEFAULT_PANEL_OUT, get_random_hash(n=8)+".wav")
-    # First convert back to cpu and detach from computational graph if linked
-    tensor = input_tensor.to('cpu').detach()
-    torchaudio.save(filename, tensor, sample_rate=sr)
-    return filename

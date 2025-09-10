@@ -79,4 +79,5 @@ def test_mark_tracing(test_mode):
     obj = BendedModule(obj)
     obj.trace(x=torch.Tensor(4, 10))
     aliases = obj.graph().aliases
+    activations = obj.activations("?.*")
     print(aliases)

@@ -41,10 +41,13 @@ def graph_transform_nodes(graph, callbacks, verbose=False):
 
 def _get_additional_inputs_from_cb(cb):
     add_inputs = []
+    param_shapes = {v.name: v.value.shape for k, v in cb.input_controllables().items()}
+    add_shapes = []
     for name, param in dict(inspect.signature(cb.forward).parameters).items():
         if name in cb.native_callback_arguments: continue
         add_inputs.append(name)
-    return add_inputs
+        add_shapes.append(param_shapes[name])
+    return add_inputs, add_shapes
         
 
 def graph_insert_callbacks(graph, callbacks, verbose=False, fn=None):
@@ -127,13 +130,14 @@ def graph_insert_callbacks(graph, callbacks, verbose=False, fn=None):
             if verbose:
                 print('bending activation %s with function %s...'%(node.name, callbacks[node.name]))
             if callbacks[node.name].needs_insertion:
-                add_inputs = _get_additional_inputs_from_cb(callbacks[node.name])
+                add_inputs, add_shapes = _get_additional_inputs_from_cb(callbacks[node.name])
                 callback_kwargs = {'name': f"{fn_name}:{node.name}"}
-                for k in add_inputs:
+                for i, k in enumerate(add_inputs):
                     # node_name = node_name_from(inputs, k)
                     with new_graph.inserting_after(last_input):
                         additional_node = new_graph.create_node("placeholder", k, (None,), type_expr = Optional[torch.Tensor])
-                        additional_node.from_callback = callbacks[node.name]
+                        additional_node.meta['shape_from_controllable'] = add_shapes[i]
+                        additional_node.meta['from_callback'] = callbacks[node.name]
                         callback_kwargs[k] = additional_node
                         last_input = additional_node
                 bended_node_name = node.name+"_bended"
@@ -288,3 +292,32 @@ def graph_from_activations(graph, activations, remove_placeholders=True, parse_i
     new_graph.__from_op = "from_activations"
 
     return new_graph
+
+
+
+def stitch_return_node(*args):
+    if len(args) > 1:
+        return args
+    else:
+        return args[0]
+
+
+def stitch_graph(target_graph, stitched_graph, input_nodes, out_node, env):
+    """stitches a target graph with another graph, representing a target op"""
+    placeholder_map = list(input_nodes[0]) + list(input_nodes[1].values())
+    new_env = {"arg%d_1"%i: placeholder_map[i] for i in range(len(placeholder_map))}
+    output_node = None
+    for n in stitched_graph.nodes:
+        if n.op == "placeholder": continue
+        elif n.op == "output": 
+            if isinstance(n.args[0], tuple):
+                output_node = target_graph.create_node("call_function", stitch_return_node, (tuple(new_env[i.name] for i in n.args[0]),))
+            else:
+                output_node = target_graph.create_node("call_function", stitch_return_node, tuple(new_env[i.name] for i in n.args[0]))
+            env[out_node.name] = output_node
+        else:
+            new_node = target_graph.node_copy(n, lambda x: new_env[x.name])
+            new_env[new_node.name] = new_node
+            env[new_node.name] = new_node
+    return target_graph, env
+

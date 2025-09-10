@@ -76,7 +76,7 @@ class Mask(BendingCallback):
         raise RuntimeError('does not have mask for name %s'%name)
         
     def register_activation(self, name, shape):
-        name = super(Mask, self).register_activation(name, shape)
+        name, shape = super(Mask, self).register_activation(name, shape)
         self._add_mask(name, shape)
 
     def register_weight(self, parameter: List[Parameter], name=None, cache: bool = True):

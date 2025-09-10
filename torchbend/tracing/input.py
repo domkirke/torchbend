@@ -6,12 +6,13 @@ class Inputs(object):
     def __init__(self, *args, **kwargs):
         self.args = args
         self.kwargs = kwargs
+
     def __repr__(self):
         string = "Inputs("
         if len(self.args) > 0:
-            string+= "args=%s"%([a.shape for a in self.args],)
+            string+= "args=%s"%(tuple(*[type(a) for a in self.args]),)
         if len(self.kwargs) > 0:
-            string+="kwargs=%s"%([f"{k}:{v.shape}" for k, v in self.kwargs.items()],)
+            string+="kwargs=%s"%([f"{k}:{type(v)}" for k, v in self.kwargs.items()],)
         string += ")"
         return string
     def __call__(self):

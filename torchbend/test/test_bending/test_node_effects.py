@@ -28,13 +28,19 @@ class NodeEffectsTester(nn.Module):
     def script(self):
         return self
 
+
+def bend_fn(x: torch.Tensor) -> torch.Tensor:
+    return torch.split(x, 1, dim=0)[0].repeat_interleave(x.shape[0], 0)
+
+
 @pytest.mark.parametrize("activation,cb_args", [
-    ("linear1", {'target': 'linear2'}),
+    ("linear1_weight", {'target': 'linear2.weight'}),
     ("pow_1", {'target': globals()['__builtins__']['abs'], 'args': (tb.ChangeNode.copy,)}),
     ("sigmoid", {'target': 'linear2', 'op': 'call_module', 'name': 'linear2'}),
     ("sigmoid", {'target': torch.split, 'op': 'call_function', 'args': (tb.ChangeNode.copy, 1), 'kwargs': {'dim': 0}, 'name': 'split'}),
+    ("sigmoid", {'target': bend_fn, 'op': 'call_function', 'args': (tb.ChangeNode.copy,), 'kwargs': {}, 'name': 'split'}),
     ("mul", {'target': torch.mul, 'op': 'call_function', 'args': (tb.ChangeNode.copy, tb.ChangeNode.activation("pow_1"))}),
-    ("pow_1", {'target': torch.mul, 'op': 'call_function', 'args': (tb.ChangeNode.expression("linear1 ** 2 - linear1.mean()"), 1)})
+    ("pow_1", {'target': torch.mul, 'op': 'call_function', 'args': (tb.ChangeNode.expression("addmm ** 2 - addmm.mean()"), 1)})
 ])
 @pytest.mark.parametrize("jit", [True, False])
 def test_node_change_target(activation, cb_args, jit):
@@ -43,7 +49,8 @@ def test_node_change_target(activation, cb_args, jit):
 
     out = module(x)
     bended = tb.BendedModule(module)
-    bended.trace(x=x)
+    with torch.no_grad():
+        bended.trace(x=x)
 
     cb = tb.ChangeNode(**cb_args)
     bended.bend(cb, activation)
