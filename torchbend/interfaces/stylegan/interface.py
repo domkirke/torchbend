@@ -10,7 +10,7 @@ import os, torch
 
 
 #TODO embed a wheel? 
-STYLEGAN_REPO_LINK = os.environ.get('TB_STYLEGAN_LINK', 'https://github.com/domkirke/stylegan3/archive/refs/heads/main.zip')
+STYLEGAN_REPO_LINK = os.environ.get('TB_STYLEGAN_LINK', 'https://github.com/domkirke/stylegan3/archive/refs/heads/video.zip')
 STYLEGAN_PATH = Path(__file__).parent / "stylegan3-main"
 TB_DEFAULT_MODEL_DIR = tb._TORCHBEND_DEFAULT_MODEL_DIR / "stylegan3"
 
