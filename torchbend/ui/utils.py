@@ -7,7 +7,7 @@ from pathlib import Path
 from ..utils import get_random_hash
 
 
-TB_DEFAULT_GENERATION_DIR = Path(os.getcwd()) / "generations"
+TB_DEFAULT_GENERATION_DIR = Path(os.environ.get("TB_DEFAULT_GENERATION_DIR") or Path(os.getcwd()) / "generations")
 
 def tensor_to_image(input_tensor, filename=None, upscale=None, norm_fn=None, out=None):
     out = out or TB_DEFAULT_GENERATION_DIR
@@ -32,7 +32,7 @@ def tensor_to_image(input_tensor, filename=None, upscale=None, norm_fn=None, out
 
 
 def tensor_to_audio(input_tensor, filename=None, sr=None, out=None):
-    filename = filename or os.path.join(_DEFAULT_PANEL_OUT, get_random_hash(n=8)+".wav")
+    filename = filename or os.path.join(TB_DEFAULT_GENERATION_DIR, get_random_hash(n=8)+".wav")
     # First convert back to cpu and detach from computational graph if linked
     tensor = input_tensor.to('cpu').detach()
     torchaudio.save(filename, tensor, sample_rate=sr)

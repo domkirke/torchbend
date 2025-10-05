@@ -7,7 +7,9 @@ import panel as pn
 from ... import  BendingParamType
 from ...utils import get_random_hash
 
+
 _TB_DEFAULT_PANEL_OUT = "/tmp/torchbend/ui/panel"
+
 
 def get_widget_from_controllable(ctrl):
     widget_type = BendingParamType.param_hash()[ctrl.param_type]

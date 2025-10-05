@@ -247,7 +247,7 @@ class ScriptedRAVE(nn_tilde.Module):
                     latent_size = self.full_latent_size
                 else:
                     latent_size = max(
-                        np.argmax(pretrained.fidelity.numpy() > fidelity), 1)
+                        np.argmax(pretrained.fidelity.detach().cpu().numpy() > fidelity), 1)
                     latent_size = 2**math.ceil(math.log2(latent_size))
 
             elif isinstance(pretrained.encoder, rave.blocks.DiscreteEncoder):
@@ -268,19 +268,20 @@ class ScriptedRAVE(nn_tilde.Module):
 
         self.latent_size = latent_size
         self.fake_adain = rave.blocks.AdaptiveInstanceNormalization(0)
+        device = pretrained.device
 
         # have to init cached conv before graphing
         self.encoder = pretrained.encoder
         self.decoder = pretrained.decoder
         x_len = 2**14
-        x = torch.zeros(1, self.n_channels, x_len)
+        x = torch.zeros(1, self.n_channels, x_len).to(device)
         z = self.encode(x)
         self.ratio_encode = x_len // z.shape[-1]
 
         # configure encoder
         if (pretrained.input_mode == "pqmf") or (pretrained.output_mode == "pqmf"):
             # scripting fails if cached conv is not initialized
-            self.pqmf(torch.zeros(1, 1, x_len))
+            self.pqmf(torch.zeros(1, 1, x_len).to(device))
 
         self.prior = prior
         self._has_prior = prior is not None

@@ -877,6 +877,7 @@ class BendedModule(object):
 
     @_import_to_interface
     def update(self, param_name, value):
+        print(param_name, value)
         """updates value of a given BendingParameter object"""
         if param_name not in self._controllables:
             print("controllables :", self._controllables)

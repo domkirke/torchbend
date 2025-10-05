@@ -54,4 +54,4 @@ Once the installation is finished, you can access the notebooks by running jupyt
 jupyter notebook
 ```
 
-and then going to `docs/stylegan3`.
+and then going to `docs/stylegan3`

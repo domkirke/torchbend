@@ -93,9 +93,9 @@ def generate_offline_audio(event,
     assert widget is not None
     for name, param in widget_dict.items():
         if isinstance(bended_module, torch.jit._script.RecursiveScriptModule):
-            bended_module._set_bending_control(name, param)
+            bended_module._set_bending_control(name, torch.tensor(param.value))
         else:
-            bended_module.update(name, param)
+            bended_module.update(name, param.value)
     in_args, in_kwargs = gen_params.get('input', (tuple(), dict()))
     callback = gen_params.get('fn', 'forward')
     outs = getattr(bended_module, callback)(*in_args, **in_kwargs)
@@ -178,7 +178,6 @@ def get_generation_ui(bended_module, controllable_widgets, realtime, script: boo
         gen_block = pn.bind(
             generate_realtime(
                 bended_module=bended_module, 
-                render_type=render_type,
                 max_columns=max_image_columns,
                 **kwargs),
             **controllable_widgets

@@ -1,4 +1,5 @@
 from inspect import ismethod
+import inspect
 import urllib
 import re
 import functools
@@ -42,6 +43,21 @@ def _get_name_from_url(url):
     else:
         return f"{out.groups()[0]}.{out.groups()[1]}"
 
+def name_from_type(cls):
+    name = getattr(cls, "_download_subdir", None)
+    if name is not None: return name
+    name = getattr(cls, "__file__", inspect.getsourcefile(cls))
+    if name is not None:
+        if Path(name).suffix == ".py":
+            if Path(name).parent.stem == "interfaces":
+                return Path(name).stem
+            else:
+                return Path(name).parent.stem
+    name = getattr(cls, "__name__", None)
+    return name
+
+    
+
 class Interface(object):
     _imported_callbacks_ = []
 
@@ -60,10 +76,10 @@ class Interface(object):
     model = property(_getmodel_, _setmodel_, _delmodel_)
 
     @classmethod
-    def _get_download_location(cls, url):
-        loc = Path(_TORCHBEND_DEFAULT_MODEL_DIR / getattr(cls, "_download_subdir", cls.__name__)).resolve()
+    def _get_download_location(cls, url, name: str = None):
+        loc = Path(_TORCHBEND_DEFAULT_MODEL_DIR / name_from_type(cls)).resolve()
         os.makedirs(loc, exist_ok=True)
-        loc = loc / _get_name_from_url(url)
+        loc = loc / (name or _get_name_from_url(url))
         return loc
 
     @classmethod
@@ -76,14 +92,15 @@ class Interface(object):
         return res
 
     @classmethod
-    def get_model_path(cls, model_path_or_url: str | Path, force_download: bool = False):
+    def get_model_path(cls, model_path_or_url: str | Path, force_download: bool = False, download_to: Path | str | None = None):
+        assert isinstance(model_path_or_url, (str, Path))
         if isinstance(model_path_or_url, str):
             parsed_url = urllib.parse.urlparse(model_path_or_url)
             if parsed_url.scheme == "":
                 model_path_or_url = Path(model_path_or_url)
             else:
                 try:
-                    destination = cls._get_download_location(model_path_or_url)
+                    destination = Path(download_to or cls._get_download_location(model_path_or_url))
                     if (not destination.exists()) or force_download:
                         cls._download_model_to(model_path_or_url, destination)
                     return destination
@@ -91,7 +108,11 @@ class Interface(object):
                     raise e
 
         if isinstance(model_path_or_url, Path):
-            return model_path_or_url
+            if model_path_or_url.exists():
+                return model_path_or_url
+            path_relative_to_model_dir = _TORCHBEND_DEFAULT_MODEL_DIR / name_from_type(cls) / model_path_or_url
+            if path_relative_to_model_dir.exists():
+                return path_relative_to_model_dir.resolve()
         
         raise BendingInterfaceException("could not find or download : %s"%model_path_or_url)
 

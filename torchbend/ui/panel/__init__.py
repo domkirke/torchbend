@@ -9,7 +9,6 @@ from .search import panel_search_ui
 def panel_ui(bended_module, **kwargs):
     panel_context = {}
     return pn.Tabs(
-        ('Explore', panel_search_ui(bended_module, context=panel_context)),
-        # ('Bend', panel_bending_ui(bended_module, context=panel_context)),
-        ('Play', panel_generation_ui(bended_module, context=panel_context, **kwargs))
+        ('Play', panel_generation_ui(bended_module, context=panel_context, **kwargs)),
+        ('Explore', panel_search_ui(bended_module, context=panel_context))
     )

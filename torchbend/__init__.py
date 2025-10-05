@@ -26,6 +26,10 @@ def get_output():
     global TB_OUTPUT
     return TB_OUTPUT
 
+def _get_model_dir():
+    return Path(__file__).parent / "models"
+
+
 Model = torch.nn.Module
 from .utils import *
 from . import distributions
@@ -33,7 +37,7 @@ from . import distributions
 _TORCHBEND_DEFAULT_TRACE_METHOD = os.environ.get('TORCHBEND_DEFAULT_TRACE_METHOD', 'proxy_tensor')
 
 from pathlib import Path
-_TORCHBEND_DEFAULT_MODEL_DIR = Path(os.environ.get('TORCHBEND_DEFAULT_MODEL_DIR') or Path(os.getcwd()) / "models")
+_TORCHBEND_DEFAULT_MODEL_DIR = Path(os.environ.get('TORCHBEND_DEFAULT_MODEL_DIR') or _get_model_dir())
 
 from .bending import *
 from .tracing import *
