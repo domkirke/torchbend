@@ -51,9 +51,9 @@ class BendingParamType():
             raise TypeError('cannot parse tensor %s as a native python value'%dtype)
 
     @staticmethod 
-    def _str_from_type(obj: type) -> int:
-        if issubclass(obj, torch.Tensor):
-            if obj == torch.Tensor: obj = BendingParamType._get_default_tensor_type()
+    def _str_from_type(obj: type) -> str:
+        # if issubclass(obj, torch.Tensor):
+        #     if obj == torch.Tensor: obj = BendingParamType._get_default_tensor_type()
         if issubclass(obj, bool):
             return 'bool'
         elif issubclass(obj, (int, numbers.Integral)):
@@ -62,12 +62,17 @@ class BendingParamType():
             return 'float'
         elif issubclass(obj, (complex, numbers.Complex)):
             raise NotImplementedError()
-        elif issubclass(obj, torch.FloatTensor):
-            return 'float'
-        elif issubclass(obj, (torch.LongTensor, torch.IntTensor)):
-            return 'int'
-        elif issubclass(obj, (torch.ByteTensor)):
-            return 'bool'
+        elif getattr(torch, obj.__name__) == obj:
+            return 'tensor'
+            # if obj.numel() == 1:
+            #     if issubclass(obj, torch.FloatTensor):
+            #         return 'float'
+            #     elif issubclass(obj, (torch.LongTensor, torch.IntTensor)):
+            #         return 'int'
+            #     elif issubclass(obj, (torch.ByteTensor)):
+            #         return 'bool'
+            # else:
+            #     return 'tensor'
         raise TypeError('could not get type string for type : %s'%obj)
             
 
@@ -81,20 +86,20 @@ class BendingParamType():
         # if torch.is_tensor(obj):
         if torch.jit.isinstance(obj, torch.Tensor):
             # assert obj.numel() == 1, "Got non-scalar tensor for BendingParameter value"
-            if obj.numel() == 1:
-                if obj.dtype in [torch.float, torch.float16, torch.float32, torch.float64]:
-                    return BendingParamType.param_types()['float']
-                elif obj.dtype in [torch.int, torch.int8, torch.int16, torch.int32, torch.int64]:
-                    return BendingParamType.param_types()['int']
-                elif obj.dtype in [torch.complex, torch.complex32, torch.complex64, torch.complex128]:
-                    raise NotImplementedError
-                    return BendingParamType.param_types()['complex']
-                elif obj.dtype in [torch.bool]:
-                    return BendingParamType.param_types()['bool']
-                else:
-                    raise BendingParameterException("tensor dtype not handled : %s"%obj.dtype)
-            else: 
-               return BendingParamType.param_types()['tensor'] 
+            # if obj.numel() == 1:
+            #     if obj.dtype in [torch.float, torch.float16, torch.float32, torch.float64]:
+            #         return BendingParamType.param_types()['float']
+            #     elif obj.dtype in [torch.int, torch.int8, torch.int16, torch.int32, torch.int64]:
+            #         return BendingParamType.param_types()['int']
+            #     elif obj.dtype in [torch.complex, torch.complex32, torch.complex64, torch.complex128]:
+            #         raise NotImplementedError
+            #         return BendingParamType.param_types()['complex']
+            #     elif obj.dtype in [torch.bool]:
+            #         return BendingParamType.param_types()['bool']
+            #     else:
+            #         raise BendingParameterException("tensor dtype not handled : %s"%obj.dtype)
+            # else: 
+            return BendingParamType.param_types()['tensor'] 
         elif isinstance(obj, bool):
             return BendingParamType.param_types()['bool']
         elif isinstance(obj, numbers.Integral):
@@ -129,6 +134,8 @@ class BendingParamType():
             elif (param_type == BendingParamType.param_types()['complex']):
                 raise NotImplementedError
                 return torch.view_as_complex(value)
+            elif (param_type == BendingParamType.param_types()['tensor']):
+                return value
             else:
                 raise BendingParameterException('Wrong ParamType: %s'%param_type)
         else:
@@ -242,13 +249,20 @@ class BendingParameter(nn.Module):
 
     def get_value(self) -> torch.Tensor:
         value = self.value.data
+        # if self.param_type == BendingParamType.get_type('bool'):
+        #     return value
+        if self.value.dtype == torch.bool:
+            return value
         if self.clamp:
             return self._clamp(value * self.weight.to(value) + self.bias.to(value))
         else:
             return value * self.weight.to(value) + self.bias.to(value)
 
     def get_python_value(self) -> _VALID_PARAM_NATIVE_TYPES:
-        return BendingParamType._from_tensor(self.get_value())
+        if self.param_type == BendingParamType.get_type('tensor'):
+            return self.get_value()
+        else:
+            return BendingParamType._from_tensor(self.get_value())
 
     def set_value(self, value: _VALID_PARAM_TYPES, update: bool = True) -> None:
         # if str, just set value
@@ -260,10 +274,10 @@ class BendingParameter(nn.Module):
         else:
             val_real = value if not torch.is_complex(value) else value.abs()
             if self.min_clamp is not None:
-                if val_real < self.min_clamp:
+                if (val_real < self.min_clamp).any():
                     raise BendingParameterException(f'tried to set value < min_clamp = {self.min_clamp}, but got {value}')
             if self.max_clamp is not None:
-                if val_real > self.max_clamp:
+                if (val_real > self.max_clamp).any():
                     raise BendingParameterException(f'tried to set value > max_clamp = {self.max_clamp}, but got {value}')
 
         if torch.jit.is_scripting():

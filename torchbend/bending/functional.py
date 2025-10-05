@@ -19,7 +19,6 @@ class Lambda(BendingCallback):
         else:
             return self._callable.value(x)#, param)
 
-
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor = None) -> None:
         if torch.jit.is_scripting():
             new_param = self._callable(cache)#, param)

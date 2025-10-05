@@ -11,6 +11,7 @@ from test_modules import modules_to_test, scriptable_modules_to_test
 
 @pytest.mark.parametrize("module_config", scriptable_modules_to_test)
 def test_int_parameter(module_config):
+
     module, bended_module = module_config.get_modules(trace=True)
 
     def _test_parameter(bended_module, method, control_args, ok=[], not_ok=[]):
@@ -140,16 +141,114 @@ def test_float_parameter(module_config):
         bias = PArgs("bias", 0., range=[0, 3])
         _test_parameter(bended_module, method, bias, ok=[0, 3], not_ok=[-2, 5])
 
-
-
-@pytest.mark.skip(reason="to program")
+@pytest.mark.parametrize("module_config", scriptable_modules_to_test)
 def test_bool_parameter(module_config):
-    pass
+
+    module, bended_module = module_config.get_modules(trace=True)
+
+    def _test_parameter(bended_module, method, control_args, ok=[], not_ok=[]):
+        bended_module.reset()
+
+        # test with normal behaviour
+        reverse = tb.BendingParameter(*control_args, **control_args)
+        assert bool(reverse) == reverse.get_value()
+        assert isinstance(reverse.get_python_value(), bool)
+
+        reverse_callback = tb.Reverse(0, reverse=reverse)
+        args, kwargs, weights, acts = module_config.get_method_args(method)
+        bended_module.bend(reverse_callback, *weights, *acts, fn=method)
+        assert len(ok) + len(not_ok) > 0, "at least one value must be given in either ok or not_ok"
+        
+        scripted_module = bended_module.script(script=False) 
+
+        # try out ok values
+        inputs = bended_module.bend_graph(fn=method).inputs
+        for value in ok:
+            current_kwargs = dict(kwargs)
+            for i in inputs: 
+                if i.name not in current_kwargs:
+                    current_kwargs[i.name] = value
+            reverse.set_value(value)
+            getattr(bended_module, method)(*args, **current_kwargs)
+            scripted_module.set_reverse(value)
+
+        # try out not ok values
+        for value in not_ok:
+            try: 
+                reverse.set_value(value)
+                assert False, "setting value %s in parameter %s should raise an exception"
+            except BendingParameterException:
+                pass
+
+            try: 
+                scripted_module.set_bias(value)
+                assert False, "setting value %s in parameter %s should raise an exception"
+            except BendingParameterException:
+                pass
+
+    for method in module_config.get_methods():
+        reverse = PArgs("reverse", True)
+        _test_parameter(bended_module, method, reverse, ok=[True, False])
 
 
-@pytest.mark.skip(reason="to program")
+@pytest.mark.parametrize("module_config", scriptable_modules_to_test)
 def test_tensor_parameter(module_config):
-    pass
+    module, bended_module = module_config.get_modules(trace=True)
+
+    def _test_parameter(bended_module, method, control_args, ok=[], not_ok=[]):
+        bended_module.reset()
+        args, kwargs, weights, acts = module_config.get_method_args(method)
+
+        # test with normal behaviour
+        interp_weights = tb.BendingParameter(*control_args, **control_args)
+        assert torch.is_tensor(interp_weights.get_python_value())
+
+        interp_callback = tb.InterpolateActivation(interp_weights=interp_weights)
+        bended_module.bend(interp_callback, *acts, fn=method)
+        assert len(ok) + len(not_ok) > 0, "at least one value must be given in either ok or not_ok"
+        
+        scripted_module = bended_module.script(script=False) 
+
+        # try out ok values
+        inputs = bended_module.bend_graph(fn=method).inputs
+        for value in ok:
+            current_kwargs = dict(kwargs)
+            for i in inputs: 
+                if i.name not in current_kwargs:
+                    current_kwargs[i.name] = value
+            interp_weights.set_value(value)
+            getattr(bended_module, method)(*args, **current_kwargs)
+            scripted_module.set_interp_weights(value)
+
+        # try out not ok values
+        for value in not_ok:
+            try: 
+                interp_weights.set_value(value)
+                assert False, "setting value %s in parameter %s should raise an exception"
+            except BendingParameterException:
+                pass
+
+            try: 
+                scripted_module.set_interp_weights(value)
+                assert False, "setting value %s in parameter %s should raise an exception"
+            except BendingParameterException:
+                pass
+
+    for method in module_config.get_methods():
+        args, kwargs, weights, acts = module_config.get_method_args(method)
+        if 'x' in kwargs:
+            batch_size = kwargs['x'].shape[0]
+        else:
+            pytest.skip("could not find batch size")
+        reverse = PArgs("interp_weights", torch.rand(batch_size).clamp(1e-4, 1-1e-4), range=[0, 1])
+        ok = [
+            torch.rand(batch_size).clamp(1e-4, 1-1e-4), 
+            torch.rand(batch_size, batch_size).clamp(1e-4, 1-1e-4),
+        ]
+        not_ok = [
+            torch.full((batch_size,), -1),
+        ]
+        _test_parameter(bended_module, method, reverse, ok=ok, not_ok=not_ok)
 
 
 @pytest.mark.parametrize("module_config", modules_to_test)

@@ -41,6 +41,7 @@ class BendedStyleGAN(Interface):
 
     def __init__(self, 
                  pretrained_path, 
+                 n_batches=1,
                  *args, 
                  device=torch.device('cpu'), 
                  repository_link: Path | str = STYLEGAN_REPO_LINK, 
@@ -73,10 +74,12 @@ class BendedStyleGAN(Interface):
         else:
             logging.warning("Could not fetch from filename if imported from StyleGAN2 or StyleGAN3. Activations not marked.")
             module = pretrained['G'].to(device)
+        self.n_batches = n_batches
         super(BendedStyleGAN, self).__init__(module)
         del sys.path[0]
 
-    def get_inputs(model, n_batches = 4):
+    def get_inputs(model, n_batches = None):
+        n_batches = n_batches or model.n_batches
         z = torch.randn(n_batches, model.latent_dim).to(model.device) 
         if model.conditioning_dim:
             # c = torch.nn.functional.one_hot()
@@ -86,8 +89,8 @@ class BendedStyleGAN(Interface):
             c = None
         return {'z': z, 'c': c}
 
-    def bend_model(self, model, n_batches=4):
-        model.trace("forward", **self.get_inputs(n_batches))
+    def bend_model(self, model):
+        model.trace("forward", **self.get_inputs())
 
     @property
     def latent_dim(self):

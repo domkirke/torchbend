@@ -9,7 +9,7 @@ class Reverse(BendingCallback):
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
-    controllable_params = {'reverse': (int, 0)}
+    controllable_params = {'reverse': (bool, 0)}
 
     def __init__(self, dim: int, reverse: int = 0):
         super().__init__(reverse=reverse)
@@ -29,6 +29,7 @@ class Reverse(BendingCallback):
             dim = self.dim if self.dim >= 0 else x.ndim + self.dim
             if dim >= x.ndim:
                 return x
+            
             idx = torch.arange(x.shape[self.dim])
             idx = torch.flip(idx, [0])
             return torch.index_select(x, self.dim, idx)

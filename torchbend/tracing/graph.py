@@ -46,7 +46,10 @@ def _get_additional_inputs_from_cb(cb):
     for name, param in dict(inspect.signature(cb.forward).parameters).items():
         if name in cb.native_callback_arguments: continue
         add_inputs.append(name)
-        add_shapes.append(param_shapes[name])
+        if name in param_shapes:
+            add_shapes.append(param_shapes[name])
+        else:
+            add_shapes.append(param_shapes["_".join(name.split('_')[:-1])])
     return add_inputs, add_shapes
         
 

@@ -60,6 +60,10 @@ def _template_from_param(param: BendingParameter, template=attribute_template, *
         kwargs['dtype'] = kwargs.get('dtype', torch.uint8)
         kwargs['type_expr'] = kwargs.get('type_expr', "bool")
         return _resolve_code(template, **kwargs)
+    elif param.param_type == get_param_type("tensor"):
+        kwargs['dtype'] = kwargs.get('dtype', torch.get_default_dtype())
+        kwargs['type_expr'] = kwargs.get('type_expr', 'torch.Tensor')
+        return _resolve_code(template, **kwargs)
     else:
         raise TypeError('Type not handled by automatic attribute writing : %s'%(param.param_type))
 
