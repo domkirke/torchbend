@@ -31,15 +31,27 @@ Welcome to `torchbend`, a high-level framework for dissecting, analyzing and ben
 
 *Installing torchbend*. Installing torchbend requires so far to clone the repository and install the dependencies with `pip` : 
 ```sh
-git clone https://github.com/acids-ircam/torchbend.git
-cd torchbend
-pip install .
-```
 
+git clone -b sg3_matthew https://github.com/domkirke/torchbend.git 
+cd torchbend
+pip install -r requirements.txt
+pip install torch==2.7.1 torchvision==0.22.1  torchaudio==2.7.1 
+```
+<!-- 
 If the environment targets to bend some of the interfaces, additional requirements may be required for specific interfaces as RAVE, that can be installed by precising extra configurations : 
 ```sh
 git clone https://github.com/acids-ircam/torchbend.git
 cd torchbend
 pip install ".[rave]"
 pip install "git+https://github.com/acids-ircam/RAVE.git" --no-deps
+``` -->
+
+## Accessing the notebooks
+
+Once the installation is finished, you can access the notebooks by running jupyter in the torchbend directory :
+
+```sh
+jupyter notebook
 ```
+
+and then going to `docs/stylegan3`.
