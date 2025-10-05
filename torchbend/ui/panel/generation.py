@@ -177,6 +177,7 @@ def get_generation_ui(bended_module, controllable_widgets, realtime, script: boo
     if realtime:
         gen_block = pn.bind(
             generate_realtime(
+                render_type=render_type,
                 bended_module=bended_module, 
                 max_columns=max_image_columns,
                 **kwargs),

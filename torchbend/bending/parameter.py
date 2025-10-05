@@ -2,10 +2,12 @@ from typing import Union, Optional, Any, Tuple, Callable, Dict, NoReturn
 import numbers
 import torch
 import torch.nn as nn
+import typing
 from numbers import Real, Integral
 from enum import Enum
 from torchbend import log_error, log_warning
 from torchbend.utils import checktensor
+from types import UnionType, NoneType
 
 
 class BendingParameterException(Exception):
@@ -14,6 +16,16 @@ class BendingParameterException(Exception):
 
 _VALID_PARAM_TYPES = Union[float, int, bool, torch.Tensor]
 _VALID_PARAM_NATIVE_TYPES = Union[float, int, str, bool]
+
+
+def _extract_type_if_optional(type_obj):
+    if type(type_obj) in (UnionType, typing._UnionGenericAlias):
+        no_none_types = list(filter(lambda x: x != NoneType, type_obj.__args__))
+        if len(no_none_types) == 1: return no_none_types[0]
+        else: raise TypeError('Could not infer type from Union : %s'%type_obj)
+    else:
+        return type_obj
+
 
 
 class BendingParamType():
@@ -54,6 +66,7 @@ class BendingParamType():
     def _str_from_type(obj: type) -> str:
         # if issubclass(obj, torch.Tensor):
         #     if obj == torch.Tensor: obj = BendingParamType._get_default_tensor_type()
+        obj = _extract_type_if_optional(obj)
         if issubclass(obj, bool):
             return 'bool'
         elif issubclass(obj, (int, numbers.Integral)):
@@ -62,7 +75,7 @@ class BendingParamType():
             return 'float'
         elif issubclass(obj, (complex, numbers.Complex)):
             raise NotImplementedError()
-        elif getattr(torch, obj.__name__) == obj:
+        elif getattr(torch, obj.__name__, None) == obj:
             return 'tensor'
             # if obj.numel() == 1:
             #     if issubclass(obj, torch.FloatTensor):
@@ -124,6 +137,7 @@ class BendingParamType():
         #TODO make a generative code for param_types?
         # _param_types = {'float': 1, 'int': 2} 
         #TODO handle general float types
+        if value is None: return None
         if torch.jit.isinstance(value, torch.Tensor):
             if (param_type == BendingParamType.param_types()['bool']):
                 return value.byte()

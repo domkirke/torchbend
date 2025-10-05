@@ -8,7 +8,7 @@ import inspect
 from functools import reduce
 import copy
 import torch.nn as nn
-from types import MethodType, UnionType
+from types import MethodType, UnionType, NoneType
 from collections import OrderedDict
 from typing import Union, List, Optional, Any, Iterable
 from .parameter import BendingParameter, _VALID_PARAM_TYPES, BendingParamType, BendingParameterException, get_param_type
@@ -55,6 +55,15 @@ def dynamic_forward(self, x, name: Optional[str] = None, {{CALLBACK_ARGS_SIG}}):
 """
 
 
+def get_param_type_from_callback(module, name):
+    if getattr(module, name) is not None:
+        param_type = BendingParamType.param_type_from_type(type(getattr(module, name)))
+    else:
+        raw_param_type = _extract_type_if_optional(module.controllable_params[name][0])
+        param_type = BendingParamType.param_type_from_type(raw_param_type)
+    return param_type
+
+
 def create_callback_forward_function(module):
     controllables = module.controllables
     attributes = []
@@ -86,7 +95,7 @@ def create_callback_forward_function(module):
             callback_args.append(f'{name}={c.name}')
         else:
             attributes.append(name)
-            attributes_types.append(BendingParamType.param_type_from_type(type(getattr(module, name))))
+            attributes_types.append(get_param_type_from_callback(module, name))
             callback_args.append(f'{name}={name}')
 
     callback_args_sig = ", ".join(callback_args_sig)
@@ -118,13 +127,23 @@ static_controllable_return_pattern = """
 \tif name == "{{C_NAME[]}}": return BendingParamType._to_tensor(self.{{C_NAME[]}}, {{C_TYPE[]}})
 """
 
+def _extract_type_if_optional(type_obj):
+    if type(type_obj) == UnionType:
+        no_none_types = list(filter(lambda x: x != NoneType, type_obj.__args__))
+        if len(no_none_types) == 1: return no_none_types[0]
+        else: raise TypeError('Could not infer type from Union : %s'%type_obj)
+    else:
+        return type_obj
+
 def create_static_controllable_callback(module, controllable_dict):
     controllable_names = []
     controllable_types = []
     for name, c in controllable_dict.items():
         if isinstance(getattr(module, name), BendingParameter): continue
         controllable_names.append(name)
-        controllable_types.append(BendingParamType.param_type_from_type(type(getattr(module, name))))
+        
+        controllable_types.append(get_param_type_from_callback(module, name))
+
     codes = _replace_placeholders(static_controllable_pattern, 
                                   return_setter = static_controllable_return_pattern, c_name=controllable_names, c_type=controllable_types, 
                                   _return_setter_loop = len(controllable_names))
@@ -260,7 +279,7 @@ class BendingCallback(nn.Module):
         target_type = checktuple(target_type)
         target_type_ids = [BendingParamType.param_type_from_type(t) for t in target_type]
         if isinstance(value, BendingParameter):
-            assert value.param_type in target_type_ids
+            assert value.param_type in target_type_ids, f"got value {value}, but param of types {target_type}"
         else:
             assert type(value) == BendingParamType.param_hash()[target_type]
 

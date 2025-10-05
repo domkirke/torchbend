@@ -24,6 +24,7 @@ def script_method(self, script=True, **kwargs):
 def default_scriptable(self): 
     return ScriptableState.Unknown
 
+
 BendedModule.script = _import_to_interface(script_method)
 BendedModule.scriptable = property(_import_to_interface(default_scriptable))
 

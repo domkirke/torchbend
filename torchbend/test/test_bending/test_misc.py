@@ -8,6 +8,7 @@ testpath = os.path.abspath((os.path.join(os.path.dirname(__file__), "..")))
 if testpath not in sys.path:
     sys.path.append(testpath)
 from test_modules import modules_to_test, ModuleTestConfig
+from torchbend.utils import PArgs
 
 
 
@@ -86,6 +87,48 @@ def test_reverse(cb_class, cb_args, module_config, jit, as_controllable):
             assert bool(tb.compare_outs(out_orig, out_scripted))
 
 
-def test_split_and_bend():
-    #TODO
-    pytest.skip("to do")
+def scale_scalar(x: torch.Tensor, factor: float = 1.):
+    return x * factor
+
+def scale_tensor(x: torch.Tensor, factor: torch.Tensor | None = None):
+    if factor is None: 
+        return x
+    return x * factor
+
+
+def affine_tensor(x: torch.Tensor, scale: torch.Tensor, bias: torch.Tensor):
+    return x * scale + bias
+
+
+lambda_fns = [
+    (scale_scalar, [("factor", PArgs("scale", 1.))]),
+    (scale_tensor, [("factor", None)]),
+    (scale_tensor, [("factor", PArgs("scale", torch.tensor(1.)))]),
+    (affine_tensor, [("factor", PArgs("scale", torch.tensor(1.))), ("bias", PArgs("bias", torch.tensor(0.)))]),
+]
+
+@pytest.mark.parametrize('fn,params', lambda_fns)
+@pytest.mark.parametrize('module_config', modules_to_test)
+@pytest.mark.parametrize('jit', [True])
+def test_lambda_activation(fn, params, module_config, jit):
+    mod = module_config.get_bended_module()
+    for method, (args, kwargs, _, activation_targets) in module_config.scriptable():
+        if len(activation_targets) == 0: continue
+        mod.reset()
+        mod.trace(method, **kwargs)
+        out_orig = getattr(mod, method)(*args, **kwargs)
+
+        param_dict = {}
+        for (name, pargs) in params:
+            if pargs is not None: param_dict[name] = tb.BendingParameter(*pargs, **pargs)
+        lambda_cb = tb.Lambda(fn, **param_dict)
+        mod.bend(lambda_cb, *activation_targets, bend_param=False)
+
+        mod_scripted = mod.script(script=jit)
+        out_scripted = getattr(mod_scripted, method)(*args, **kwargs)
+        assert bool(tb.compare_outs(out_orig, out_scripted))
+
+        # mod_scripted._set_bending_control('reverse', 1)
+        # out_scripted = getattr(mod_scripted, method)(*args, **kwargs)
+        # assert not bool(tb.compare_outs(out_orig, out_scripted))
+
