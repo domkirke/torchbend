@@ -104,6 +104,7 @@ class ChangeNodeExpressionPointer(object):
         return new_node
 
 class ChangeNode(BendingCallback):
+    needs_insertion = False
     activation_compatible = True 
     jit_compatible = True
     applied_to_node = True

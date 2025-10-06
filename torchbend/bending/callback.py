@@ -19,12 +19,16 @@ attribute_setter_pattern = """
 \t{{ATTRIBUTE[]}} = BendingParamType._to_tensor(self.{{ATTRIBUTE[]}}, {{ATTRIBUTE_TYPE[]}})"""
 
 controllable_setter_pattern = """
-\t{{CONTROLLABLE_NAME[]}} = self.get("{{ARG_NAME[]}}").to(x.device)
+\t{{CONTROLLABLE_NAME[]}} = self.get("{{ARG_NAME[]}}")
+\tif {{CONTROLLABLE_NAME[]}} is not None: 
+\t\t{{CONTROLLABLE_NAME[]}}={{CONTROLLABLE_NAME[]}}.to(x.device)
 """
 
 input_controllable_setter_pattern = """
 \tif {{INPUT_CONTROLLABLE_NAME[]}} is None:
-\t\t{{INPUT_CONTROLLABLE_NAME[]}} = self.get("{{INPUT_ARG_NAME[]}}").to(x.device)
+\t\t{{INPUT_CONTROLLABLE_NAME[]}} = self.get("{{INPUT_ARG_NAME[]}}")
+\t\tif {{INPUT_CONTROLLABLE_NAME[]}} is not None: 
+\t\t\t{{INPUT_CONTROLLABLE_NAME[]}} = {{INPUT_CONTROLLABLE_NAME[]}}.to(x.device)
 \telse:
 \t\t{{INPUT_CONTROLLABLE_NAME[]}} = self.parse_controllable({{INPUT_CONTROLLABLE_NAME[]}}, {{INPUT_CONTROLLABLE_TYPE[]}})
 """
@@ -50,7 +54,7 @@ def dynamic_forward(self, x, name: Optional[str] = None, {{CALLBACK_ARGS_SIG}}):
 \tif self.applied_to_node:
 \t\treturn x
 \telse:
-\t\tout = self.bend_input(x=x, name=name, {{CALLBACK_ARGS}})
+\t\tout = self.{{BEND_INPUT_NAME}}(x=x, name=name, {{CALLBACK_ARGS}})
 \t\treturn out
 """
 
@@ -109,7 +113,8 @@ def create_callback_forward_function(module):
                                   _controllable_setter_loop = len(noinput_controllables), 
                                   controllable_input_setter = input_controllable_setter_pattern, input_controllable_name = input_controllable_names, input_arg_name = input_args_names,
                                   _controllable_input_setter_loop = len(input_controllables),
-                                  comment_pattern = comment_pattern, comment = comments, _comment_pattern_loop = len(comments))
+                                  comment_pattern = comment_pattern, comment = comments, _comment_pattern_loop = len(comments), 
+                                  bend_input_name = module.bend_input_callback)
     funcs = _import_defs_from_tmpfile(codes, gl=globals(), lo=locals())
     return funcs['dynamic_forward']
 
@@ -118,7 +123,7 @@ import torch
 from torchbend import BendingParamType
 
 @torch.jit.export
-def static_getter(self, name: str) -> torch.Tensor:
+def static_getter(self, name: str) -> torch.Tensor | None:
 {{RETURN_SETTER:LOOP}}
 \traise ValueError("controllable %s not present in callback")
 """
@@ -169,6 +174,8 @@ class BendingCallback(nn.Module):
     different_input = False
     different_output = False
 
+    bend_input_callback = "bend_input"
+    apply_to_param_callback = "apply_to_param"
 
     def __init__(self, **controllables):
         super().__init__()
@@ -294,10 +301,10 @@ class BendingCallback(nn.Module):
             self.register_buffer(name, value)
         super().__setattr__(name, value)
 
-    def parse_controllable(self, value: _VALID_PARAM_TYPES, param_type: int) -> torch.Tensor:
+    def parse_controllable(self, value: _VALID_PARAM_TYPES, param_type: int) -> torch.Tensor | None:
         return BendingParamType._to_tensor(value, param_type)
     
-    def get(self, name: str) -> torch.Tensor:
+    def get(self, name: str) -> torch.Tensor | None:
         if torch.jit.is_scripting():
             for i, v in self._controllables.items():
                 if i==name:

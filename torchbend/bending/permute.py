@@ -49,12 +49,13 @@ class Permute(BendingCallback):
             self._perm_keys.append(name)
 
     def update(self):
-        seed = int(self.get('seed'))
-        if seed < 0:
+        seed = self.get('seed')
+        if seed is None: seed = torch.tensor(-1)
+        if int(seed) < 0:
             return
         for i, perm in enumerate(self._perms):
             if perm.numel() != 0:
-                torch.manual_seed(seed)
+                torch.manual_seed(int(seed))
                 with torch.no_grad():
                     perm.set_(torch.randperm(perm.shape[0]))
 
@@ -77,7 +78,9 @@ class Permute(BendingCallback):
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor) -> None:
         with torch.no_grad():
-            if int(self.get("seed")) == -1:
+            seed = self.get("seed")
+            if seed is None: seed = torch.tensor(-1)
+            if int(seed) < 0:
                 return 
             perm = self._get_perm_from_id(idx)
             if perm.numel() == 0: return
@@ -87,7 +90,8 @@ class Permute(BendingCallback):
         permute = self.get_permutation(x, name).to(device=x.device)
         # return permute.float().unsqueeze(-1).unsqueeze(0).expand_as(x)
         # return torch.full(x.shape, float(permute.numel()))
-        if self.get("seed") == -1:
+        if seed is None: seed = torch.tensor(-1)
+        if int(seed) < 0:
             return x
         else:
             return torch.index_select(x, self.dim, permute)

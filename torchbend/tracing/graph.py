@@ -9,8 +9,6 @@ from typing import List, Dict, Any, Optional, Type
 from .tracing import BendedGraph, TraceError, ActivationProperties
 
 
-
-
 # _GRAPH_COPY_ATTR = ['activations', 'aliases']
 # def _import_attr_from_original_graph(graph, new_graph):
 #     for attr in _GRAPH_COPY_ATTR:

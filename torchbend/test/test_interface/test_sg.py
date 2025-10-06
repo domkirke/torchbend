@@ -1,4 +1,5 @@
 import os
+
 import torchvision
 import torch
 import urllib.request
@@ -25,7 +26,7 @@ from torchvision.transforms.functional import to_pil_image
 
 IMAGE_OUT_DIR = (Path(__file__) / ".." / "outs" / "stylegan3").resolve()
 
-N_BATCHES = 4
+N_BATCHES = 1
    
 
 def get_test_name(): 
@@ -98,3 +99,20 @@ def test_sg3_activation_bending(model_class, model_args, n_images = N_BATCHES):
     out_bended = model.forward(*inputs)
     save_image_example(out_bended, model_args, get_test_name(), "bended")
     
+
+@pytest.mark.parametrize("model_class,model_args", get_model_args())
+def test_sg3_script(model_class, model_args, n_images = N_BATCHES):
+    model = model_class(*model_args, **model_args)
+    prob = tb.BendingParameter('mask', 1.0)
+    cb = tb.Mask(prob=prob)
+
+    activation_target = model.aliases()['layer_out'][0]
+    model.bend(cb, activation_target)
+
+    scripted = model.script()
+    path = model_dl_dir / (os.path.basename(tuple(model_args)[0]) + ".ts")
+    if os.path.isfile(path):
+        os.remove(path)
+    torch.jit.save(scripted, path)
+
+

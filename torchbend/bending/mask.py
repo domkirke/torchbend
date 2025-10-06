@@ -54,11 +54,15 @@ class Mask(BendingCallback):
         return mask_shape
     
     def _init_mask(self, shape: List[int]):
-        prob = float(self.get('prob'))
+        prob = self.get('prob')
+        seed = self.get('seed')
+        if prob is None: prob = torch.tensor(1.)
+        if seed is None: seed = torch.tensor(0)
         mask_shape = self._get_mask_shape(shape)
         #TODO goddamn generator is not pickable.
-        torch.manual_seed(int(self.get("seed")))
-        mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=prob)).requires_grad_(self.learnable)
+    
+        torch.manual_seed(int(seed))
+        mask = torch.bernoulli(torch.full(size=mask_shape, fill_value=float(prob))).requires_grad_(self.learnable)
         return mask
 
     def _add_mask(self, name, shape):
@@ -91,11 +95,15 @@ class Mask(BendingCallback):
         raise BendingCallbackException('%s not present in masks'%idx)
     
     def get_mask(self, param, prob: torch.Tensor | None = None, name: str | None = None) -> torch.Tensor:
-        torch.manual_seed(int(self.get("seed")))
+        seed = self.get("seed")
+        if seed is not None:
+            torch.manual_seed(int(seed))
         generator = None
         if prob is None or not self._prob_as_input: 
+            prob = self.get('prob')
+            if prob is None: prob  = torch.tensor(1.)
             if name is None:
-                return torch.bernoulli(torch.full_like(param, fill_value=float(self.get('prob'))), generator=generator).to(param)
+                return torch.bernoulli(torch.full_like(param, fill_value=float(prob)), generator=generator).to(param)
             else:
                 return self._mask_from_name(name)
         else:
@@ -107,7 +115,7 @@ class Mask(BendingCallback):
             else:
                 raise TypeError('wrong type for prob : %s'%type(prob))
 
-    def update(self):
+    def update(self) -> None:
         if torch.jit.is_scripting(): 
             mask_shapes = self._mask_shapes
         else:
@@ -148,7 +156,9 @@ class OrderedMask(Mask):
         return mask_shape
 
     def _init_mask(self, shape: List[int]):
-        torch.manual_seed(int(self.get("seed")))
+        seed = self.get("seed")
+        if seed is not None:
+            torch.manual_seed(int(seed))
         mask_shape = self._get_mask_shape(shape)
         numel = prod(mask_shape)
         if torch.jit.is_scripting():
@@ -179,18 +189,22 @@ class OrderedMask(Mask):
         numel = prod(mask_shape)
         if prob is None: 
             prob = self.get('prob')
+        if prob is None: 
+            raise ValueError("prob cannot be None")
+
         idx = int(prob * numel)
         mask = torch.zeros(numel)
         mask.index_put_((perm[:idx].long(),), torch.full((idx,), 1.))
         return mask.reshape(mask_shape)
 
     def get_mask(self, param, prob: torch.Tensor | None, name: str | None) -> torch.Tensor:
-        torch.manual_seed(int(self.get("prob")))
         if name is not None:
             mask_idx = self._mask_from_name(name)
             mask = self._mask_from_randperm(mask_idx, prob, param.shape).to(param)
         else:
-            mask = torch.bernoulli(torch.full_like(param, fill_value=float(self.get("prob")))).to(param)
+            if prob is None: 
+                raise ValueError("prob cannot be None")
+            mask = torch.bernoulli(torch.full_like(param, fill_value=float(prob))).to(param)
         return mask
     
     def get_mask_from_id(self, idx: int, cached: torch.Tensor) -> torch.nn.Parameter:
@@ -224,7 +238,10 @@ class ThresholdActivation(BendingCallback):
         self.dim = checklist(dim)
         self.invert = invert
 
-    def bend_input(self, x: torch.Tensor, threshold: torch.Tensor, name: Optional[str] = None):
+    def bend_input(self, x: torch.Tensor, threshold: torch.Tensor | None = None, name: Optional[str] = None):
+
+        if threshold is None: 
+            return x
 
         dims = self._get_operative_dims(self.dim, x)
 

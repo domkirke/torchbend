@@ -43,7 +43,9 @@ class Normal(BendingCallback):
         return rnd_shape
     
     def _init_rnd_(self, shape: List[int]):
-        torch.manual_seed(int(self.get("seed")))
+        seed = self.get("seed")
+        if seed is not None:
+            torch.manual_seed(int(seed))
         assert shape is not None, "mask preinit must be given target shape"
         if torch.jit.is_scripting():
             noise = torch.randn(self._get_rnd_shape(shape))
@@ -99,13 +101,15 @@ class Normal(BendingCallback):
             v.set_(self._init_rnd_(v.shape))
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor) -> None:
-        if self.op == "mul":
-            param.set_(self.get_noise_from_id(idx).to(cache) * cache * self.get('std').to(cache))
-        else: 
-            param.set_(self.get_noise_from_id(idx).to(param) * self.get('std').to(param) + cache)
+        std = self.get('std')
+        if std is not None:
+            if self.op == "mul":
+                param.set_(self.get_noise_from_id(idx).to(cache) * cache * std.to(cache))
+            else: 
+                    param.set_(self.get_noise_from_id(idx).to(param) * std.to(param) + cache)
 
     def bend_input(self, x: torch.Tensor, std: torch.Tensor | None = None, seed: torch.Tensor | None = None, name: str | None = None):
-        if std is None: std = self.get('std')
+        if std is None: return x
         noise = self.get_noise(x, name).to(x)
         if self.op == "mul":
             return x * (noise * std)

@@ -14,8 +14,7 @@ class BendingParameterException(Exception):
     pass
 
 
-_VALID_PARAM_TYPES = Union[float, int, bool, torch.Tensor]
-_VALID_PARAM_NATIVE_TYPES = Union[float, int, str, bool]
+_VALID_PARAM_TYPES = Union[float, int, bool, torch.Tensor, None]
 
 
 def _extract_type_if_optional(type_obj):
@@ -132,12 +131,7 @@ class BendingParamType():
         return BendingParamType.param_types()[type_obj]
 
     @staticmethod
-    def _to_tensor(value: _VALID_PARAM_TYPES, param_type: int) -> torch.Tensor:
-        #damn torchscipt, don't judge me
-        #TODO make a generative code for param_types?
-        # _param_types = {'float': 1, 'int': 2} 
-        #TODO handle general float types
-        if value is None: return None
+    def _parse_tensor_value(value: _VALID_PARAM_TYPES, param_type: int) -> torch.Tensor | None:
         if torch.jit.isinstance(value, torch.Tensor):
             if (param_type == BendingParamType.param_types()['bool']):
                 return value.byte()
@@ -152,6 +146,18 @@ class BendingParamType():
                 return value
             else:
                 raise BendingParameterException('Wrong ParamType: %s'%param_type)
+        else:
+            raise BendingParameterException('value is not tensor')
+
+    @staticmethod
+    def _to_tensor(value: _VALID_PARAM_TYPES, param_type: int) -> torch.Tensor | None:
+        #damn torchscipt, don't judge me
+        #TODO make a generative code for param_types?
+        # _param_types = {'float': 1, 'int': 2} 
+        #TODO handle general float types
+        if value is None: return None
+        if torch.jit.isinstance(value, torch.Tensor):
+            return BendingParamType._parse_tensor_value(value, param_type)            
         else:
             if (param_type == BendingParamType.param_types()['bool']):
                 if isinstance(value, bool):
@@ -174,11 +180,20 @@ class BendingParamType():
                     return torch.tensor(complex(value))
                 else:
                     raise BendingParameterException('Cannot make complex tensor out of %s'%value)
+            elif (param_type == BendingParamType.param_types()['tensor']):
+                if isinstance(value, int): 
+                    return BendingParamType._parse_tensor_value(torch.tensor(int(value)), param_type)            
+                elif isinstance(value, float):  
+                    return BendingParamType._parse_tensor_value(torch.tensor(float(value)), param_type)            
+                elif isinstance(value, int): 
+                    return BendingParamType._parse_tensor_value(torch.tensor(bool(value)), param_type)            
+                else:
+                    raise BendingParameterException('Cannot make tensor out of %s'%value)
             else:
                 raise BendingParameterException('Wrong ParamType: %s'%param_type)
 
     @staticmethod
-    def _from_tensor(tensor) -> _VALID_PARAM_NATIVE_TYPES:
+    def _from_tensor(tensor) -> _VALID_PARAM_TYPES:
         if tensor.numel() == 0: 
             raise ValueError('got empty tensor in _from_tensor')
         elif tensor.numel() == 1:
@@ -234,7 +249,7 @@ class BendingParameter(nn.Module):
             self.clamp = clamp or False
         self._nodes = {}
         self._kwargs = kwargs
-        self._callbacks = {}
+        self._callbacks = []
 
     def _make_init_warnings_for_str(self, **attributes):
         for name, val in attributes:
@@ -259,7 +274,7 @@ class BendingParameter(nn.Module):
             return str(self._name.value)
 
     def _register_callback(self, cb, name):
-        self._callbacks[cb] = name
+        self._callbacks.append(cb)
 
     def get_value(self) -> torch.Tensor:
         value = self.value.data
@@ -272,37 +287,37 @@ class BendingParameter(nn.Module):
         else:
             return value * self.weight.to(value) + self.bias.to(value)
 
-    def get_python_value(self) -> _VALID_PARAM_NATIVE_TYPES:
+    def get_python_value(self) -> _VALID_PARAM_TYPES:
         if self.param_type == BendingParamType.get_type('tensor'):
             return self.get_value()
         else:
             return BendingParamType._from_tensor(self.get_value())
 
     def set_value(self, value: _VALID_PARAM_TYPES, update: bool = True) -> None:
-        # if str, just set value
-        # if not str, check and clamp
-        if not isinstance(value, torch.Tensor):
+        if value is not None: 
             value = self._to_tensor(value)
-        if self.clamp:
-            value = self._clamp(value)
-        else:
-            val_real = value if not torch.is_complex(value) else value.abs()
-            if self.min_clamp is not None:
-                if (val_real < self.min_clamp).any():
-                    raise BendingParameterException(f'tried to set value < min_clamp = {self.min_clamp}, but got {value}')
-            if self.max_clamp is not None:
-                if (val_real > self.max_clamp).any():
-                    raise BendingParameterException(f'tried to set value > max_clamp = {self.max_clamp}, but got {value}')
+            if value is not None: 
+                if self.clamp:
+                    value = self._clamp(value)
+                else:
+                    val_real = value if not torch.is_complex(value) else value.abs()
+                    if self.min_clamp is not None:
+                        if (val_real < self.min_clamp).any():
+                            raise BendingParameterException(f'tried to set value < min_clamp = {self.min_clamp}, but got {value}')
+                    if self.max_clamp is not None:
+                        if (val_real > self.max_clamp).any():
+                            raise BendingParameterException(f'tried to set value > max_clamp = {self.max_clamp}, but got {value}')
 
-        if torch.jit.is_scripting():
-            self.value.set_(value)
-        else:
-            self.value.data = value
-            #TODO not compatible with scripting yet. Find a solution?
-            self._update_callbacks()
+                if torch.jit.is_scripting():
+                    self.value.set_(value.to(self.value))
+                else:
+                    self.value.data = value
+                if not torch.jit.is_scripting():
+                    if update:
+                        self._update_callbacks()
 
-    def _update_callbacks(self):
-        for cb, name in self._callbacks.items():
+    def _update_callbacks(self) -> None:
+        for i, cb in enumerate(self._callbacks):
             cb.update()
 
     def _clamp(self, value: torch.Tensor):
@@ -311,11 +326,14 @@ class BendingParameter(nn.Module):
         else:
             return torch.clamp(value, self.min_clamp, self.max_clamp)
 
-    def _to_tensor(self, obj: _VALID_PARAM_TYPES) -> torch.Tensor:
-        if isinstance(obj, (int, float, bool, torch.Tensor, torch.nn.Parameter)):
-            return BendingParamType._to_tensor(obj, self.param_type)
+    def _to_tensor(self, obj: _VALID_PARAM_TYPES) -> torch.Tensor | None:
+        if obj is None: 
+            return None
         else:
-            raise TypeError('BendingParameter values can only be int or float')
+            if isinstance(obj, (int, float, bool, torch.Tensor, torch.nn.Parameter)):
+                return BendingParamType._to_tensor(obj, self.param_type)
+            else:
+                raise TypeError('BendingParameter values can only be int or float')
 
     @torch.jit.export
     def __float__(self):

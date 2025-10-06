@@ -34,10 +34,15 @@ class Bias(BendingCallback):
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: Optional[torch.Tensor] = None):
         assert cache is not None
-        param.set_(cache + self.get('bias').to(param.device))
+        bias = self.get("bias")
+        if bias is not None:
+            if cache is not None: 
+                param.set_(cache + bias.to(param.device))
 
-    def bend_input(self, x: torch.Tensor, bias: torch.Tensor, name: Optional[str] = None):
-        if bias is not None: 
+    def bend_input(self, x: torch.Tensor, bias: torch.Tensor | None = None, name: Optional[str] = None):
+        if bias is None: 
+            bias = torch.tensor(0.)
+        else:
             if self._bias_as_input and self._for_nntilde: bias = _parse_affine_control(x, bias)
         return x + bias.to(x.device)
 
@@ -56,12 +61,15 @@ class Scale(BendingCallback):
         return f"Scale(scale={self.get('scale'):.4f})"
     
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: Optional[torch.Tensor] = None):
-        assert cache is not None
-        param.set_(cache * self.get('scale').to(param.device))
-
-    def bend_input(self, x: torch.Tensor, scale: torch.Tensor, name: str | None = None):
+        scale = self.get('scale')
         if scale is not None:
-            if self._scale_as_input and self._for_nntilde: scale = _parse_affine_control(x, scale)
+            assert cache is not None
+            param.set_(cache * scale.to(param.device))
+
+    def bend_input(self, x: torch.Tensor, scale: torch.Tensor | None = None, name: str | None = None):
+        if scale is None: 
+            scale = torch.tensor(1.)
+        if self._scale_as_input and self._for_nntilde: scale = _parse_affine_control(x, scale)
         return x * scale.to(x.device)
         
 
@@ -86,12 +94,22 @@ class Affine(BendingCallback):
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: Optional[torch.Tensor] = None):
         if cache is not None: 
-            param.set_(cache * self.get('scale').to(param.device) + self.get('bias').to(param.device))
+            scale = self.get("scale")
+            if scale is not None: 
+                cache = cache * scale.to(param.device)
+            bias = self.get("bias")
+            if bias is not None: 
+                cache = cache * bias.to(param.device)
+            param.set_(cache)
 
-    def bend_input(self, x: torch.Tensor, scale: torch.Tensor, bias: torch.Tensor, name: Optional[str] = None):
-        if scale is not None:
+    def bend_input(self, x: torch.Tensor, scale: torch.Tensor | None = None, bias: torch.Tensor | None = None, name: Optional[str] = None):
+        if scale is None:
+            scale = torch.tensor(1.)
+        else:
             if self._scale_as_input and self._for_nntilde: scale = _parse_affine_control(x, scale)
-        if bias is not None: 
+        if bias is  None: 
+            bias = torch.tensor(0.)
+        else:
             if self._bias_as_input and self._for_nntilde: bias = _parse_affine_control(x, bias)
         return x * scale.to(x.device) + bias.to(x.device)
 

@@ -13,6 +13,9 @@ _TB_DEFAULT_PANEL_OUT = "/tmp/torchbend/ui/panel"
 
 def get_widget_from_controllable(ctrl):
     widget_type = BendingParamType.param_hash()[ctrl.param_type]
+    if widget_type == "tensor":
+        if ctrl.get_value().numel() == 1: 
+            widget_type = BendingParamType.param_hash()[BendingParamType._param_type_from_obj(ctrl.get_value().item())]
     if widget_type == "float":
         assert ctrl.min_clamp is not None, "minimum value must be defined for panel interfaces"
         assert ctrl.max_clamp is not None, "maximum value must be defined for panel interfaces"
@@ -21,7 +24,7 @@ def get_widget_from_controllable(ctrl):
                 start = ctrl.min_clamp,
                 end = ctrl.max_clamp,
                 step = (ctrl.max_clamp - ctrl.min_clamp) / 1000,
-                value = ctrl.get_python_value()
+                value = float(ctrl.get_python_value())
         )
     elif widget_type == "int":
         assert ctrl.min_clamp is not None, "minimum value must be defined for panel interfaces"
@@ -30,12 +33,15 @@ def get_widget_from_controllable(ctrl):
                 name = ctrl.name,
                 start = ctrl.min_clamp,
                 end = ctrl.max_clamp,
-                value = ctrl.get_python_value()
+                value = int(ctrl.get_python_value())
         )
     elif widget_type == "bool":
         widget = pn.widgets.Checkbox(
-            name = ctrl.name
+            name = ctrl.name,
+            value = bool(ctrl.get_python_value())
         )
+    else: 
+        raise TypeError("input type %s not handled"%widget_type)
     return widget
 
 def get_widgets_from_controllables(controllables):

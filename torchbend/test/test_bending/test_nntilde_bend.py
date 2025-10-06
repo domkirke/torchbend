@@ -38,7 +38,7 @@ def test_reverse_nn(n_channels=4):
     x = torch.randn(1, n_channels, 8192)
     bended.trace(x=x)
 
-    bypass = tb.BendingParameter("reverse", 0)
+    bypass = tb.BendingParameter("reverse", False)
     cb = tb.Reverse(dim=-1, reverse=bypass)
     bended.bend(cb, "add")
     bended.forward(x)

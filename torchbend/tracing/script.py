@@ -39,7 +39,7 @@ def {{METHOD_NAME}}{{SIGNATURE}}:
 attribute_template = """
 @torch.jit.export
 def get_{{NAME}}(self) -> {{TYPE_EXPR}}:
-    return {{TYPE_EXPR}}(self._get_bending_control(\"{{NAME}}\")) 
+    return {{TYPE_CAST}}(self._get_bending_control(\"{{NAME}}\")) 
 
 @torch.jit.export
 def set_{{NAME}}(self, value: {{TYPE_EXPR}}) -> int:
@@ -51,18 +51,22 @@ def _template_from_param(param: BendingParameter, template=attribute_template, *
     if param.param_type == get_param_type("float"):
         kwargs['dtype'] = kwargs.get('dtype', torch.float32)
         kwargs['type_expr'] = kwargs.get('type_expr', "float")
+        kwargs['type_cast'] = kwargs['type_expr']
         return _resolve_code(template, **kwargs)
     elif param.param_type == get_param_type("int"):
         kwargs['dtype'] = kwargs.get('dtype', torch.int64)
         kwargs['type_expr'] = kwargs.get('type_expr', "int")
+        kwargs['type_cast'] = kwargs['type_expr']
         return _resolve_code(template, **kwargs)
     elif param.param_type == get_param_type("bool"):
         kwargs['dtype'] = kwargs.get('dtype', torch.uint8)
         kwargs['type_expr'] = kwargs.get('type_expr', "bool")
+        kwargs['type_cast'] = kwargs['type_expr']
         return _resolve_code(template, **kwargs)
     elif param.param_type == get_param_type("tensor"):
         kwargs['dtype'] = kwargs.get('dtype', torch.get_default_dtype())
         kwargs['type_expr'] = kwargs.get('type_expr', 'torch.Tensor')
+        kwargs['type_cast'] = "torch.tensor"
         return _resolve_code(template, **kwargs)
     else:
         raise TypeError('Type not handled by automatic attribute writing : %s'%(param.param_type))
@@ -286,12 +290,13 @@ class ScriptedBendedModule(nn.Module):
     @torch.jit.export
     def _set_bending_control(self, name: str, value: CONTROLLABLE_TYPES) -> int:
         """set a bending control with name and value"""
-        if isinstance(value, (int, float)):
-            value = torch.full((1,), value)
-        elif isinstance(value, bool):
-            value = torch.full((1,), int(value)).to(torch.bool)
-        for v in self._controllables:
-            if v.name == name:
-                v.set_value(value)
-        self._update_weights(name)
+        if value is not None: 
+            if isinstance(value, (int, float)):
+                value = torch.full((1,), value)
+            elif isinstance(value, bool):
+                value = torch.full((1,), int(value)).to(torch.bool)
+            for v in self._controllables:
+                if v.name == name:
+                    v.set_value(value)
+            self._update_weights(name)
         return 0

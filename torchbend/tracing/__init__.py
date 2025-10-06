@@ -1,5 +1,5 @@
 import torch
-CONTROLLABLE_TYPES = int | bool | float | torch.Tensor
+CONTROLLABLE_TYPES = int | bool | float | torch.Tensor | None
 
 from .mark import *
 from .input import *

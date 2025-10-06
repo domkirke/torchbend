@@ -65,7 +65,7 @@ def test_reverse(cb_class, cb_args, module_config, jit, as_controllable):
         out_orig = getattr(mod, method)(*args, **kwargs)
 
         if as_controllable:
-            reverse = tb.bending.BendingParameter('reverse', 0)
+            reverse = tb.bending.BendingParameter('reverse', False)
         else:
             reverse = False 
 
@@ -87,21 +87,17 @@ def test_reverse(cb_class, cb_args, module_config, jit, as_controllable):
             assert bool(tb.compare_outs(out_orig, out_scripted))
 
 
-def scale_scalar(x: torch.Tensor, factor: float = 1.):
-    return x * factor
-
 def scale_tensor(x: torch.Tensor, factor: torch.Tensor | None = None):
-    if factor is None: 
-        return x
+    if factor is None: factor = torch.tensor(1.)
     return x * factor
 
-
-def affine_tensor(x: torch.Tensor, scale: torch.Tensor, bias: torch.Tensor):
+def affine_tensor(x: torch.Tensor, scale: torch.Tensor | None = None, bias: torch.Tensor | None = None):
+    if scale is None: scale = torch.tensor(1.)
+    if bias is None: bias = torch.tensor(0.)
     return x * scale + bias
 
 
 lambda_fns = [
-    (scale_scalar, [("factor", PArgs("scale", 1.))]),
     (scale_tensor, [("factor", None)]),
     (scale_tensor, [("factor", PArgs("scale", torch.tensor(1.)))]),
     (affine_tensor, [("factor", PArgs("scale", torch.tensor(1.))), ("bias", PArgs("bias", torch.tensor(0.)))]),
@@ -109,7 +105,7 @@ lambda_fns = [
 
 @pytest.mark.parametrize('fn,params', lambda_fns)
 @pytest.mark.parametrize('module_config', modules_to_test)
-@pytest.mark.parametrize('jit', [True])
+@pytest.mark.parametrize('jit', [False, True])
 def test_lambda_activation(fn, params, module_config, jit):
     mod = module_config.get_bended_module()
     for method, (args, kwargs, _, activation_targets) in module_config.scriptable():
