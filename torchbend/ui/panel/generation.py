@@ -33,7 +33,7 @@ def generate_realtime_image(bended_module=None,
         if isinstance(bended_module, torch.jit._script.RecursiveScriptModule):
             bended_module._set_bending_control(name, torch.tensor(param))
         else:
-            bended_module.update(name, param)
+            bended_module.update(name, torch.tensor(param))
     in_args, in_kwargs = gen_params.get('input', (tuple(), dict()))
     upscale = gen_params.get('upscale')
     callback = gen_params.get('fn', 'forward')
@@ -60,9 +60,9 @@ def generate_offline_image(event,
     assert widget is not None
     for name, param in widget_dict.items():
         if isinstance(bended_module, torch.jit._script.RecursiveScriptModule):
-            bended_module._set_bending_control(name, torch.tensor(param))
+            bended_module._set_bending_control(name, torch.tensor(param.value))
         else:
-            bended_module.update(name, param)
+            bended_module.update(name, torch.tensor(param.value))
     in_args, in_kwargs = gen_params.get('input', (tuple(), dict()))
     
     upscale = gen_params.get('upscale')
