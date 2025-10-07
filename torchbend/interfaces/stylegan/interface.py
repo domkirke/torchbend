@@ -11,7 +11,7 @@ import os, torch
 
 #TODO embed a wheel? 
 STYLEGAN_REPO_LINK = os.environ.get('TB_STYLEGAN_LINK', 'https://github.com/domkirke/stylegan3/archive/refs/heads/video.zip')
-STYLEGAN_PATH = Path(__file__).parent / "stylegan3-main"
+STYLEGAN_PATH = Path(__file__).parent / "stylegan3-video"
 TB_DEFAULT_MODEL_DIR = tb._TORCHBEND_DEFAULT_MODEL_DIR / "stylegan3"
 
 def check_stylegan(sg_link = STYLEGAN_REPO_LINK, sg_path = STYLEGAN_PATH):
@@ -22,7 +22,7 @@ def check_stylegan(sg_link = STYLEGAN_REPO_LINK, sg_path = STYLEGAN_PATH):
             # Extract all files to current directory
             z.extractall(path=str(sg_path.parent))
         #TODO brows for correct dir
-        return sg_path / "stylegan3-main"
+        return sg_path 
     else:
         return sg_path
 
