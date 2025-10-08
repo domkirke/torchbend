@@ -1,4 +1,5 @@
 from types import FunctionType
+import os
 import dill
 import copy
 
@@ -147,6 +148,9 @@ class BendingConfig(object):
         }
 
     def save(self, path):
+        path = str(path)
+        if os.path.splitext(path)[1] == "":
+            path += ".tbconfig"
         with open(path, 'wb') as f:
             dill.dump(self._pickle_obj(), f)
 

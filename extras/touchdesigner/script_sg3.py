@@ -15,22 +15,50 @@ flags.DEFINE_string('config', default=None, help="path of bending config")
 flags.DEFINE_string('out', default="models/sg3", help="out path")
 flags.DEFINE_string('device', default="cpu", help="device id")
 
+def bend_model(module):
+    act_layers = module.aliases()['layer_out']
+    for i, target_act in enumerate(act_layers):
+        c1 = tb.BendingParameter(f"mask_{i}", 1., range=[0., 1.])
+        c2 = tb.BendingParameter(f"seed_{i}", 0, range=[0, 1024])
+        cb_mask_kernels = tb.OrderedMask(prob = c1, seed = c2, dim=1)
+        c3 = tb.BendingParameter(f"scale_{i}", 1., range=[-5, 5])
+        c4 = tb.BendingParameter(f"bias_{i}", 0., range=[-5, 5])
+        cb_affine_kernels = tb.Affine(scale=c3, bias=c4)
+        c5 = tb.BendingParameter(f"noise_{i}", 0., range=[0., 5.])
+        cb_noise_kernels = tb.Normal(std=c5)
+        c6 = tb.BendingParameter(f"permute_seed_{i}", -1, range=[-1, 1024])
+        cb_permute_kernels = tb.Permute(seed=c6, dim=1)
+        module.bend(cb_mask_kernels, target_act, bend_param=False)
+        module.bend(cb_affine_kernels, target_act, bend_param=False)
+        module.bend(cb_noise_kernels, target_act, bend_param=False)
+        module.bend(cb_permute_kernels, target_act, bend_param=False)
+
 
 def main(argv):
     path = Path(FLAGS.path)
     target_path = Path(FLAGS.out) / f"{path.stem}_{FLAGS.device}.ts"
     device = torch.device(FLAGS.device)
 
+    logging.info('loading model...')
     module = BendedStyleGAN(path, device=torch.device(device))
 
+    logging.info('bending model...')
+    bend_model(module)
+    #TODO loading config makes model not scriptale...
+    # if FLAGS.config: 
+    #     config = tb.BendingConfig.load(FLAGS.config)
+    # module.bend(config)
+
+    controllable_dict = {}
+    for name, param in module.controllables().items():
+        controllable_dict[name] = tb.BendingParamType.param_hash()[param.param_type]
 
     # bending units 
     metadata = {
         'latent_dim': module.latent_dim, 
         'conditioning_dim': module.conditioning_dim, 
+        'controllables': controllable_dict
     }
-    if FLAGS.config is not None: 
-        metadata['bending_config'] = FLAGS.config
 
     extra_files = {'td_metadata': pickle.dumps(metadata)}
     
@@ -42,6 +70,10 @@ def main(argv):
 
     logging.info('testing model...')
     inputs = module.get_inputs(1)
+    for name, param in module.controllables().items():
+        param_type = tb.BendingParamType.param_hash()[param.param_type]
+        getattr(loaded, f"get_{name}")()
+
     loaded(**inputs)
 
 

@@ -91,21 +91,23 @@ class Interface(object):
             raise BendingInterfaceException("could not download model, got : %s"%e)
         return res
 
+    @property
+    def config(self): 
+        return self.model.config
+
     @classmethod
     def get_model_path(cls, model_path_or_url: str | Path, force_download: bool = False, download_to: Path | str | None = None):
         assert isinstance(model_path_or_url, (str, Path))
         if isinstance(model_path_or_url, str):
-            parsed_url = urllib.parse.urlparse(model_path_or_url)
-            if parsed_url.scheme == "":
-                model_path_or_url = Path(model_path_or_url)
-            else:
-                try:
-                    destination = Path(download_to or cls._get_download_location(model_path_or_url))
-                    if (not destination.exists()) or force_download:
-                        cls._download_model_to(model_path_or_url, destination)
-                    return destination
-                except BendingInterfaceException as e:
-                    raise e
+            if os.path.exists(model_path_or_url):
+                return Path(model_path_or_url)
+            try:
+                destination = Path(download_to or cls._get_download_location(model_path_or_url))
+                if (not destination.exists()) or force_download:
+                    cls._download_model_to(model_path_or_url, destination)
+                return destination
+            except BendingInterfaceException as e:
+                raise e
 
         if isinstance(model_path_or_url, Path):
             if model_path_or_url.exists():

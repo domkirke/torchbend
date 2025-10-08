@@ -54,6 +54,7 @@ class BendedStyleGAN(Interface):
         repository_path = check_stylegan(repository_link, repository_path)
         sys.path.insert(0, str(repository_path.absolute()))
         pretrained_path = self.get_model_path(pretrained_path)
+        self.path = pretrained_path
         pretrained = numpy.load(str(pretrained_path), allow_pickle=True)
         # pretrained = pickle.load()
         pickle_key = "G" if not load_ema else "G_ema"

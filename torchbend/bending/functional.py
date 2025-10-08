@@ -49,6 +49,9 @@ def generate_class(fn, **kwargs):
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
 
+        def __repr__(self): 
+            return f"Lambda(fn={fn.__name__})"
+
         def bend_input(self, x, name: Optional[str] = None, {{FN_FORWARD_SIG}}):
             return fn(x, {{FN_FORWARD_ARGS}})
 

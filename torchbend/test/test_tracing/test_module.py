@@ -11,7 +11,18 @@ testpath = os.path.abspath((os.path.join(os.path.dirname(__file__), "..")))
 if testpath not in sys.path:
     sys.path.append(testpath)
 from test_modules import modules_to_test, ModuleTestConfig
-from conftest import get_log_file, log_to_file
+
+
+def log_to_file(f, label, value):
+    f.write(f"{label} : \n{value}\n\n{'-' * 16}")
+
+def get_test_name():
+    return os.environ.get('PYTEST_CURRENT_TEST').split(':')[-1].split(' ')[0]
+
+def get_log_file(outdir=testpath):
+    outdir = os.path.join(os.path.dirname(outdir), "outs")
+    test_name = get_test_name()
+    return os.path.join(outdir, test_name+"_out.txt")
 
 
 @pytest.mark.parametrize("module_config", modules_to_test)
@@ -321,7 +332,7 @@ def test_bending_with_configs(module_config):
         out_bended_2 = getattr(bended_module, method)(*args, **kwargs)
         assert not bool(tb.compare_outs(out_orig, out_bended_2))
         assert not bool(tb.compare_outs(out_bended_1, out_bended_2))
-
+    
 
 
 @pytest.mark.parametrize("module_config", modules_to_test)

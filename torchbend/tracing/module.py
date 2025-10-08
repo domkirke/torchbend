@@ -826,7 +826,7 @@ class BendedModule(object):
 
         if len(args) == 1:
             bended_config = args[0]
-            assert isinstance(args[0], BendingConfig)
+            assert isinstance(args[0], BendingConfig), "if only arg is provided it has to be a BendingConfig"
         else:
             bended_config = BendingConfig(args)
 
