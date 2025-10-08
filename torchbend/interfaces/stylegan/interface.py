@@ -7,6 +7,7 @@ from ..base import Interface
 import sys
 import numpy
 import os, torch
+from ..base import _overload_module
 
 
 #TODO embed a wheel? 
@@ -111,3 +112,9 @@ class BendedStyleGAN(Interface):
     @property
     def n_layers(self): 
         return self._model.synthesis.num_layers
+
+    @_overload_module
+    def script(self): 
+        scripted = super().script()
+        scripted.latent_dim = self.latent_dim
+        return scripted

@@ -1,10 +1,12 @@
-import torchbend as tb
+import sys
 from absl import app, logging, flags
 import torch
 import pickle
 from pathlib import Path
 
-
+orig_path = str(Path(__file__).parent.parent.parent.absolute())
+sys.path.append(orig_path)
+import torchbend as tb
 from torchbend.interfaces.stylegan import BendedStyleGAN
 
 FLAGS = flags.FLAGS
@@ -19,7 +21,10 @@ def main(argv):
     target_path = Path(FLAGS.out) / f"{path.stem}_{FLAGS.device}.ts"
     device = torch.device(FLAGS.device)
 
-    module = BendedStyleGAN("stylegan2-cifar10-32x32.pkl", device=torch.device(device))
+    module = BendedStyleGAN(path, device=torch.device(device))
+
+
+    # bending units 
     metadata = {
         'latent_dim': module.latent_dim, 
         'conditioning_dim': module.conditioning_dim, 
