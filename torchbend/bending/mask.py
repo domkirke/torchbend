@@ -223,7 +223,7 @@ class OrderedMask(Mask):
             with torch.no_grad():
                 for j, s in enumerate(mask_shapes):
                     if i == j:
-                        v.set_(self._init_mask(s))
+                        v.set_(self._init_mask(s).to(v.device))
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor | None = None):
         assert cache is not None

@@ -44,14 +44,15 @@ def main(argv):
 
     logging.info('bending model...')
     bend_model(module)
-    #TODO loading config makes model not scriptale...
+    #TODO loading config makes model not scriptable...
     # if FLAGS.config: 
     #     config = tb.BendingConfig.load(FLAGS.config)
     # module.bend(config)
 
     controllable_dict = {}
     for name, param in module.controllables().items():
-        controllable_dict[name] = tb.BendingParamType.param_hash()[param.param_type]
+        controllable_dict[name] = {'type': tb.BendingParamType.param_hash()[param.param_type], 
+                                   'range': [param.min_clamp, param.max_clamp]} 
 
     # bending units 
     metadata = {
@@ -67,12 +68,14 @@ def main(argv):
 
     loaded_meta = {k: '' for k in extra_files.keys()}
     loaded = torch.jit.load(str(target_path), _extra_files=loaded_meta)
+    loaded_meta['td_metadata'] = pickle.loads(loaded_meta['td_metadata'])
 
     logging.info('testing model...')
     inputs = module.get_inputs(1)
     for name, param in module.controllables().items():
         param_type = tb.BendingParamType.param_hash()[param.param_type]
         getattr(loaded, f"get_{name}")()
+
 
     loaded(**inputs)
 
