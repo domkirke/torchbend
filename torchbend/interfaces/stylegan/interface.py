@@ -28,7 +28,6 @@ def check_stylegan(sg_link = STYLEGAN_REPO_LINK, sg_path = STYLEGAN_PATH):
         return sg_path
 
 
-
 class BendedStyleGAN(Interface):
     _imported_callbacks_ = ['forward']                        
     _panel_render_type_ = "image"

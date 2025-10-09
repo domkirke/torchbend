@@ -9,20 +9,13 @@ from pathlib import Path
 
 sourcefile = os.path.abspath(me.parent().op('gan_script_file').par.file.eval())
 torchbend_path = str(Path(sourcefile).parent.parent.parent)
-# sg3_path = str(Path(torchbend_path) / "torchbend" / "interfaces" / "stylegan" / "stylegan3-video")
 if str(torchbend_path) not in sys.path: sys.path.append(str(torchbend_path))
-# if not sg3_path in sys.path: sys.path.append(str(sg3_path))
 
 import torchbend as tb
 from torchbend.interfaces.stylegan import BendedStyleGAN
 torch.set_grad_enabled(False)
 
-# BendedStyleGAN(str(Path(torchbend_path) / "models" / "sg3" / "stylegan3-80sComm-000208.pkl"))
-
-# me - this DAT
-# scriptOp - the OP which is cooking
-#
-# press 'Setup Parameters' in the OP to call this function to re-create the parameters.
+init_kernels_with_path = str(Path(torchbend_path) / "models" / "sg3" / "stylegan3-80sComm-000208.pkl")
 
 DEBUG = False
 
@@ -91,6 +84,7 @@ class SG3Handler(object):
         try:
             meta_dict = {'td_metadata': ''}
             self._device = self._device_from_model_path(path)
+            BendedStyleGAN(init_kernels_with_path, device=self._device)
             self._path = path
             with self._model_lock:
                 self._model = torch.jit.load(path, _extra_files=meta_dict, map_location=torch.device(self._device))
