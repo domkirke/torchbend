@@ -98,7 +98,7 @@ class Normal(BendingCallback):
 
     def update(self):
         for i, v in enumerate(self._noises):
-            v.set_(self._init_rnd_(v.shape))
+            v.set_(self._init_rnd_(v.shape).to(v.device))
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor) -> None:
         std = self.get('std')

@@ -57,7 +57,7 @@ class Permute(BendingCallback):
             if perm.numel() != 0:
                 torch.manual_seed(int(seed))
                 with torch.no_grad():
-                    perm.set_(torch.randperm(perm.shape[0]))
+                    perm.set_(torch.randperm(perm.shape[0], device=perm.device))
 
     def register_weight(self, parameter, name=None, cache: bool = True):
         name = super().register_weight(parameter, name=name, cache=cache) 
