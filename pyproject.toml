@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=64", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "torchbend"
@@ -11,6 +11,9 @@ dynamic = ["dependencies", "optional-dependencies"]
 
 [project.urls]
 Repository = "https://github.com/acids-ircam/torchbend"
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools.packages.find]
 where = ["."]
