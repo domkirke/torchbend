@@ -127,7 +127,6 @@ class Interface(object):
         raise BendingInterfaceException('cannot delete model of interface')
     original_model = property(_getoriginalmodel_, _setoriginalmodel_, _deloriginal_model_)
 
-
     def to(self, device):
         return self._model.to(device)
 

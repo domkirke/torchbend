@@ -751,3 +751,113 @@ def prime_factors(n):
     if n > 1:
         factors.append(n)
     return factors
+
+
+AUDIO_EXTENSIONS = {'.wav', '.mp3', '.flac', '.ogg', '.aiff', '.aif', '.opus'}
+
+
+def _load_audio_file(path, backend='torchaudio'):
+    if backend == 'torchaudio':
+        import torchaudio
+        waveform, sr = torchaudio.load(str(path))  # [C, T]
+    elif backend == 'soundfile':
+        import soundfile as sf
+        data, sr = sf.read(str(path), always_2d=True)  # [T, C]
+        waveform = torch.from_numpy(data.T).float()    # [C, T]
+    else:
+        raise ValueError(f"Unknown backend '{backend}'. Choose 'torchaudio' or 'soundfile'.")
+    return waveform, sr
+
+
+def _process_audio(waveform, sr, sample_rate=None, channels=None):
+    if channels is not None:
+        c = waveform.shape[0]
+        if channels == 1 and c > 1:
+            waveform = waveform.mean(0, keepdim=True)
+        elif channels > c:
+            waveform = waveform.repeat(math.ceil(channels / c), 1)[:channels]
+        else:
+            waveform = waveform[:channels]
+    if sample_rate is not None and sample_rate != sr:
+        import torchaudio
+        waveform = torchaudio.functional.resample(waveform, orig_freq=sr, new_freq=sample_rate)
+        sr = sample_rate
+    return waveform, sr
+
+
+class AudioCollection:
+    """Holds a set of audio files; supports dict access by relative path and list access by index."""
+
+    def __init__(self, items):
+        # items: list of (relative_path, waveform [C, T], sr)
+        self._items = list(items)
+        self._index = {path: i for i, (path, _, _) in enumerate(self._items)}
+
+    # --- sequence protocol ---
+
+    def __len__(self):
+        return len(self._items)
+
+    def __iter__(self):
+        return iter(self._items)
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            _, waveform, sr = self._items[self._index[key]]
+            return waveform, sr
+        return self._items[key]
+
+    # --- dict-like helpers ---
+
+    def keys(self):
+        return [path for path, _, _ in self._items]
+
+    def values(self):
+        return [(w, sr) for _, w, sr in self._items]
+
+    def items(self):
+        return list(self._items)
+
+    # --- size stats ---
+
+    def max_size(self):
+        return max((w.shape[-1] for _, w, _ in self._items), default=0)
+
+    def min_size(self):
+        return min((w.shape[-1] for _, w, _ in self._items), default=0)
+
+    def _apply(self, w, native_sr, sr, channels, size):
+        w, _ = _process_audio(w, native_sr, sample_rate=sr, channels=channels)
+        if size is not None:
+            t = w.shape[-1]
+            if t < size:
+                w = torch.nn.functional.pad(w, (0, size - t))
+            elif t > size:
+                w = w[..., :size]
+        return w
+
+    def as_list(self, channels=None, sr=None, size=None):
+        return [self._apply(w, native_sr, sr, channels, size) for _, w, native_sr in self._items]
+
+    def as_dict(self, channels=None, sr=None, size=None):
+        return {path: self._apply(w, native_sr, sr, channels, size) for path, w, native_sr in self._items}
+
+    def __repr__(self):
+        return f"AudioCollection({len(self._items)} files, sizes {self.min_size()}–{self.max_size()})"
+
+
+def load_audio(path, backend='torchaudio'):
+    if os.path.isfile(path):
+        waveform, sr = _load_audio_file(path, backend)
+        return AudioCollection([(os.path.basename(path), waveform, sr)])
+    elif os.path.isdir(path):
+        items = []
+        for fname in sorted(os.listdir(path)):
+            if os.path.splitext(fname)[1].lower() in AUDIO_EXTENSIONS:
+                waveform, sr = _load_audio_file(os.path.join(path, fname), backend)
+                items.append((fname, waveform, sr))
+        return AudioCollection(items)
+    else:
+        raise FileNotFoundError(f"Path not found: {path}")
+
+
