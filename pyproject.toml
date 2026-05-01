@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "torchbend"
+version = "0.1.0"
+description = "Neural network bending and tracing utilities"
+requires-python = ">=3.9"
+dynamic = ["dependencies", "optional-dependencies"]
+
+[project.urls]
+Repository = "https://github.com/acids-ircam/torchbend"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["torchbend*"]
+
+[tool.setuptools.package-data]
+torchbend = ["interfaces/requirements/*.txt"]
