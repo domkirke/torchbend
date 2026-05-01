@@ -169,7 +169,7 @@ def generate_offline(bended_module,
                                  
 def get_generation_ui(bended_module, controllable_widgets, realtime, script: bool = False, **kwargs):
     max_image_columns = kwargs.get('max_image_columns') or _DEFAULT_MAX_IMAGE_COLUMNS
-    render_type = kwargs.get('render_type') or getattr(bended_module, "_panel_render_type_")
+    render_type = kwargs.pop('render_type', None) or getattr(bended_module, "_panel_render_type_")
     callback = kwargs.get('fn')
     kwargs['norm_fn'] = kwargs.get('norm_fn', _get_norm_fn_for_out(bended_module, kwargs, callback))
     if script: 

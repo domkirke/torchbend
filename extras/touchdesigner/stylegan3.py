@@ -268,4 +268,4 @@ def onGetCookLevel(scriptOp):
         CookLevel.ALWAYS - every frame
     """
 
-    return CookLevel.AUTOMATIC
+    return CookLevel.ALWAYS
