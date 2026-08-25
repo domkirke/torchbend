@@ -20,11 +20,20 @@ def _parse_affine_control(inp, ctrl):
 
 
 class Bias(BendingCallback):
+    """Adds a constant offset to every element of the tensor. Equivalent to a DC shift on activations or a uniform weight offset."""
     weight_compatible = True
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
     controllable_params = OrderedDict({'bias': (None, 0.)})
+    _param_ui = {
+        'bias': {
+            'range':  [-10., 10.],
+            'step':   0.01,
+            'widget': 'slider',
+            'description': "Constant value added to every element. 0 = no change.",
+        },
+    }
 
     def __init__(self, bias: float | torch.Tensor | BendingParameter = 0.):
         super().__init__(bias=bias)
@@ -36,8 +45,9 @@ class Bias(BendingCallback):
         assert cache is not None
         bias = self.get("bias")
         if bias is not None:
-            if cache is not None: 
-                param.set_(cache + bias.to(param.device))
+            if not torch.is_tensor(bias):
+                bias = torch.tensor(float(bias))
+            param.set_(cache + bias.to(param.device))
 
     def bend_input(self, x: torch.Tensor, bias: torch.Tensor | None = None, name: Optional[str] = None):
         if bias is None: 
@@ -48,11 +58,20 @@ class Bias(BendingCallback):
 
 
 class Scale(BendingCallback):
+    """Multiplies every element of the tensor by a scalar. 1 = identity, 0 = silence, negative values invert the sign."""
     weight_compatible = True
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
     controllable_params = OrderedDict({'scale': (None, 1.)})
+    _param_ui = {
+        'scale': {
+            'range':  [-10., 10.],
+            'step':   0.01,
+            'widget': 'slider',
+            'description': "Multiplicative factor. 1 = identity, 0 = silence, −1 = phase inversion.",
+        },
+    }
 
     def __init__(self, scale: float | torch.Tensor | BendingParameter  = 1.):
         super().__init__(scale=scale)
@@ -63,6 +82,8 @@ class Scale(BendingCallback):
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: Optional[torch.Tensor] = None):
         scale = self.get('scale')
         if scale is not None:
+            if not torch.is_tensor(scale):
+                scale = torch.tensor(float(scale))
             assert cache is not None
             param.set_(cache * scale.to(param.device))
 
@@ -74,11 +95,26 @@ class Scale(BendingCallback):
         
 
 class Affine(BendingCallback):
+    """Applies a linear transform y = scale · x + bias to every element. Combines Scale and Bias in a single operation."""
     weight_compatible = True
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
     controllable_params = OrderedDict({'scale': (None, 1.0), 'bias': (None, 0.0)})
+    _param_ui = {
+        'scale': {
+            'range':  [-10., 10.],
+            'step':   0.01,
+            'widget': 'slider',
+            'description': "Multiplicative factor applied before the bias. 1 = no scaling.",
+        },
+        'bias': {
+            'range':  [-10., 10.],
+            'step':   0.01,
+            'widget': 'slider',
+            'description': "Constant offset added after scaling. 0 = no shift.",
+        },
+    }
 
     def __init__(self, bias: float | torch.Tensor | BendingParameter = 0., scale: float = 1.):
         super().__init__(scale=scale, bias=bias)
@@ -93,13 +129,17 @@ class Affine(BendingCallback):
         return f"Affine(scale={(self.get('scale')):.4f}, bias={self.get('bias'):.4f})"
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: Optional[torch.Tensor] = None):
-        if cache is not None: 
+        if cache is not None:
             scale = self.get("scale")
-            if scale is not None: 
+            if scale is not None:
+                if not torch.is_tensor(scale):
+                    scale = torch.tensor(float(scale))
                 cache = cache * scale.to(param.device)
             bias = self.get("bias")
-            if bias is not None: 
-                cache = cache * bias.to(param.device)
+            if bias is not None:
+                if not torch.is_tensor(bias):
+                    bias = torch.tensor(float(bias))
+                cache = cache + bias.to(param.device)
             param.set_(cache)
 
     def bend_input(self, x: torch.Tensor, scale: torch.Tensor | None = None, bias: torch.Tensor | None = None, name: Optional[str] = None):

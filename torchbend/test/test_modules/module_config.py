@@ -4,10 +4,13 @@ import torch.nn as nn
 import torchbend as tb
 
 class ModuleTestConfig():
-    def __init__(self, module_class, init_args=(tuple(), dict()), callbacks_with_args=None):
+    def __init__(self, module_class, init_args=(tuple(), dict()), callbacks_with_args=None, default_inputs=None, trace_method=None, wrap_recurrent=False):
         self.module_class = module_class
         self.init_args = init_args
         self.callback_with_args = callbacks_with_args or {}
+        self.default_inputs = default_inputs or {}
+        self.trace_method = trace_method
+        self.wrap_recurrent = wrap_recurrent
 
     def __iter__(self):
         return iter({m: self.get_method_args(m) for m in self.get_methods()}.items())
@@ -40,9 +43,14 @@ class ModuleTestConfig():
         return module
 
     def trace_module(self, module):
-        for method in self.get_methods(): 
-            args, kwargs, weights, acts = self.get_method_args(method)
-            module.trace(*args, **kwargs, fn=method)
+        for method in self.get_methods():
+            args, kwargs, _weights, _acts = self.get_method_args(method)
+            extra = {}
+            if self.trace_method is not None:
+                extra["trace_method"] = self.trace_method
+            if self.wrap_recurrent:
+                extra["_wrap_recurrent"] = True
+            module.trace(*args, **kwargs, fn=method, **extra)
 
     def get_modules(self, trace=False):
         module = self.get_module()

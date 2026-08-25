@@ -5,12 +5,33 @@ from .parameter import BendingParameter
 
 
 class Normal(BendingCallback):
+    """Adds (or multiplies) Gaussian noise drawn from N(0, std) to the tensor. Useful for weight perturbation and activation jitter."""
     weight_compatible = True
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
     valid_ops = ['add', 'mul']
     controllable_params = {'std': ((float, torch.FloatTensor), 0.3), 'seed': (int, 0)}
+    _param_ui = {
+        'std': {
+            'range': [0., 5.],
+            'step':  0.01,
+            'description': "Standard deviation of the noise. 0 = no noise, larger values = stronger perturbation.",
+            'guard': lambda v: True if v >= 0. else ValueError(f"std must be ≥ 0, got {v:.4f}"),
+        },
+        'seed': {
+            'range':  [-1, 999],
+            'widget': 'int',
+            'description': "Seed for reproducible noise patterns. -1 = new random noise on every forward pass.",
+            'guard':  lambda v: True if v >= -1 else ValueError("seed must be ≥ -1  (-1 = random)"),
+        },
+    }
+    _extra_init_params = {
+        "dim": {"type": "int", "default": None, "required": False, "label": "dim (axis)",
+                "description": "Restrict noise to a single axis. Leave empty to perturb all dimensions."},
+        "op":  {"type": "str", "default": "add", "required": False, "label": "op", "choices": ["add", "mul"],
+                "description": "How the noise is combined with the signal: additive or multiplicative."},
+    }
 
     def __init__(self, std: float | torch.Tensor | BendingParameter = 0.3, seed: int | BendingParameter = 0, dim=None, op = "add"):
         super().__init__(std=std, seed=seed)

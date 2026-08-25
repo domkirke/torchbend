@@ -6,11 +6,24 @@ from .callback import BendingCallback
 
 
 class Permute(BendingCallback):
+    """Randomly shuffles elements along a chosen axis. The permutation is fixed per seed so the shuffle is consistent across forward passes."""
     weight_compatible = True
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
     controllable_params = {'seed': (int, -1)}
+    _param_ui = {
+        'seed': {
+            'range':  [-1, 999],
+            'widget': 'int',
+            'description': "Seed that determines the shuffle order. -1 = random shuffle every forward pass; any other value = fixed permutation.",
+            'guard':  lambda v: True if v >= -1 else ValueError("seed must be ≥ -1  (-1 = random)"),
+        },
+    }
+    _extra_init_params = {
+        "dim": {"type": "int", "default": 0, "required": True, "label": "dim (axis)",
+                "description": "The tensor dimension along which elements are permuted (e.g. 0 = batch, 1 = channels)."},
+    }
 
     def __init__(self, dim: int, seed: int = -1):
         super().__init__(seed=seed)

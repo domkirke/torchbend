@@ -11,10 +11,86 @@ from torch._ops import OpOverload
 from .tracing import ActivationProperties
 from .graph import BendedGraph
 from .graphmodule import BendedGraphModule
-from torch.fx.experimental.proxy_tensor import make_fx as tfe_make_fx
+from torch.fx.experimental.proxy_tensor import make_fx as tfe_make_fx, _ModuleStackTracer, _MakefxTracer
 from torch._subclasses.fake_tensor import extract_tensor_metadata
 
 from ..utils import _resolve_code, _import_defs_from_tmpfile
+
+# ── source-location capture for make_fx tracing ───────────────────────────────
+import os as _os
+
+# Root of the installed torch package — used to skip ALL torch internals.
+_TORCH_ROOT = _os.path.dirname(torch.__file__)
+
+_TORCHBEND_TRACING_SUFFIXES = (
+    'torchbend/tracing/tracing.py',
+    'torchbend/tracing/proxy.py',
+    'torchbend/tracing/module.py',
+    'torchbend/tracing/tracing_experimental.py',
+)
+
+def _find_user_frame_makefx():
+    """Walk the call stack and return the first frame that lives in user code.
+
+    Skips:
+    - Everything under the torch install tree (torch/nn/, torch/fx/, etc.)
+    - torchbend tracing internals
+    - Temp / dynamically generated files (no real file on disk)
+    """
+    frame = inspect.currentframe()
+    while frame:
+        frame = frame.f_back
+        if frame is None:
+            break
+        fname = frame.f_code.co_filename
+        if fname.startswith(_TORCH_ROOT):
+            continue
+        if any(fname.endswith(s) for s in _TORCHBEND_TRACING_SUFFIXES):
+            continue
+        if not _os.path.isfile(fname):   # temp / generated / built-in frames
+            continue
+        break
+    return frame
+
+
+class _SourceCapturingModuleStackTracer(_ModuleStackTracer):
+    """Drops source-location info into node.meta for every call/get_attr node."""
+
+    def _capture_source(self, node):
+        frame = _find_user_frame_makefx()
+        if frame is not None:
+            node.meta['source_file'] = frame.f_code.co_filename
+            node.meta['source_line'] = frame.f_lineno
+            node.meta['source_fn']   = frame.f_code.co_name
+
+    def create_proxy(self, kind, target, args, kwargs, name=None, type_expr=None, proxy_factory_fn=None):
+        proxy = super().create_proxy(kind, target, args, kwargs,
+                                     name=name, type_expr=type_expr,
+                                     proxy_factory_fn=proxy_factory_fn)
+        if kind in ('call_function', 'call_module', 'call_method'):
+            self._capture_source(proxy.node)
+        return proxy
+
+    def create_node(self, *args, **kwargs):
+        # get_attr nodes for parameters/buffers bypass create_proxy (created via
+        # PythonKeyTracer.create_arg), so we capture source here instead.
+        node = super().create_node(*args, **kwargs)
+        kind = args[0] if args else kwargs.get('op', '')
+        if kind == 'get_attr':
+            self._capture_source(node)
+        return node
+
+
+class _SourceCapturingMakefxTracer(_MakefxTracer):
+    """Substitutes _SourceCapturingModuleStackTracer so every node gets source info."""
+
+    def _construct_modes_with_fx_tracer(self, fx_tracer):
+        # Swap in our subclass before ProxyTorchDispatchMode is created with
+        # the tracer reference — so the replacement is seen everywhere.
+        if isinstance(fx_tracer, _ModuleStackTracer) and not isinstance(fx_tracer, _SourceCapturingModuleStackTracer):
+            fx_tracer = _SourceCapturingModuleStackTracer(fx_tracer.scope_root)
+            self.fx_tracer = fx_tracer
+        super()._construct_modes_with_fx_tracer(fx_tracer)
 
 
 
@@ -186,37 +262,53 @@ def _parse_fn_args(obj, inputs):
     return tuple(new_args), new_kwargs, new_signature, new_arguments, return_annotation 
 
 
-def make_fx(module, inputs, fn="forward"):
-    # if fn == "forward":
-    #     obj_to_trace = module
-    #     args, kwargs, _, _ = _parse_fn_args(obj_to_trace, inputs)
-    # else:
-    # @functools.wraps(functools.partial(getattr(module, fn), self=module))
-    # def _closure(*args, **kwargs):
-    #     return getattr(module, fn)(*args, **kwargs)
-    # obj_to_trace = _closure
-    signature = []
-    arguments = []
+def _make_fx_raw(module, inputs, fn="forward"):
+    """Run tfe_make_fx and return (raw_traced_gm, obj_to_trace, args).
+
+    Separated from the rewiring step so callers can restore module state
+    (e.g. recurrent wrappers) before calling _make_fx_finalize.
+    """
     args, kwargs, signature, arguments, return_ann = _parse_fn_args(getattr(module, fn), inputs)
-    codes = _resolve_code(make_fx_closure_pattern, 
-                                    signature = ", ".join(signature), 
-                                    fn_name = fn, 
-                                    arguments = ", ".join(arguments), 
-                                    return_annotation = return_ann)
-    gl = globals() 
+    codes = _resolve_code(make_fx_closure_pattern,
+                          signature=", ".join(signature),
+                          fn_name=fn,
+                          arguments=", ".join(arguments),
+                          return_annotation=return_ann)
+    gl = globals()
     gl['module'] = module
     funcs = _import_defs_from_tmpfile(codes, gl=gl, lo=locals())
     obj_to_trace = funcs['fn']
-        
+
     obj_to_trace(*args, **kwargs)
-    traced_gm = tfe_make_fx(obj_to_trace, tracing_mode="symbolic", _allow_non_fake_inputs=True, _allow_fake_constant=True, record_module_stack=True)(*args, **kwargs)
-    unmatched_params = rewire_to_original_module(module, traced_gm, obj_to_trace, fn)
-    
-    graph = BendedGraph(from_graph=traced_gm.graph)
+    # _init_modes_from_inputs only creates _ModuleStackTracer when f._orig_mod is set;
+    # without it PythonKeyTracer is used and our source-capturing swap is never reached.
+    obj_to_trace._orig_mod = module
+    _sc_tracer = _SourceCapturingMakefxTracer(
+        None,       # decomposition_table
+        "symbolic", # tracing_mode
+        True,       # _allow_non_fake_inputs
+        False,      # pre_dispatch
+        True,       # record_module_stack
+        True,       # _allow_fake_constant
+        False,      # _error_on_data_dependent_ops
+    )
+    traced_gm = _sc_tracer.trace(obj_to_trace, *args, **kwargs)
+    return traced_gm, obj_to_trace
+
+
+def _make_fx_finalize(module, traced_gm_raw, obj_to_trace, fn="forward"):
+    """Rewire parameters and build BendedGraphModule from a raw traced GraphModule.
+
+    ``module`` should be the *original* module (wrappers already removed) so
+    that parameter paths are remapped to the real module hierarchy.
+    """
+    unmatched_params = rewire_to_original_module(module, traced_gm_raw, obj_to_trace, fn)
+
+    graph = BendedGraph(from_graph=traced_gm_raw.graph)
     graph.add_unmatched_params(unmatched_params)
     graph._original_func_name = fn
     env = {}
-    for n in traced_gm.graph.nodes:
+    for n in traced_gm_raw.graph.nodes:
         new_node = graph.node_copy(n, lambda x: env[x.name])
         env[n.name] = new_node
     activations = {k: ActivationProperties.from_node(v, fn=fn) for k, v in env.items()}
@@ -225,7 +317,6 @@ def make_fx(module, inputs, fn="forward"):
 
     traced_gm = BendedGraphModule(module, forward=graph)
 
-    # parse aliases
     aliases = {}
     for n in traced_gm.graph['forward'].nodes:
         if is_mark(n):
@@ -237,4 +328,28 @@ def make_fx(module, inputs, fn="forward"):
 
     traced_gm.graph['forward'].aliases = aliases
     return traced_gm, activations
+
+
+def make_fx(module, inputs, fn="forward"):
+    """Trace ``module.<fn>`` with the proxy_tensor backend (default of BendedModule.trace).
+
+    Full pipeline: generate a signature-matching closure and trace it with a
+    source-capturing make_fx tracer (``_make_fx_raw``), then remap parameter
+    get_attr nodes to their real dotted paths, extract ActivationProperties and
+    convert mark() ops into aliases (``_make_fx_finalize``).
+
+    Args:
+        module (nn.Module): module to trace.
+        inputs (Inputs): concrete example inputs for ``fn``.
+        fn (str): method name to trace.
+
+    Returns:
+        tuple[BendedGraphModule, dict[str, ActivationProperties]]: the traced
+        graph module (ATen-level, graph stored under ``'forward'``) and the
+        per-node activation properties.
+
+    See docs/manual/04_tracing.md §2.1 for the full mechanics.
+    """
+    traced_gm_raw, obj_to_trace = _make_fx_raw(module, inputs, fn=fn)
+    return _make_fx_finalize(module, traced_gm_raw, obj_to_trace, fn=fn)
 

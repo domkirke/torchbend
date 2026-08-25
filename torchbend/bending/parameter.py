@@ -219,8 +219,33 @@ def get_param_type(param_type: str):
 
 
 class BendingParameter(nn.Module):
-    
-    def __init__(self, 
+    """Named macro controlling one or several callback parameters dynamically.
+
+    Pass a BendingParameter wherever a callback accepts a controllable value::
+
+        c = BendingParameter("amount", value=1., range=[0., 2.])
+        bended.bend(Scale(c), "?decoder\\..*weight")
+        bended.update("amount", 0.5)        # all dependent callbacks update
+
+    Arithmetic on the object (``2 * c``, ``c + 1.``) builds derived parameters
+    sharing the same underlying value with adjusted ``weight`` / ``bias``, so a
+    single macro can drive several callbacks at different scales. On jit /
+    nn~ export, each parameter becomes ``get_<name>()`` / ``set_<name>(value)``
+    accessors with range checking.
+
+    Args:
+        name: macro name (used by ``BendedModule.update`` and export setters).
+        value: initial value (float / int / bool / tensor; sets ``param_type``).
+        as_input: if True, the parameter becomes a *graph placeholder* — an
+            extra argument of the bended forward — instead of a stored value
+            (used for signal-rate control in nn~).
+        weight / bias: affine read transform: ``get_value() = value * weight + bias``.
+        range: ``[min, max]`` bounds, enforced on ``set_value`` (and in
+            scripted modules) when ``clamp`` is set.
+        clamp: clamp ``get_value()`` into ``range``.
+    """
+
+    def __init__(self,
                  name: str,
                  value: Any,
                  as_input: bool = False,
@@ -250,6 +275,11 @@ class BendingParameter(nn.Module):
         self._nodes = {}
         self._kwargs = kwargs
         self._callbacks = []
+        # parameters built from this one by arithmetic. They share this object's
+        # value tensor, but they have their own callback list, so an update has
+        # to reach them explicitly. Kept off nn.Module's child registry on
+        # purpose: a derived parameter is a *view*, not a submodule to save.
+        object.__setattr__(self, "_derived", [])
 
     def _make_init_warnings_for_str(self, **attributes):
         for name, val in attributes:
@@ -311,14 +341,106 @@ class BendingParameter(nn.Module):
                 if torch.jit.is_scripting():
                     self.value.set_(value.to(self.value))
                 else:
-                    self.value.data = value
+                    # Write through the existing storage. Parameters derived by
+                    # arithmetic share this tensor — rebinding `.data` would give
+                    # this object a fresh one and silently strand them on the old
+                    # value, which is the whole premise of `2 * macro`.
+                    tgt = self.value.data
+                    if tgt.shape == value.shape and tgt.dtype == value.dtype:
+                        tgt.copy_(value)
+                    else:
+                        self.value.data = value
                 if not torch.jit.is_scripting():
+                    # a device move may have unshared them since the last write
+                    self._sync_derived()
                     if update:
                         self._update_callbacks()
 
     def _update_callbacks(self) -> None:
         for i, cb in enumerate(self._callbacks):
             cb.update()
+        # derived parameters read the same value but hold their own callbacks
+        for child in getattr(self, "_derived", []):
+            child._update_callbacks()
+
+    def _derive(self, weight, bias) -> "BendingParameter":
+        """A parameter reading ``value * weight + bias`` off *this* one's value.
+
+        Unclamped by construction: the clamp belongs to the macro's own range
+        (what you may set it to), while a derived parameter's job is to map that
+        range onto whatever the target actually wants.
+        """
+        child = BendingParameter(name=self.name, value=self.value,
+                                 weight=weight, bias=bias,
+                                 range=[self.min_clamp, self.max_clamp])
+        getattr(self, "_derived").append(child)
+        return child
+
+    def _rename(self, new_name: str) -> None:
+        """Rename this parameter and everything derived from it.
+
+        A derived parameter answers to the same name — it is a view onto this
+        one's value — and that name is what the callbacks' generated forward
+        calls its argument, so they have to move together.
+        """
+        self._name = torch.jit.Attribute(str(new_name), str)
+        for child in getattr(self, "_derived", []) or []:
+            child._rename(new_name)
+
+    def _sync_derived(self) -> None:
+        """Re-link everything derived from this parameter to its value tensor.
+
+        Arithmetic makes a derived parameter share the *same* value tensor — that
+        sharing is what makes ``2 * macro`` follow the macro. It survives writing
+        through the tensor, but not rebinding it, and ``Module.to()`` rebinds:
+        it replaces ``value.data`` with a tensor on the new device rather than
+        copying into the old one. The two then come apart silently, and the
+        derived parameter keeps answering with whatever it last held — which is a
+        macro that moves on screen and does nothing to the model.
+
+        Re-pointing the children at the parent's tensor restores the link, and
+        puts them on the parent's device while it is at it.
+        """
+        for child in getattr(self, "_derived", None) or []:
+            try:
+                src = self.value.data
+                dst = child.value.data
+                if dst.data_ptr() != src.data_ptr() or dst.device != src.device:
+                    child.value.data = src
+            except Exception:
+                pass
+            child._sync_derived()
+
+    def _apply(self, *args, **kwargs):
+        """``.to()`` / ``.cuda()`` land here; re-link the derived parameters after."""
+        out = super()._apply(*args, **kwargs)
+        if not torch.jit.is_scripting():
+            self._sync_derived()
+        return out
+
+    def _release_derived(self, child) -> bool:
+        """Stop driving *child*, and any intermediate left with nothing to feed.
+
+        ``macro * span + lo`` evaluates in two steps, so what a target ends up
+        holding is a grandchild: the multiply hangs off the macro, the add hangs
+        off the multiply. Walk the branch to find it — releasing only direct
+        children would leave the old arithmetic on the update path for good.
+
+        Returns True when it was found.
+        """
+        derived = getattr(self, "_derived", None)
+        if not derived:
+            return False
+        for c in list(derived):
+            if c is child:
+                derived.remove(c)
+                return True
+            if c._release_derived(child):
+                # keep the intermediate only while something still reads it
+                if not getattr(c, "_derived", None) and not c._callbacks:
+                    derived.remove(c)
+                return True
+        return False
 
     def _clamp(self, value: torch.Tensor):
         if self.min_clamp is None and self.max_clamp is None:
@@ -359,33 +481,38 @@ class BendingParameter(nn.Module):
         return "BendingParameter(name=%s, value=%s)"%(self.name, self.get_value().data)
 
     def _check_arithmetics_available(self) -> NoReturn:
-        if self.param_type not in [BendingParamType.get_type('str'), BendingParamType.get_type('bool')]:
+        # str and bool are the types *without* arithmetics; float/int/tensor have it
+        if self.param_type in [BendingParamType.get_type('str'), BendingParamType.get_type('bool')]:
             raise TypeError("BendingParameter of type str or bool cannot have arithmetics")
 
     def __add__(self , obj):
+        self._check_arithmetics_available()
         if not isinstance(obj, (int, float)):
             raise TypeError('BendingParameter can only be added to int, float, or scalars')
-        self._check_arithmetics_available()
-        return BendingParameter(name=self.name, value=self.value, weight=self.weight, bias=self.bias+obj, range=[self.min_clamp, self.max_clamp])
+        return self._derive(self.weight, self.bias + obj)
 
     def __radd__(self, obj):
         return self.__add__(obj)
 
     def __sub__(self, obj):
-        return BendingParameter(name=self.name, value=self.value, weight=self.weight, bias=self.bias-obj, range=[self.min_clamp, self.max_clamp])
+        self._check_arithmetics_available()
+        if not isinstance(obj, (int, float)):
+            raise TypeError('BendingParameter can only be subtracted by int, float, or scalars')
+        return self._derive(self.weight, self.bias - obj)
 
     def __rsub__(self, obj):
         self._check_arithmetics_available()
-        return BendingParameter(name=self.name, value=self.value, weight=-self.weight, bias=self.bias+obj, range=[self.min_clamp, self.max_clamp])
+        if not isinstance(obj, (int, float)):
+            raise TypeError('BendingParameter can only be subtracted from int, float, or scalars')
+        return self._derive(-self.weight, obj - self.bias)
 
     def __mul__(self, obj):
         self._check_arithmetics_available()
         if not isinstance(obj, (int, float)):
-            raise TypeError('BendingParameter can only be added to int, float, or scalars')
-        return BendingParameter(name=self.name, value=self.value, weight=self.weight * obj, bias=self.bias, range=[self.min_clamp, self.max_clamp])
+            raise TypeError('BendingParameter can only be multiplied by int, float, or scalars')
+        return self._derive(self.weight * obj, self.bias * obj)
 
     def __rmul__(self, obj):
-        self._check_arithmetics_available()
         return self.__mul__(obj)
 
     def __call__(self):

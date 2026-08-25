@@ -17,6 +17,12 @@ class TracingState(Enum):
     RUNNING = 1
 
 class ShapeAttribute(Attribute):
+    """Proxy attribute representing ``tensor.shape`` during tracing.
+
+    Indexing it creates an int-typed ``getitem`` node (a ``BendingProxyInt``
+    carrying the real dimension); iterating it yields per-dimension proxies
+    while tracing and real ints while running.
+    """
     def __init__(self, root: Proxy, attr: str, static_shape=None, _sub_idxs=None):
         super().__init__(root, attr)
         self._sub_idxs = _sub_idxs
@@ -103,6 +109,14 @@ class SizeAttribute(Attribute):
 
 
 class BendingProxy(torch.fx.Proxy):
+    """``torch.fx.Proxy`` that carries the concrete value computed at trace time.
+
+    Created by ``BendingTracer.proxy()`` after executing the node. The value
+    (``.value``) enables shape access (``.shape`` returns a ``ShapeAttribute``),
+    iteration (loop unrolling over the real length, recorded as a
+    ``LoopFlowStep``), boolean control flow, and traced indexed assignment
+    (``__setitem__``). ``.code`` gives the user source position of the node.
+    """
     def __init__(self, node: Node, tracer = None, value: Optional[Any] = None, type_expr=None):
         super(BendingProxy, self).__init__(node, tracer)
         self._code_pos = CodePosition(inspect.currentframe(), tracer=tracer, node=node)
@@ -167,6 +181,8 @@ class BendingProxy(torch.fx.Proxy):
 
 
 class BendingProxyInt(BendingProxy):
+    """BendingProxy for int-typed nodes (e.g. shape elements); supports ``int(proxy)``
+    so the value can be consumed by ``range``, indexing, etc."""
 
     def __repr__(self):
         return "BendingProxyInt(%s)"%self.node#, value=%s)"%(self.node, self._value if self._value is None else self._value.shape)

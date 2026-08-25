@@ -104,6 +104,24 @@ class ChangeNodeExpressionPointer(object):
         return new_node
 
 class ChangeNode(BendingCallback):
+    """Graph surgery callback: rewrites the targeted fx node itself.
+
+    Instead of transforming the activation value, ChangeNode modifies the
+    node's ``op``, ``target``, ``args``, ``kwargs`` or ``name`` when the
+    bended graph is built (``applied_to_node=True``)::
+
+        # swap torch.sin for torch.cos, keeping the original argument
+        cb = ChangeNode(op="call_function", target=torch.cos,
+                        args=(ChangeNode.copy,))
+        bended.bend(cb, "sin")
+
+    Helpers for arguments:
+        ChangeNode.copy: keep the original node's argument at this position.
+        ChangeNode.activation(name): point to another node of the graph.
+        ChangeNode.expression(expr): evaluate an expression in graph scope.
+
+    Scalar kwargs are automatically promoted to controllable parameters.
+    """
     needs_insertion = False
     activation_compatible = True 
     jit_compatible = True

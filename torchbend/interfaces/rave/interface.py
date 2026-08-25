@@ -149,7 +149,7 @@ class BendedRAVE(Interface):
         self.trace("forward", x=x.to(self.device), crop_latent=True, _proxied_buffers=self._proxied_buffers, _save_as="forward_proj")
         is_variational = isinstance(model._module, VariationalScriptedRAVE) if self._scriptable_class else type(self.encoder._module) == ravelib.blocks.VariationalEncoder
         encoder_kwargs = {'postprocess': True} if self._scriptable_class else {'return_mb': False}
-        enc_graph, decoder_out = model.trace("encode", x=x, **encoder_kwargs, _proxied_buffers=self._proxied_buffers, _return_out=True)
+        _, decoder_out = model.trace("encode", x=x, **encoder_kwargs, _proxied_buffers=self._proxied_buffers, _return_out=True)
         if is_variational and self._scriptable_class:
             _, decoder_out_full = model.trace("encode_full", x=x, _proxied_buffers=self._proxied_buffers, _return_out=True)
             _ = self.trace("encode_dist", x=x, _proxied_buffers=self._proxied_buffers, _return_out=True)

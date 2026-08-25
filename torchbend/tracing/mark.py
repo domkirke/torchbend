@@ -135,6 +135,26 @@ def mark_fn(obj: Optional[Any] = None, name: Optional[str] = None, mode: Optiona
 
 
 def mark(obj: Optional[torch.Tensor] = None, name: Optional[str] = None, mode: Optional[str] = "post") -> torch.Tensor:
+    """Tag a value with a human-friendly alias that survives tracing.
+
+    Usable from inside model code in three ways::
+
+        z = mark(z, name="latent")          # tag a tensor
+
+        @mark(name="decoded")               # decorator: tags the return value
+        def decode(self, z): ...
+
+        @mark(name="inputs", mode="pre")    # decorator: tags the arguments
+
+    After tracing, aliases are listed by ``BendedModule.aliases()`` and can be
+    used as bending / filter targets with the ``#name`` syntax. With the
+    proxy_tensor backend the call is recorded as a custom op
+    (``torchbend::mark_tensor``) and converted to an alias at finalization;
+    with the vanilla tracer the proxy's node is registered directly.
+
+    Outside tracing the function is a passthrough (and a tensor-only no-op
+    under TorchScript), so it is safe to leave in production model code.
+    """
     if torch.jit.is_scripting() or torch.jit.is_tracing():
         if torch.jit.isinstance(obj, torch.Tensor):
             return obj

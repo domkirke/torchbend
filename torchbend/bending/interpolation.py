@@ -4,11 +4,24 @@ from .parameter import BendingParameter
 from .callback import BendingCallback
 
 class InterpolateActivation(BendingCallback):
+    """Replaces an activation by a weighted mix of its batch items (batch-axis
+    crossfade). interp_weights has shape [..., batch]; by default it is an
+    as_input parameter, i.e. an extra argument of the bended forward.
+    Activation-only; not exportable."""
     weight_compatible = False
     activation_compatible = True
     jit_compatible = False
     nntilde_compatible = False
+    ui_compatible = False
     controllable_params = {'interp_weights': (torch.FloatTensor, None), 'softmax': (bool, False)}
+    _param_ui = {
+        'interp_weights': {
+            'visible': False,
+        },
+        'softmax': {
+            'widget': 'toggle',
+        },
+    }
 
     def __init__(self, interp_weights: BendingParameter | torch.FloatTensor | None = None, **kwargs):
         # by default, put interp_weights as additional argument using a placeholder with as_input=True

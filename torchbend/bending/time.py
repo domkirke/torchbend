@@ -6,10 +6,17 @@ from .callback import BendingCallback
 
 
 class Reverse(BendingCallback):
+    """Flips the tensor along the specified dimension. Typically used to reverse the time axis of activations (e.g. playing audio backwards)."""
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
     controllable_params = {'reverse': (bool, 0)}
+    _param_ui = {
+        'reverse': {
+            'widget': 'toggle',
+            'description': "Enable/disable the reversal. When off, the tensor passes through unchanged.",
+        },
+    }
 
     def __init__(self, dim: int, reverse: int = 0):
         super().__init__(reverse=reverse)

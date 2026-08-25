@@ -143,6 +143,7 @@ class ActivationProperties():
     type: Optional[Any] = None
     code: Optional[CodePosition] = None
     aliases: str | None = None
+    module_path: Optional[str] = None
 
     @staticmethod
     def _default_panel_fields():
@@ -156,18 +157,48 @@ class ActivationProperties():
         else:
             if "tensor_meta" in node.meta:
                 shape = tuple(node.meta["tensor_meta"].shape)
-                
+
+        code = getattr(node, "code", None)
+        if code is None:
+            sf = node.meta.get("source_file") if hasattr(node, "meta") else None
+            if sf:
+                code = CodePosition.from_source(
+                    sf,
+                    node.meta.get("source_line"),
+                    node.meta.get("source_fn"),
+                )
+
         return ActivationProperties(
-            name = node.name, 
-            op = node.op, 
+            name = node.name,
+            op = node.op,
             fn = getattr(node, "fn", fn),
-            target = node.target, 
-            args = node.args, 
-            kwargs = node.kwargs, 
-            type = node.type, 
-            code = getattr(node, "code", None), 
-            shape = shape
+            target = node.target,
+            args = node.args,
+            kwargs = node.kwargs,
+            type = node.type,
+            code = code,
+            shape = shape,
+            module_path = ActivationProperties._module_path_from_meta(node.meta),
         )
+
+    @staticmethod
+    def _module_path_from_meta(meta):
+        """Extract the innermost submodule path from nn_module_stack node metadata
+        (populated by make_fx with record_module_stack=True)."""
+        stack = meta.get('nn_module_stack') if meta else None
+        if not stack:
+            return None
+        # nn_module_stack is an OrderedDict outermost→innermost.
+        # Values are (path_str, module_type) or (module_type, path_str) depending
+        # on PyTorch version — handle both.
+        last_path = None
+        for value in stack.values():
+            if not isinstance(value, tuple) or len(value) != 2:
+                continue
+            path = value[0] if isinstance(value[0], str) else (value[1] if isinstance(value[1], str) else None)
+            if path:  # non-empty string → a real submodule (root is '')
+                last_path = path
+        return last_path
 
 class TracingContext():
     
@@ -210,6 +241,24 @@ def get_patched_torch_fns():
 
 
 class BendedGraph(torch.fx.Graph):
+    """``torch.fx.Graph`` subclass carrying torchbend tracing metadata.
+
+    Extra state on top of a stock fx graph:
+
+    - ``activations``: dict ``{node_name: ActivationProperties}`` recorded at
+      trace time (shape, op, source position, owning submodule, ...).
+    - ``aliases``: names registered with :func:`torchbend.mark`.
+    - ``flow_steps``: list of concretized control-flow decisions
+      (``LogicalFlowStep`` / ``LoopFlowStep``) hardcoded into the graph.
+    - ``_attached_bending_callbacks``: callbacks written into the graph as
+      ``call_module`` nodes, attached to the executing GraphModule.
+    - ``_additional_tensor_constants``: tensors from the proxy_tensor backend
+      that could not be matched to a module parameter.
+    - ``fn`` (property): name of the method this graph implements.
+
+    Construct empty, or as a copy of another graph with
+    ``BendedGraph(from_graph=g)`` (metadata is preserved).
+    """
     _GRAPH_COPY_ATTR = ['activations', 'aliases']
     @compatibility(is_backward_compatible=True)
     def __init__(
@@ -293,6 +342,7 @@ class BendedGraph(torch.fx.Graph):
         self._codegen._func_name = name
 
     def change_target_bending_method(self, new_method):
+        """Retarget ``*_bended`` call_module nodes when reusing the graph under another method name."""
         if self.fn == new_method: return
         for n in list(self.nodes):
             if n.op == "call_module" and n.name.endswith("_bended"):
@@ -301,6 +351,7 @@ class BendedGraph(torch.fx.Graph):
 
     @property
     def inputs(self):
+        """Placeholder (input) nodes of the graph."""
         return list(filter(lambda x: x.op == "placeholder", self.nodes))
 
     def python_code(self, *args, fn_name=None, **kwargs):
@@ -314,6 +365,24 @@ class BendedGraph(torch.fx.Graph):
 
 
 class BendingTracer(torch.fx.Tracer):
+    """``torch.fx.Tracer`` subclass implementing *trace-with-execution* (the
+    ``"vanilla"`` backend of :meth:`BendedModule.trace`).
+
+    Every node is executed with concrete values the moment it is created, so:
+
+    - proxies carry their real value (``BendingProxy.value``) and shape;
+    - shape access, data-dependent control flow and loops over tensors trace
+      (decisions are *hardcoded* and recorded in ``graph.flow_steps``);
+    - every activation's properties (shape, type, source position) are
+      recorded into ``graph.activations``.
+
+    See docs/manual/04_tracing.md for the full mechanics.
+
+    Args:
+        func (str): name of the method being traced (default ``"forward"``).
+        _no_tensor_for_args (bool): convert scalar tensor constants to Python
+            scalars when creating arguments (helps TorchScript export).
+    """
     _dist_count_hash = {}
     # TODO better handling of this
     proxy_buffer_attributes = False 
@@ -381,6 +450,23 @@ class BendingTracer(torch.fx.Tracer):
         return_out: bool = False, 
         **kwargs
     ):
+        """Trace ``root.<traced_func_name>`` with concrete inputs.
+
+        Args:
+            root: the module (or callable) to trace.
+            inputs (Inputs): concrete example inputs; missing arguments fall
+                back to signature defaults (with a warning).
+            concrete_args: extra inputs merged into ``inputs``.
+            proxied_buffers (list[str] | bool | None): buffer-name regexes kept
+                as proxies (runtime inputs) instead of baking their values in;
+                ``True`` proxies every buffer.
+            return_out (bool): also return the concrete outputs of the traced
+                call.
+
+        Returns:
+            BendedGraph, or ``(BendedGraph, outputs)`` with ``return_out=True``.
+            The graph carries ``activations``, ``aliases`` and ``flow_steps``.
+        """
         inputs.update_(**concrete_args)
         inputs = self._check_input_values(root, inputs)
 
@@ -734,15 +820,24 @@ class BendingTracer(torch.fx.Tracer):
         self._values[node.name] = out
         shape = self._get_shape(out)
         proxy = proxy_type(node, self, value=out, type_expr=type_expr)
-        self._activations[node.name] = ActivationProperties(op=node.op, 
-                                                            shape=shape, 
-                                                            target=node.target, 
-                                                            type=node.type, 
-                                                            name=node.name, 
-                                                            code=proxy._code_pos, 
+        code_pos = getattr(proxy, '_code_pos', None)
+        if code_pos is not None:
+            user_frame = self._find_user_frame()
+            if user_frame is not None:
+                code_pos.source_file = user_frame.f_code.co_filename
+                code_pos.source_line = user_frame.f_lineno
+                code_pos.source_fn   = user_frame.f_code.co_name
+        module_path = self._find_module_path()
+        self._activations[node.name] = ActivationProperties(op=node.op,
+                                                            shape=shape,
+                                                            target=node.target,
+                                                            type=node.type,
+                                                            name=node.name,
+                                                            code=code_pos,
                                                             args=node.args,
                                                             kwargs=node.kwargs,
-                                                            fn=self.traced_func_name)
+                                                            fn=self.traced_func_name,
+                                                            module_path=module_path)
         return proxy
 
     def dynamic_shape_proxy(self, node: Node) -> 'ShapeAttribute':
@@ -937,29 +1032,54 @@ class BendingTracer(torch.fx.Tracer):
         # the user code during tracing.
         frame = inspect.currentframe()
 
-        pt_files = ['torch/fx/proxy.py',
-                    'torch/fx/_symbolic_trace.py',
-                    'torch/fx/experimental/proxy_tensor.py',
-                    'torch/_ops.py',
-                    'torch/_tensor.py',
-                    'torch/utils/_python_dispatch.py',
-                    'torch/_prims_common/wrappers.py',
-                    'torch/_refs/__init__.py',
-                    'torch/_refs/nn/functional/__init__.py',
-                    'torch/utils/_stats.py',
-                    'torchbend/tracing/tracing.py',
-                    'torchbend/tracing/proxy.py',
-                    'torchbend/tracing/module.py',
-                    ]
+        # shared with the error reporting, so "where did this happen?" gets the
+        # same answer whether tracing succeeded or blew up (see code.py)
+        from .code import is_internal_file
+        def _is_internal(f):
+            return f and is_internal_file(f.f_code.co_filename)
+
         while frame:
             frame = frame.f_back
-            if frame and all(not frame.f_code.co_filename.endswith(file) for file in pt_files):
+            if frame and not _is_internal(frame):
                 break
 
         if not frame:
             return None
 
+        # If this user frame was called directly from mark.py, we're inside a
+        # @mark-decorated function body — walk one level further to the real call site.
+        _mark_file = 'torchbend/tracing/mark.py'
+        if (frame.f_back and
+                frame.f_back.f_code.co_filename.replace('\\', '/').endswith(_mark_file)):
+            frame = frame.f_back  # step back into the mark.py wrapper
+            while frame:          # then skip internals again
+                frame = frame.f_back
+                if frame and not _is_internal(frame):
+                    break
+
         return frame
+
+    def _find_module_path(self):
+        """Return the innermost submodule path executing on the call stack.
+
+        Walks frames looking for nn.Module.forward calls and maps the `self`
+        instance to its path via the submodule_paths table built at trace time.
+        """
+        submodule_paths = getattr(self, 'submodule_paths', None)
+        if not submodule_paths:
+            return None
+        frame = inspect.currentframe()
+        while frame is not None:
+            frame = frame.f_back
+            if frame is None:
+                break
+            if frame.f_code.co_name == 'forward':
+                self_obj = frame.f_locals.get('self')
+                if isinstance(self_obj, torch.nn.Module):
+                    path = submodule_paths.get(self_obj)
+                    if path:  # '' is the root module — skip it
+                        return path
+        return None
 
     def set_current_context(self, context):
         self._active_contexts.append(context)

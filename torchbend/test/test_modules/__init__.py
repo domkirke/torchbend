@@ -20,7 +20,7 @@ for module_file in module_files:
     if module_name == "__init__":
         continue
     
-    full_module_name = f'test_modules.modules.{module_name}'
+    full_module_name = f'torchbend.test.test_modules.modules.{module_name}'
     module = importlib.import_module(full_module_name)
     
     if hasattr(module, 'modules_to_test'):

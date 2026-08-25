@@ -1,6 +1,8 @@
 from tabulate import tabulate
 from functools import reduce
 import logging
+
+_logger = logging.getLogger("torchbend.bending_module")
 import weakref
 import typing
 from collections import OrderedDict
@@ -25,7 +27,8 @@ from .graphmodule import BendedGraphModule
 from .tracing import BendingTracer, ActivationProperties, BendedGraph
 from .utils import BendingError, get_model_copy, _get_weight_properties, _get_signature_from_graph, _get_graph_inputs
 from .utils import _import_to_interface, make_graph_jit_compatible, clone_parameters, display_table_for_jupyter, get_kwargs_from_gm 
-from .graph import graph_insert_callbacks, graph_get_activations, graph_from_activations, graph_transform_nodes
+from .graph import graph_insert_callbacks, graph_get_activations, graph_from_activations, graph_transform_nodes, graph_subset
+from . import activation_log as actlog
 from ..utils import checklist, checktuple, get_parameter, _resolve_code, resolve_state_dict, StateDictReference
 from ..bending import BendingCallback, CallbackChain, is_bending_callback, BendingConfig, BendingParameter
 
@@ -140,6 +143,30 @@ def bend(fn):
 
 
 class BendedModule(object):
+    """Wrapper around an ``nn.Module`` providing inspection, bending, versioning and export.
+
+    The wrapped module is never modified: weight and activation bendings are kept
+    on the side and merged at call time into a fresh ``BendedGraphModule``.
+    Attributes and methods unknown to ``BendedModule`` are forwarded to the
+    wrapped module (available directly as ``self.module``).
+
+    Target / filter convention (used by ``bend``, ``weights``, ``activations``,
+    ``get_activations``, ...): a plain string is an *exact* name; a string
+    prefixed with ``?`` is a *regular expression* (matched from the start of the
+    name for weights, against the full node name for activations). Activation
+    targets may be scoped to a method as ``"<fn>:<name>"``; aliases registered
+    with :func:`torchbend.mark` are addressed as ``"#<alias>"``.
+
+    Typical workflow::
+
+        bended = BendedModule(model)
+        bended.print_weights()
+        bended.trace(x=example_input)        # required for activations
+        bended.print_activations()
+        bended.bend(Scale(0.5), "?decoder\\..*weight")
+        out = bended(x)                      # runs the bended version
+        bended.reset()                       # revert everything
+    """
     _default_version_key = "_default"
     _default_bending_key = "_default"
     _wrapped_methods = ['forward']
@@ -230,6 +257,8 @@ class BendedModule(object):
         # controllables parameters
         self._controllables = {}
         self._controllable_hash = {}
+        # last tracer used, kept for post-mortem inspection of a failed trace
+        self._last_tracer = None
         self._wrapped_methods.extend(_wrapped_methods)
         if issubclass(type(module), nn.Module):
             self._init_module_(module)
@@ -276,7 +305,16 @@ class BendedModule(object):
     # -- parameters & weights --
     @_import_to_interface
     def weights(self, *flt, exclude=None):
-        """get valid weight names from a regexp"""
+        """Return a filtered dict of named parameters.
+
+        Args:
+            *flt: filters — exact parameter names, or regexes prefixed with ``?``
+                (matched with ``re.match``). No filter returns every parameter.
+            exclude (str | list[str] | None): regex(es) of names to drop.
+
+        Returns:
+            dict[str, nn.Parameter]: matching parameters, keyed by dotted name.
+        """
         parameters = OrderedDict(self.named_parameters())
         
         valid_parameters = {}
@@ -298,18 +336,29 @@ class BendedModule(object):
     @property
     @_import_to_interface
     def weight_names(self):
-        """returns weights names"""
+        """List of all parameter names (dotted state-dict keys) of the wrapped module."""
         if self._module is None:
             raise TraceError('BendedGraph has no weights since module as not been initialized')
         return list(dict(self._module.named_parameters()).keys())
 
     @_import_to_interface
     def weight_shape(self, param):
+        """Return the shape of one parameter, given its state-dict key."""
         return self._module.state_dict()[param].shape
 
     @_import_to_interface
     def print_weights(self, *flt, exclude=None, out=None) -> str:
-        """print / export weights"""
+        """Print a tabulated summary of the weights (name, shape, dtype, stats).
+
+        Args:
+            *flt: filters (exact names or ``?``-prefixed regexes); none = all.
+            exclude: regex(es) of names to drop.
+            out: optional path or open file; the table is written there instead
+                of being printed. Rendering follows :func:`torchbend.set_output`.
+
+        Returns:
+            str: the formatted table.
+        """
         parameters = self.weights(*flt, exclude=exclude)
         pretty_weights = list(map(_get_weight_properties, parameters.items()))
         pretty_weights_txt = tabulate(pretty_weights, headers=['name', 'shape', 'dtype', 'min', 'max', 'mean', 'stddev'])
@@ -334,16 +383,23 @@ class BendedModule(object):
     # -- overrides from nn.Module -- 
     @_import_to_interface
     def parameters(self):
-        """return model parameters"""
+        """Return the wrapped module's parameters (mirror of ``nn.Module.parameters``)."""
         return self._module.parameters()
 
     @_import_to_interface
     def named_parameters(self):
-        """return model's named parameters"""
+        """Return the wrapped module's named parameters (mirror of ``nn.Module.named_parameters``)."""
         return self._module.named_parameters()
     
     @_import_to_interface
     def state_dict(self, version=None, with_versions=False):
+        """Return the (unbended) state dict of a stored version.
+
+        Args:
+            version (str | None): version name; ``None`` resolves the active one.
+            with_versions (bool): if True, return ``{version: state_dict}`` for
+                every stored version instead (``version`` must then be None).
+        """
         if with_versions:
             assert version is None, "either version or with_versions must be true."
             state_dict = {k: resolve_state_dict(v, as_param=False) for k, v in self._param_dict.items()}
@@ -503,11 +559,13 @@ class BendedModule(object):
 
     # -- tracing -- 
     def is_traced(self, fn):
+        """Return True if method ``fn`` has been traced."""
         return fn in self._graphs
 
     @property
     @_import_to_interface
     def traced_methods(self):
+        """Names of every traced method."""
         return list(self._graphs.keys())
 
     def _register_forward_call(self, func, with_bended=False):
@@ -534,6 +592,9 @@ class BendedModule(object):
         #TODO general split between kwargs with _ at the beginning for tracer
         inputs = Inputs(*args, **kwargs)
         tracer = BendingTracer(func=fn, _no_tensor_for_args=_no_tensor_for_args)
+        # kept even when the trace raises: its partial graph and per-node source
+        # positions are what tells the user *where* tracing stopped
+        self._last_tracer = tracer
         tracer_out = tracer.trace(self._module, inputs, return_out=_return_out)#, proxied_buffers=_proxied_buffers)
         graph = tracer_out[0] if _return_out else tracer_out
         self._graphs[fn] = graph
@@ -546,34 +607,79 @@ class BendedModule(object):
         else:
             return graph
 
-    def _trace_experimental(self, fn="forward", *args, _save_as=None, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
+    def _trace_experimental(self, fn="forward", *args, _save_as=None, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, _wrap_recurrent=False, **kwargs):
+        from .rnn_wrap import wrap_recurrent_modules
+        import contextlib
         inputs = Inputs(*args, **kwargs)
         if _save_as is None: _save_as = fn
-        out_gm, activations = tbe.make_fx(self._module, inputs, fn=fn)
+        ctx = wrap_recurrent_modules(self._module) if _wrap_recurrent else contextlib.nullcontext()
+        with ctx:
+            traced_gm_raw, obj_to_trace = tbe._make_fx_raw(self._module, inputs, fn=fn)
+        # Rewire AFTER context exits so original param paths are restored
+        out_gm, activations = tbe._make_fx_finalize(self._module, traced_gm_raw, obj_to_trace, fn=fn)
         self._graphs[_save_as] = out_gm.graph['forward']
         self._bended_activations[_save_as] = dict()
         self._activations[_save_as] = self._add_aliases_to_act_props(activations)
         if _save_as != "forward":
             self._register_forward_call(_save_as, True)
-        if _return_out: 
+        if _return_out:
             exec_inputs = self.inputs_for_fn(getattr(out_gm, "forward"), inputs)
             outs = out_gm(*exec_inputs, **exec_inputs)
             return out_gm.graph, outs
         else:
             return out_gm.graph
 
-    def trace(self, fn="forward", trace_method=None, *args, _save_as=None, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, **kwargs):
+    def trace(self, fn="forward", trace_method=None, *args, _save_as=None, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, _wrap_recurrent=False, **kwargs):
+        """Trace a method of the wrapped module with concrete example inputs.
+
+        Tracing records the computation graph of ``fn`` together with the shape,
+        value type and source position of every intermediate value (activation).
+        It is required before any activation-related operation
+        (``print_activations``, ``get_activations``, activation bending, ...).
+        Control flow and shapes are *hardcoded* from the example inputs: re-trace
+        whenever they must change (see docs/manual/04_tracing.md).
+
+        Args:
+            fn (str): name of the method to trace (default ``"forward"``).
+            trace_method (str | None): tracing backend, ``"proxy_tensor"``
+                (default; ATen-level, make_fx based) or ``"vanilla"``
+                (Python-level, BendingTracer). Falls back to
+                ``TORCHBEND_DEFAULT_TRACE_METHOD``.
+            _save_as (str | None): store the trace under another method name.
+            _return_out (bool): also return the output of the traced call.
+            _proxied_buffers (list[str]): buffer-name regexes kept as runtime
+                inputs instead of baking their traced values into the graph
+                (vanilla backend; important for streaming caches).
+            _no_tensor_for_args (bool | None): convert scalar tensor constants
+                to Python scalars (helps TorchScript export).
+            _wrap_recurrent (bool): wrap RNN modules so they survive the
+                proxy_tensor functionalization.
+            **kwargs: example inputs for the traced method (e.g. ``x=tensor``).
+                Missing inputs fall back to signature defaults with a warning.
+
+        Returns:
+            BendedGraph, or (BendedGraph, outputs) when ``_return_out=True``.
+        """
         trace_method = trace_method or _TORCHBEND_DEFAULT_TRACE_METHOD
         assert trace_method in TORCHBEND_TRACE_METHODS
         if trace_method == "vanilla":
             return self._trace_vanilla(fn=fn, *args, _return_out=_return_out, _proxied_buffers=_proxied_buffers, _no_tensor_for_args=_no_tensor_for_args, **kwargs)
         elif trace_method == "proxy_tensor":
-            return self._trace_experimental(fn=fn, *args, _save_as=_save_as, _return_out=_return_out, _proxied_buffers=_proxied_buffers, _no_tensor_for_args=_no_tensor_for_args, **kwargs)
+            return self._trace_experimental(fn=fn, *args, _save_as=_save_as, _return_out=_return_out, _proxied_buffers=_proxied_buffers, _no_tensor_for_args=_no_tensor_for_args, _wrap_recurrent=_wrap_recurrent, **kwargs)
         else:
             raise ValueError('trace_method %s not handled. Available : %s'%(trace_method, TORCHBEND_TRACE_METHODS))
 
     @_import_to_interface
     def graph(self, fn="forward", bended: bool = False):
+        """Return the graph of a traced method.
+
+        Caution: the flag semantics are currently inverted — with the default
+        ``bended=False`` the graph *with bendings inserted* is returned (same as
+        :meth:`bend_graph`), while ``bended=True`` returns the raw traced graph.
+
+        Raises:
+            BendingError: if ``fn`` has not been traced.
+        """
         if not fn in self._graphs: raise BendingError('function %s is not graphed'%fn)
         if bended:
             return self._graphs[fn]
@@ -582,6 +688,7 @@ class BendedModule(object):
 
     @_import_to_interface
     def aliases(self, fn="forward"):
+        """Return ``{alias: (node_names, ...)}`` registered with mark() for a traced method."""
         alias_dict = self.graph(fn=fn).aliases
         alias_out = {}
         for k, v in alias_dict.items():
@@ -592,7 +699,7 @@ class BendedModule(object):
     # -- callbacks --
     @_import_to_interface
     def __call__(self, *args, **kwargs):
-        """call the module"""
+        """Call the *bended* module: bended weights, and bended graph if traced."""
         if self._graphs.get('forward') is None:
             module = self.bend_module()
             return module(*args, **kwargs)
@@ -602,8 +709,8 @@ class BendedModule(object):
             return graph_module(*args, **kwargs)
 
     def forward(self, *args, **kwargs):
+        """Alias for :meth:`__call__` (runs the bended version)."""
         return self.__call__(*args, **kwargs)
-
 
     #  -- Bending callbacks --
     def _bended_state_dict_from_version(self, version=None):
@@ -630,6 +737,11 @@ class BendedModule(object):
     
     @_import_to_interface
     def bendable_keys(self, *flt, exclude=None, fn="forward", return_weights=True, return_activations=True):
+        """Return every weight and/or activation matching the filters.
+
+        Raises:
+            BendingError: if a key exists both as a weight and an activation.
+        """
         keys = []
         if return_weights:
             keys = self.weights(*flt, exclude=exclude)
@@ -643,6 +755,11 @@ class BendedModule(object):
 
     @_import_to_interface
     def bended_state_dict(self, version=None):
+        """Return the state dict with all weight callbacks applied (on copies).
+
+        When interpolation weights are set (:meth:`set_interpolation_weights` /
+        :meth:`interpolate`), the interpolated state dict is returned instead.
+        """
         if self._interp_dict is None:
             state_dict = self._bended_state_dict_from_version(version)
         else:
@@ -653,19 +770,23 @@ class BendedModule(object):
     @property
     @_import_to_interface
     def bending_callbacks(self):
+        """List of the currently active BendingCallback instances."""
         return list(self._bending_callbacks)
 
     @property
     @_import_to_interface
     def bended_weights(self):
+        """Dict ``{weight_name: [callbacks]}`` for the active version."""
         return {k: list(v) for k, v in self._bended_params[self.version].items()}
 
     @_import_to_interface
     def bended_activations(self, fn="forward"):
+        """Dict ``{activation_name: [callbacks]}`` for a traced method."""
         return {k: list(v) for k, v in self._bended_activations[fn].items()}
 
     @_import_to_interface
     def bended_keys(self, fn=None, version=None):
+        """Names of every currently bended weight and activation."""
         version = version or self.version
         bended_params = list({k: list(v) for k, v in self._bended_params[version].items()}.keys())
         if (fn is None) and ('forward' in self._graphs): fn = "forward"
@@ -676,6 +797,7 @@ class BendedModule(object):
 
     @_import_to_interface
     def bending_config(self, config=None):
+        """Return the BendingConfig snapshot of the current (or named) config slot."""
         config = config or self._config
         assert config in self._bconfig_dict, BendingError('config %s not found in module'%config)
         return self._bconfig_dict[config]
@@ -708,6 +830,13 @@ class BendedModule(object):
         
     @_import_to_interface
     def bend_module(self, fn=None, version=None, copy_parameters=True, jit_compatible: bool = False):
+        """Return a copy of the wrapped module with bendings baked in.
+
+        The copy has the bended state dict loaded and the activation callback
+        chains attached as submodules (named ``<fn>_<node>_callback``), ready to
+        be combined with :meth:`bend_graph` into a ``BendedGraphModule``.
+        """
+        _logger.debug("[bend_module] fn=%s  copy_parameters=%s", fn, copy_parameters)
         version = version or self.version
         with torch.no_grad():
             # clone module with deep-copying parameters
@@ -730,20 +859,32 @@ class BendedModule(object):
             return module
 
     @_import_to_interface
-    def bend_graph(self, fn="forward"):
+    def bend_graph(self, fn="forward", make_bending_placeholders=False):
+        """Return a copy of the traced graph with activation callbacks inserted.
+
+        Each bended activation gets a ``<node>_bended`` call_module node and its
+        consumers are rerouted to it. ``make_bending_placeholders`` adds
+        placeholder inputs for controllables declared ``as_input=True``.
+        """
+        _logger.debug("[bend_graph] fn=%s  bended_activations=%s", fn,
+                      list(self._bended_activations.get(fn, {}).keys()))
         callbacks = {k: CallbackChain(*v) for k, v in self._bended_activations[fn].items()}
         graph = graph_transform_nodes(self._graphs[fn], callbacks)
-        graph = graph_insert_callbacks(graph, callbacks, fn=fn)
+        graph = graph_insert_callbacks(graph, callbacks, fn=fn, make_bending_placeholders=make_bending_placeholders)
         return graph
 
     @_import_to_interface
-    def graph_module(self, fn=None, module=None, jit_compatible=False):
+    def graph_module(self, fn=None, module=None, jit_compatible=False, make_bending_placeholders=False):
+        """Return the executable BendedGraphModule (bended module + bended graphs).
+
+        ``fn=None`` compiles every traced method into the returned module.
+        """
         if module is None:
             module = self.bend_module(fn=fn, jit_compatible=jit_compatible)
         if fn is None:
-            graphs = {k: self.bend_graph(fn=k) for k in self._graphs.keys()}
+            graphs = {k: self.bend_graph(fn=k, make_bending_placeholders=make_bending_placeholders) for k in self._graphs.keys()}
         else:
-            graphs = {fn: self.bend_graph(fn=fn)}
+            graphs = {fn: self.bend_graph(fn=fn, make_bending_placeholders=make_bending_placeholders)}
         if jit_compatible:
             graphs = {k: make_graph_jit_compatible(g) for k, g in graphs.items()}
         graph_module = BendedGraphModule(module, **graphs)
@@ -821,6 +962,29 @@ class BendedModule(object):
 
     @_import_to_interface
     def bend(self, *args, fn=None, config=None, **kwargs):
+        """Apply a bending callback to weight / activation targets.
+
+        Either ``bend(callback, *targets)``, or ``bend(config)`` with a
+        :class:`BendingConfig`. Targets follow the exact-vs-``?`` convention
+        (see class docstring). Activation targets require the method(s) to be
+        traced first. The original module is never modified; use
+        :meth:`reset` to revert.
+
+        Args:
+            *args: ``(callback, *targets)`` or a single ``BendingConfig``.
+            fn (str | list | None): restrict activation matching to given
+                traced method(s) (default: all).
+            config (str | None): name of the config slot to record into.
+            **kwargs: forwarded to the internal ``_bend`` (e.g. ``verbose=True``,
+                ``bend_param=False``, ``bend_graph=False``).
+
+        Returns:
+            BendedModuleBendingEnv: context manager reverting the bending on exit
+            (using it as a context is optional).
+
+        Raises:
+            BendingError: if no target matches.
+        """
         config = config or self._config
         if fn is not None: fn = checklist(fn)
 
@@ -830,6 +994,11 @@ class BendedModule(object):
         else:
             bended_config = BendingConfig(args)
 
+        if _logger.isEnabledFor(logging.DEBUG):
+            targets = [str(a) for a in args[1:]] if len(args) > 1 else []
+            cb_name = type(args[0]).__name__ if args else "?"
+            _logger.debug("[bend] fn=%s  callback=%s  targets=%s", fn, cb_name, targets)
+
         bending_env = BendedModuleBendingEnv(self, config)
         # bended_config.bind(self, fn=fn, bend_graph=bend_graph, bend_param=bend_param)
         for b in bended_config:
@@ -838,6 +1007,7 @@ class BendedModule(object):
         return bending_env
 
     def reset_bending(self, version=None, _erase_config=True):
+        """Remove every bending (callbacks, bended params/activations, controllables)."""
         version = version or self.version
         self._bending_callbacks = []
         self._bended_params[version] = {}
@@ -850,6 +1020,7 @@ class BendedModule(object):
 
     @_import_to_interface
     def reset(self, version=None):
+        """Remove all bendings and restore the original (or given version's) weights."""
         self.reset_bending(version=version)
         self._bconfig_dict = {self._default_bending_key: BendingConfig()}
         for fn in list(self._graphs.keys()):
@@ -873,14 +1044,13 @@ class BendedModule(object):
 
     @_import_to_interface
     def controllables(self) -> List[BendingParameter]:
+        """Return the BendingParameter macros registered through bended callbacks."""
         return copy.copy(self._controllables)
 
     @_import_to_interface
     def update(self, param_name, value):
-        print(param_name, value)
         """updates value of a given BendingParameter object"""
         if param_name not in self._controllables:
-            print("controllables :", self._controllables)
             raise BendingError("parameter %s not present in BendingModule"%param_name)
         self._controllables[param_name].set_value(value)
         for i in self._controllable_hash[param_name]:
@@ -964,37 +1134,66 @@ class BendedModule(object):
                         _return_graph=False, 
                         _save_as_method=None, 
                         **inputs):
-        """return target activations from given inputs."""
+        """Compute and return target activation values for given inputs.
+
+        Builds a truncated graph ending at the requested activations and runs
+        it, so nothing downstream of them is computed. Bendings are applied.
+
+        Args:
+            *activations: activation targets (exact names or ``?``-regexes).
+            fn (str): traced method to use (default ``"forward"``).
+            as_dict (bool): return ``{name: value}`` instead of a tuple.
+            _save_as_method (str | None): register the truncated graph as a
+                permanent method under this name.
+            **inputs: inputs of the traced method.
+
+        Returns:
+            dict[str, torch.Tensor] (or tuple when ``as_dict=False``).
+
+        Raises:
+            BendingError: if no activation is given, a target is unknown, or
+                the truncated graph fails to execute.
+        """
         if len(activations) == 0:
             raise BendingError("please provide activations to get_activations method")
-        # modify graph
-        module = self.bend_module(fn=fn)
-        graph = self.bend_graph(fn=fn)
+        with actlog.step("get_activations", "fn=%s  requested=%s" % (fn, actlog.fmt_names(activations)),
+                         level=logging.INFO) as _step:
+            actlog.log_tensors({k: v for k, v in inputs.items() if torch.is_tensor(v)}, prefix="input  ")
+            # modify graph
+            module = self.bend_module(fn=fn)
+            graph = self.bend_graph(fn=fn)
 
-        activations = list(self.activations(*activations, _raise_notfound=True, fn=fn, with_bended = True).keys())
-        #TODO parse node's children and remove then to get minimal graphs? 
-        new_graph = graph_get_activations(graph, activations)
+            activations = list(self.activations(*activations, _raise_notfound=True, fn=fn, with_bended = True).keys())
+            actlog.log("resolved targets=%s", actlog.fmt_names(activations))
+            #TODO parse node's children and remove then to get minimal graphs?
+            new_graph = graph_get_activations(graph, activations)
 
-        # forward
-        gm = BendedGraphModule(module, **{fn: new_graph})
-        
-        
-        try:
-            inputs = self.inputs_for_fn(getattr(gm, fn), inputs)
-            outs = getattr(gm, fn)(*inputs, **inputs)
-        except Exception as e:
-            raise BendingError('Error by forwarding graph module. Caught error: \n %s'%e)
+            # forward
+            gm = BendedGraphModule(module, **{fn: new_graph})
 
-        if as_dict:
-            outs = checktuple(outs)
-            outs = {activations[i]: outs[i] for i in range(len(outs))}
-        if _save_as_method: 
-            self._register_method_from_graph(activations, new_graph, fn, _save_as_method)
+            _t0 = actlog.tick()
+            try:
+                inputs = self.inputs_for_fn(getattr(gm, fn), inputs)
+                outs = getattr(gm, fn)(*inputs, **inputs)
+            except Exception as e:
+                raise BendingError('Error by forwarding graph module. Caught error: \n %s'%e)
+            actlog.log("run %s.%s  %s  %s", type(gm).__name__, fn,
+                       actlog.fmt_graph(new_graph), actlog.tock(_t0))
 
-        if _return_graph:
-            return outs, new_graph
-        else:
-            return outs
+            if as_dict:
+                outs = checktuple(outs)
+                outs = {activations[i]: outs[i] for i in range(len(outs))}
+                actlog.log_tensors(outs, prefix="→ ")
+            elif actlog.enabled():
+                actlog.log_tensors({activations[i]: t for i, t in enumerate(checktuple(outs))}, prefix="→ ")
+            _step.result("%s target(s)", len(activations))
+            if _save_as_method:
+                self._register_method_from_graph(activations, new_graph, fn, _save_as_method)
+
+            if _return_graph:
+                return outs, new_graph
+            else:
+                return outs
 
     @_import_to_interface
     def from_activations(self,
@@ -1006,31 +1205,173 @@ class BendedModule(object):
                         **inputs):
         #TODO add method to target name of callbacks in activation bending
         assert fn in self._graphs, "method %s is not accessible or isn't traced yet."%(fn)
-        if len(activations) == 0:
-            assert callbacks is not None, "bend_activation_as_input must be given a recorded callback if activation is not given."
-            activations = []
-            for callback in callbacks: 
-                if not isinstance(callback, BendingCallback): raise TypeError("callback must be a BendingCallback, got : %s"%(type(callback).__name__))
-                activations = _get_bended_activation_from_callaback(self._bended_activations[fn], callback)
-                assert len(activations) != 0, "given callback does not seem to be bending any activation for method %s.\nCallback : %s"%(fn, callback)
+        with actlog.step("from_activations", "fn=%s  roots=%s" % (fn, actlog.fmt_names(activations)),
+                         level=logging.INFO) as _step:
+            actlog.log_tensors({k: v for k, v in inputs.items() if torch.is_tensor(v)}, prefix="input  ")
+            if len(activations) == 0:
+                assert callbacks is not None, "bend_activation_as_input must be given a recorded callback if activation is not given."
+                activations = []
+                for callback in callbacks:
+                    if not isinstance(callback, BendingCallback): raise TypeError("callback must be a BendingCallback, got : %s"%(type(callback).__name__))
+                    activations = _get_bended_activation_from_callaback(self._bended_activations[fn], callback)
+                    assert len(activations) != 0, "given callback does not seem to be bending any activation for method %s.\nCallback : %s"%(fn, callback)
+                actlog.log("roots resolved from callback(s): %s", actlog.fmt_names(activations))
 
-        activations = list(self.activations(*activations, _raise_notfound=True, fn=fn, with_bended = False).keys())
+            activations = list(self.activations(*activations, _raise_notfound=True, fn=fn, with_bended = False).keys())
+
+            graph = self.bend_graph(fn=fn)
+            bended_activations = list(filter(lambda a: a in self._bended_activations[fn], activations))
+            callbacks = {a: CallbackChain(*self._bended_activations[fn][a]) for a in bended_activations}
+            if bended_activations:
+                actlog.log("bended roots=%s  (callback inputs kept as graph inputs)",
+                           actlog.fmt_names(bended_activations))
+            new_graph = graph_from_activations(graph, activations, remove_placeholders=True, parse_inputs_from_callbacks=callbacks)
+
+            gm = BendedGraphModule(self.bend_module(fn=fn), **{fn: new_graph})
+            _t0 = actlog.tick()
+            inputs = self.inputs_for_fn(getattr(gm, fn), inputs)
+            outs = getattr(gm, fn)(*inputs, **inputs)
+            actlog.log("run %s.%s  %s", type(gm).__name__, fn, actlog.tock(_t0))
+            if actlog.enabled():
+                actlog.log_tensors({"out[%d]" % i: t for i, t in enumerate(checktuple(outs))}, prefix="→ ")
+            _step.result("resumed from %d root(s)", len(activations))
+            if _save_as_method:
+                self._register_method_from_graph(activations, new_graph, fn, _save_as_method)
+            if _return_graph:
+                return outs, graph
+            else:
+                return outs
+
+    @_import_to_interface
+    def call(self,
+             *targets,
+             fn: str = "forward",
+             as_dict: bool = True,
+             _return_graph: bool = False,
+             _save_as_method: Optional[str] = None,
+             **inputs):
+        """Run any slice of a traced method, from any inputs to any outputs.
+
+        Merges :meth:`get_activations` (stop early, at some activations) and
+        :meth:`from_activations` (start late, from some activations) into one
+        call, and lets the two be combined: only the part of the graph lying
+        *between* the given inputs and the requested targets is ever built and
+        run.
+
+        Args:
+            *targets: activations to return, as exact names or ``?``-regexes,
+                like everywhere else in torchbend. Omit them to get the
+                method's own output, with its original structure preserved.
+            fn (str): traced method to slice (default ``"forward"``).
+            as_dict (bool): return ``{name: value}`` rather than a tuple. Only
+                applies when ``targets`` are given; the method's own output is
+                always returned untouched.
+            _save_as_method (str | None): register the sliced graph as a
+                permanent method under this name.
+            _return_graph (bool): also return the sliced graph.
+            **inputs: both kinds of input, mixed freely. A key naming an
+                activation of the graph *re-roots* the run there — nothing
+                upstream of it is computed — while any other key is a normal
+                argument of the method. A re-rooted activation takes the value
+                it holds *before* being bended, so a bended one still goes
+                through its callback.
+
+        Note:
+            Re-rooting without giving any target keeps the method's original
+            signature, exactly as :meth:`from_activations` does: the arguments
+            the trimmed graph still declares must be passed even when the
+            re-rooting made them useless. Naming a target lifts this — the
+            slice is then cut by reachability and only keeps the inputs it
+            genuinely reads.
+
+        Returns:
+            dict[str, torch.Tensor] when targets are given (a tuple if
+            ``as_dict=False``), else whatever the method itself returns.
+
+        Raises:
+            BendingError: if ``fn`` is not traced, a target is unknown, or the
+                sliced graph fails to execute.
+
+        Examples::
+
+            # up to relu_1 only     — as get_activations("relu_1", x=x)
+            z   = module.call("relu_1", x=x)
+            # from relu_1 onwards   — as from_activations("relu_1", x=x, relu_1=z)
+            out = module.call(x=x, relu_1=z)
+            # neither: only what lies between the two, x is not needed anymore
+            y   = module.call("addmm", relu_1=z)
+            # no target, no root: the plain bended call
+            out = module.call(x=x)
+        """
+        if fn not in self._graphs:
+            raise BendingError("method %s is not accessible or isn't traced yet."%(fn))
 
         graph = self.bend_graph(fn=fn)
-        bended_activations = list(filter(lambda a: a in self._bended_activations[fn], activations))
-        callbacks = {a: CallbackChain(*self._bended_activations[fn][a]) for a in bended_activations}
-        new_graph = graph_from_activations(graph, activations, remove_placeholders=True, parse_inputs_from_callbacks=callbacks)
+        node_ops = {n.name: n.op for n in graph.nodes}
+        # an input naming an inner node re-roots the graph there; anything else
+        # (a placeholder, or a key the signature will sort out) is a plain argument
+        roots = [k for k in inputs if node_ops.get(k, "placeholder") not in ("placeholder", "output")]
 
-        gm = BendedGraphModule(self.bend_module(fn=fn), **{fn: new_graph})
-        inputs = self.inputs_for_fn(getattr(gm, fn), inputs)
-        outs = getattr(gm, fn)(*inputs, **inputs)
-        if _save_as_method:
-            self._register_method_from_graph(activations, new_graph, fn, _save_as_method)
-        if _return_graph:
-            return outs, graph
-        else:
-            return outs
-        
+        with actlog.step("call", "fn=%s  targets=%s  roots=%s"
+                         % (fn,
+                            actlog.fmt_names(targets) if targets else "(method output)",
+                            actlog.fmt_names(roots) if roots else "(method inputs)"),
+                         level=logging.INFO) as _step:
+            actlog.log_tensors({k: v for k, v in inputs.items() if torch.is_tensor(v)}, prefix="input  ")
+
+            if len(targets) > 0:
+                targets = list(self.activations(*targets, _raise_notfound=True, fn=fn, with_bended=True).keys())
+                actlog.log("resolved targets=%s", actlog.fmt_names(targets))
+            else:
+                targets = []
+
+            callbacks = {a: CallbackChain(*self._bended_activations[fn][a])
+                         for a in roots if a in self._bended_activations[fn]}
+            if callbacks:
+                actlog.log("bended roots=%s  (callback inputs kept as graph inputs)",
+                           actlog.fmt_names(list(callbacks)))
+
+            # dispatch to the narrowest rewrite the request needs
+            if targets and roots:
+                new_graph = graph_subset(graph, roots, targets, remove_placeholders=True,
+                                         parse_inputs_from_callbacks=callbacks)
+            elif targets:
+                new_graph = graph_get_activations(graph, targets)
+            elif roots:
+                new_graph = graph_from_activations(graph, roots, remove_placeholders=True,
+                                                   parse_inputs_from_callbacks=callbacks)
+            else:
+                new_graph = graph
+
+            gm = BendedGraphModule(self.bend_module(fn=fn), **{fn: new_graph})
+            _t0 = actlog.tick()
+            try:
+                call_inputs = self.inputs_for_fn(getattr(gm, fn), dict(inputs))
+                outs = getattr(gm, fn)(*call_inputs, **call_inputs)
+            except Exception as e:
+                raise BendingError('Error by forwarding graph module. Caught error: \n %s'%e)
+            actlog.log("run %s.%s  %s  %s", type(gm).__name__, fn,
+                       actlog.fmt_graph(new_graph), actlog.tock(_t0))
+
+            if targets and as_dict:
+                outs = checktuple(outs)
+                outs = {targets[i]: outs[i] for i in range(len(outs))}
+                actlog.log_tensors(outs, prefix="→ ")
+            elif actlog.enabled():
+                actlog.log_tensors({(targets[i] if targets else "out[%d]"%i): t
+                                    for i, t in enumerate(checktuple(outs))}, prefix="→ ")
+            _step.result("%s from %s",
+                         "%d target(s)" % len(targets) if targets else "method output",
+                         "%d root(s)" % len(roots) if roots else "method inputs")
+
+            if _save_as_method:
+                self._register_method_from_graph(targets, new_graph, fn, _save_as_method)
+            if _return_graph:
+                return outs, new_graph
+            else:
+                return outs
+
+
     #  -- version & interpolation handling --
     def _write_bendings(self) -> None:
         # write weight bendings
@@ -1050,6 +1391,16 @@ class BendedModule(object):
 
     @_import_to_interface
     def write(self, version=None, force: bool = False, deep: bool = False, clear: bool = True):
+        """Freeze the current weight bendings as a named version.
+
+        Args:
+            version (str | None): version name; ``None`` writes into the default
+                slot (overwriting the original weights of this BendedModule).
+            force (bool): overwrite an existing version.
+            deep (bool): deep-copy the written state dict.
+            clear (bool): remove the bendings afterwards (they are now part of
+                the version).
+        """
         if version is None: 
             self._write_bendings()
         else:
@@ -1058,10 +1409,19 @@ class BendedModule(object):
 
     @_import_to_interface
     def set_version(self, version=None):
+        """Context manager temporarily activating a stored version (None = original)."""
         return BendedModuleVersionEnv(self, version=version)
 
     @_import_to_interface
     def create_version(self, name, state_dict, strict=True):
+        """Import external weights as a named version.
+
+        Args:
+            name (str): version name.
+            state_dict: a state dict, or an ``nn.Module`` of identical
+                architecture (its state dict is used).
+            strict (bool): raise ``BendingError`` on mismatched keys.
+        """
         if isinstance(state_dict, nn.Module):
             state_dict = state_dict.state_dict()
         if strict == True and not state_dict.keys() == self._param_dict[self._default_version_key].keys():
@@ -1077,6 +1437,16 @@ class BendedModule(object):
 
     @_import_to_interface
     def interpolate(self, *args, **weights):
+        """Context manager interpolating linearly between stored weight versions.
+
+        The optional positional argument weights the default version; keyword
+        arguments weight named versions::
+
+            with bended.interpolate(0.5, other=0.5):
+                out = bended(x)
+
+        Only weights are interpolated (graphs cannot be).
+        """
         if len(args) > 1: raise BendingError("interpolate takes a single optional positional argument for default weight, got %d"%(len(args)))
         if len(args) == 1: weights[self._default_version_key] = float(args[0])
         return BendedModuleInterpolationEnv(self, interp_dict=weights)
@@ -1096,6 +1466,7 @@ class BendedModule(object):
     
     @_import_to_interface
     def enable_capture(self, *callbacks):
+        """Switch the given Capture-style callbacks to record mode (all when empty)."""
         for c in callbacks:
             assert c in self._bending_callbacks
         if len(callbacks) == 0: callbacks = self._bending_callbacks
@@ -1104,6 +1475,7 @@ class BendedModule(object):
 
     @_import_to_interface
     def disable_capture(self, *callbacks):
+        """Stop capture mode on the given callbacks (all when empty)."""
         for c in callbacks:
             assert c in self._bending_callbacks
         if len(callbacks) == 0: callbacks = self._bending_callbacks
@@ -1112,6 +1484,7 @@ class BendedModule(object):
 
     @_import_to_interface
     def capture(self, *callbacks):
+        """Context manager enabling capture mode for the duration of the block."""
         return BendedModuleCaptureContext(self, callbacks)
 
     @_import_to_interface

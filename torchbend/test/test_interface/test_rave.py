@@ -15,7 +15,8 @@ try:
 except ModuleNotFoundError:
     RAVE_AVAILABLE = False
 
-RAVE_MODEL_PATHS = [Path("models/rave/test")]
+#TODO how to download test models 
+RAVE_MODEL_PATHS = [Path("models/rave")]
 RAVE_STRICT_LOADING = False
 RAVE_MODEL_DL_PATH = None
 rave_test_activations = {
@@ -37,6 +38,8 @@ def get_test_name():
 def check_rave_models():
     valid_paths = []
     for d in RAVE_MODEL_PATHS:
+        d = Path(d)
+        if not d.is_absolute(): d = (Path(tb.__path__[0]) / "test" / d).resolve()
         if Path(d).exists(): 
             valid_paths.extend(filter(lambda x: BendedRAVE.is_loadable(x), d.iterdir()))
         else:

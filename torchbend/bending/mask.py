@@ -15,11 +15,30 @@ from ..utils import checklist
 
 
 class Mask(BendingCallback):
+    """Randomly zeros out elements of the tensor with probability (1 − prob). Works on weights and activations. Use dim to restrict masking to a single axis."""
     weight_compatible = True
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
     controllable_params = {'prob': ((float, torch.Tensor), 1.), 'seed': (int, 0)}
+    _extra_init_params = {
+        "dim": {"type": "int", "default": None, "required": False, "label": "dim (axis)",
+                "description": "Axis along which masking is applied. Leave empty to mask all elements independently."},
+    }
+    _param_ui = {
+        'prob': {
+            'range': [0., 1.],
+            'step':  0.01,
+            'description': "Keep probability: 1.0 = no masking, 0.0 = zero out everything.",
+            'guard': lambda v, cb: True if 0. <= v <= 1. else ValueError(f"prob must be in [0, 1], got {v:.4f}"),
+        },
+        'seed': {
+            'range':  [-1, 999],
+            'widget': 'int',
+            'description': "Random seed for reproducible masks. -1 = draw a fresh mask on every forward pass.",
+            'guard':  lambda v, cb: True if v >= -1 else ValueError("seed must be ≥ -1  (-1 = random)"),
+        },
+    }
 
     def __init__(self, prob: BendingParameter | float | None = None, seed: int = None, dim: Optional[Union[int, List[int]]]=None, learnable: bool = False):
         super().__init__(seed=seed, prob=prob)
@@ -136,9 +155,23 @@ class Mask(BendingCallback):
         return x * mask.to(x.device)
         
                   
-class OrderedMask(Mask): 
+class OrderedMask(Mask):
+    """Like Mask, but elements are removed in a fixed per-seed order as prob decreases
+    (deterministic progressive thinning instead of i.i.d. masking)."""
+    _param_ui = {
+        'prob': {
+            'range': [0., 1.],
+            'step':  0.01,
+            'guard': lambda v: True if 0. <= v <= 1. else ValueError(f"prob must be in [0, 1], got {v:.4f}"),
+        },
+        'seed': {
+            'range':  [-1, 999],
+            'widget': 'int',
+            'guard':  lambda v: True if v >= -1 else ValueError("seed must be ≥ -1  (-1 = random)"),
+        },
+    }
 
-    def __repr__(self): 
+    def __repr__(self):
         return f"OrderedMask(prob={float(self.prob):.3f})"
 
     def _get_mask_shape(self, shape: List[int]) -> List[int]:
@@ -231,8 +264,17 @@ class OrderedMask(Mask):
 
 
 class ThresholdActivation(BendingCallback):
+    """Keeps only the activation slices (along dim) whose mean is below the
+    threshold quantile (invert=True keeps the ones above). Activation-only."""
     activation_compatible = True
     controllable_params = {'threshold': (None, 0.5)}
+    _param_ui = {
+        'threshold': {
+            'range': [0., 1.],
+            'step':  0.01,
+            'guard': lambda v: True if 0. <= v <= 1. else ValueError(f"threshold must be in [0, 1], got {v:.4f}"),
+        },
+    }
     def __init__(self, threshold: BendingParameter | float | None = None, dim: Union[int, List[int], None] = [1, 2], invert: bool = False):
         super().__init__(threshold = threshold)
         self.dim = checklist(dim)

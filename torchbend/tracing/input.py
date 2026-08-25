@@ -3,6 +3,12 @@ import copy
 
 
 class Inputs(object):
+    """Light container for the example inputs handed to the tracers.
+
+    Behaves like a hybrid tuple/dict: ``elt in inputs`` and ``inputs[elt]``
+    accept positional indices (for ``args``) or names (for ``kwargs``);
+    ``update_`` mutates in place while ``update`` returns a copy.
+    """
     def __init__(self, *args, **kwargs):
         self.args = args
         self.kwargs = kwargs

@@ -16,6 +16,22 @@ class BendingConfigException(Exception):
 
 
 class BendingConfig(object):
+    """Serializable description of a set of bendings: ``(callback, *targets)`` tuples.
+
+    Usage::
+
+        cfg = BendingConfig((Mask(0.5), "?conv.*weight"), (Bias(1.), "sigmoid"))
+        cfg.bind(bended)            # resolve targets against a BendedModule
+        bended.bend(cfg)            # apply
+
+        cfg = bended.bending_config()   # snapshot the current bendings
+        cfg.save("setup.tbconfig")      # dill-pickle to disk
+        cfg = BendingConfig.load("setup.tbconfig", module=bended)
+
+    Configs can be compared (``==``), added (``+``, same bound module
+    required), iterated (yields ``(callback, *targets)``) and queried
+    (``key in cfg``, ``cfg.op_from_key(key)`` once bound).
+    """
     def __init__(self, *args, module=None):
         if (len(args) == 1) and isinstance(args[0], BendingConfig):
             self._import_config(args[0])
@@ -98,6 +114,11 @@ class BendingConfig(object):
         self._cb_hash[c].extend(resolved_keys)
 
     def bind(self, module, **kwargs):
+        """Resolve every entry's targets against a BendedModule.
+
+        After binding, ``op_from_key`` and key membership work on *resolved*
+        names, and ``__eq__`` compares resolved bendings.
+        """
         self._module = module
         self._cb_hash = {}
         self._weight_hash = {}
@@ -148,6 +169,7 @@ class BendingConfig(object):
         }
 
     def save(self, path):
+        """Serialize the config with dill (default extension: ``.tbconfig``)."""
         path = str(path)
         if os.path.splitext(path)[1] == "":
             path += ".tbconfig"
@@ -156,6 +178,11 @@ class BendingConfig(object):
 
     @classmethod
     def load(self, path, module=None):
+        """Load a config saved with :meth:`save`.
+
+        If the config was bound when saved, a ``module`` of the same type must
+        be provided to rebind it (a warning is printed otherwise).
+        """
         with open(path, 'rb') as f: 
             obj = dill.load(f)
         config = BendingConfig()

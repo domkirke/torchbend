@@ -5,6 +5,20 @@ import torch
 import torch.nn as nn
 
 class Capture(BendingCallback):
+    """Records the tensors flowing through its targets while in capture mode.
+
+    Bend it onto activations, then record with ``BendedModule.capture()``::
+
+        cap = Capture()
+        bended.bend(cap, "latent")
+        with bended.capture():
+            bended(x1); bended(x2)      # records instead of bending
+
+    Outside capture mode the callback applies ``bend_input_with_capture`` —
+    a passthrough here; subclasses override it to exploit the recorded
+    material (see InterpolationFromCapture). API: ``captures``,
+    ``get_capture(name)``, ``n_captures(name)``, ``clear()``.
+    """
     weight_compatible = False 
     activation_compatible = True
     jit_compatible = False
@@ -97,6 +111,8 @@ class Capture(BendingCallback):
 
 
 class InterpolationFromCapture(Capture):
+    """Capture variant replacing the activation by an interpolation between the
+    previously recorded captures."""
 
     def __init__(self, *args, dim=0, **kwargs):
         super(InterpolationFromCapture, self).__init__(*args, **kwargs)

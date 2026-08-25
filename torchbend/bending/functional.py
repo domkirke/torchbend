@@ -1,5 +1,6 @@
 import torch, torch.nn as nn
 import torchbend as tb
+from torchbend.bending.callback import BendingCallback
 import inspect
 from torchbend.utils import _replace_placeholders, _import_defs_from_tmpfile
 
@@ -61,15 +62,48 @@ def generate_class(fn, **kwargs):
     return Lambda(**kwargs)
 """
 
-def Lambda(fn, **kwargs):
-    params = retrieve_params_from_callback(fn)
-    resolved_code = _replace_placeholders(
-        lambda_code, 
-        fn_class_params=get_controllables_from_params(params),
-        fn_forward_args=get_params_for_call(params),
-        fn_forward_sig=get_params_for_signature(params)
-    )
-    generator = _import_defs_from_tmpfile(resolved_code)['generate_class']
-    return generator(fn, **kwargs)
+class Lambda(BendingCallback):
+    """Wraps an arbitrary Python function as a bending callback.
+
+    Usage: Lambda(fn, **param_defaults)
+
+    The function signature determines the controllable params. Cannot be
+    created from the graph viewer UI (ui_compatible=False); use it
+    programmatically and it will appear in the bindings list.
+    """
+    ui_compatible = True 
+    activation_compatible = True
+    weight_compatible = True
+    jit_compatible = True
+    controllable_params = {}
+    _param_ui = {
+        'prob': {
+            'widget': 'field',
+            'guard': lambda v, cb: True if type(cb)._check_valid_fn(v, cb) else ValueError(f"prob must be in [0, 1], got {v:.4f}"),
+            'factory': lambda x: Lambda._create_function(x)
+        }
+    }
+
+    @classmethod
+    def _check_valid_fn(cls, value, callback):
+        return True
+
+    @classmethod
+    def _create_function(cls, fn, **kwargs):
+        params = retrieve_params_from_callback(fn)
+        resolved_code = _replace_placeholders(
+            lambda_code,
+            fn_class_params=get_controllables_from_params(params),
+            fn_forward_args=get_params_for_call(params),
+            fn_forward_sig=get_params_for_signature(params)
+        )
+        generator = _import_defs_from_tmpfile(resolved_code)['generate_class']
+        # generate_class builds and returns a fully initialised instance;
+        # since it is not an instance of Lambda, Python skips Lambda.__init__.
+        return generator(fn, **kwargs)
+
+
+    def __new__(cls, fn, **kwargs):
+        return cls._create_function(fn, **kwargs)
 
 __all__ = ["Lambda"]
