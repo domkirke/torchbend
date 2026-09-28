@@ -2095,17 +2095,21 @@ function renderDetailAnnotations(id) {
     list.forEach(a => section.appendChild(_annotBlock(a, a.node !== id)));
 }
 
-// The sidebar's account of the process: every annotated value, in the order
-// the graph computes it (or by `step=` when the marks give one). Click to go.
+// The Process pane: every annotated value, in the order the graph computes it
+// (or by `step=` when the marks give one) -- the model's own account of how it
+// works. The ? in the top bar opens it, and only appears when there is one.
+// Click a step to go to it; the step for the selected node is highlighted.
 function renderProcessList(data) {
-    const section = document.getElementById("process-section");
     const host = document.getElementById("process-list");
-    if (!section || !host) return;
+    const btn = document.getElementById("process-btn");
+    if (!host) return;
     host.innerHTML = "";
     const all = Object.values((data && data.annotations) || {})
         .filter(a => a.description || a.alias || Object.keys(a.meta || {}).length);
-    section.style.display = all.length ? "" : "none";
-    if (!all.length) return;
+    if (btn) btn.style.display = all.length ? "" : "none";
+    const count = document.getElementById("process-panel-count");
+    if (count) count.textContent = all.length ? `${all.length} step${all.length > 1 ? "s" : ""}` : "";
+    if (!all.length) { toggleProcessPanel(false); return; }
     const hasSteps = all.some(a => a.meta && a.meta.step != null);
     const sorted = all.slice().sort((a, b) => hasSteps
         ? ((a.meta.step ?? 1e9) - (b.meta.step ?? 1e9)) || (a.order - b.order)
@@ -2113,25 +2117,52 @@ function renderProcessList(data) {
     sorted.forEach((a, i) => {
         const row = document.createElement("div");
         row.className = "process-step" + (a.drawn ? "" : " process-step-hidden");
+        row.dataset.drawn = a.drawn || "";
         const num = document.createElement("span");
         num.className = "process-num";
         num.textContent = a.meta && a.meta.step != null ? a.meta.step : i + 1;
         row.appendChild(num);
-        const body = document.createElement("div");
-        body.className = "process-body";
-        const t = document.createElement("div");
+        const head = document.createElement("div");
+        head.className = "process-head";
+        const t = document.createElement("span");
         t.className = "process-title";
         t.textContent = _annotTitle(a) || a.node;
-        body.appendChild(t);
+        head.appendChild(t);
+        (a.aliases || []).forEach(al => {
+            const chip = document.createElement("span");
+            chip.className = "annot-alias";
+            chip.textContent = "#" + al;
+            head.appendChild(chip);
+        });
+        const n = document.createElement("span");
+        n.className = "process-node";
+        n.textContent = a.drawn && a.drawn !== a.node ? `${a.node} · in ${a.drawn.replace(/^__group__/, "")}` : a.node;
+        head.appendChild(n);
+        row.appendChild(head);
         if (a.description && _annotTitle(a) !== a.description) {
             const dsc = document.createElement("div");
             dsc.className = "process-desc";
             dsc.textContent = a.description;
-            body.appendChild(dsc);
+            row.appendChild(dsc);
         }
-        row.appendChild(body);
-        row.title = (a.description ? a.description + "\n\n" : "")
-            + (a.drawn ? `click: go to ${a.drawn}` : `${a.node} is not drawn in this view (pruned or hidden)`);
+        const meta = Object.entries(a.meta || {}).filter(([k]) => k !== "title" && k !== "step");
+        if (meta.length) {
+            const table = document.createElement("table");
+            table.className = "annot-meta";
+            meta.forEach(([k, v]) => {
+                const tr = document.createElement("tr");
+                const tk = document.createElement("td");
+                tk.className = "annot-meta-key";
+                tk.textContent = k;
+                const tv = document.createElement("td");
+                tv.textContent = _fmtMetaValue(v);
+                tr.appendChild(tk);
+                tr.appendChild(tv);
+                table.appendChild(tr);
+            });
+            row.appendChild(table);
+        }
+        row.title = a.drawn ? `Go to ${a.drawn}` : `${a.node} is not drawn in this view (pruned or hidden)`;
         if (a.drawn) row.addEventListener("click", () => {
             const el = cy.$id(a.drawn);
             if (!el.length) return;
@@ -2140,6 +2171,37 @@ function renderProcessList(data) {
         });
         host.appendChild(row);
     });
+    _highlightProcessStep(currentVizNode && (currentVizNode.id || currentVizNode.label));
+    // left open last time: open again, once per page
+    if (!_processRestored) {
+        _processRestored = true;
+        try { if (localStorage.getItem("tb_process_open") === "1") toggleProcessPanel(true); } catch (_) {}
+    }
+}
+let _processRestored = false;
+
+function _highlightProcessStep(id) {
+    document.querySelectorAll("#process-list .process-step").forEach(row =>
+        row.classList.toggle("current", !!id && row.dataset.drawn === id));
+}
+
+function toggleProcessPanel(force) {
+    const panel = document.getElementById("process-panel");
+    const btn = document.getElementById("process-btn");
+    if (!panel) return;
+    const open = force === undefined ? panel.classList.contains("hidden") : !!force;
+    panel.classList.toggle("hidden", !open);
+    if (btn) btn.classList.toggle("active", open);
+    // it slides in where the input panel does: one at a time
+    if (open) {
+        const input = document.getElementById("input-panel");
+        if (input && !input.classList.contains("hidden")) {
+            input.classList.add("hidden");
+            const ib = document.getElementById("input-panel-btn");
+            if (ib) ib.classList.remove("active");
+        }
+    }
+    try { localStorage.setItem("tb_process_open", open ? "1" : "0"); } catch (_) {}
 }
 
 function showDetails(data) {
@@ -2201,6 +2263,7 @@ function showDetails(data) {
     // tags / aliases
     renderDetailTags(data.id || data.label);
     renderDetailAnnotations(data.id || data.label);
+    _highlightProcessStep(data.id || data.label);
 
     // what this node stands in for, if anything
     renderNodeContents(data);
@@ -6810,11 +6873,22 @@ async function _saveSnapshot(fn, node) {
     }
 }
 
-// The snapshot recalled onto a node, read from the bindings (the server's state).
+// What is recalled onto a node -- a snapshot, or a mix of them -- read from the
+// bindings (the server's state). _recalledOn is the snapshot's name, or
+// "__mix__" for a mix; _recallBinding is the binding itself.
+function _recallBinding(fn, node) {
+    return _bendingBindings.find(b => (b.snapshot || b.mix) && b.fn === fn
+        && (b.nodes || [b.node]).includes(node)) || null;
+}
 function _recalledOn(fn, node) {
-    const b = _bendingBindings.find(b => b.snapshot && b.fn === fn
-        && (b.nodes || [b.node]).includes(node));
-    return b ? b.snapshot : null;
+    const b = _recallBinding(fn, node);
+    return b ? (b.snapshot || "__mix__") : null;
+}
+// what a view's label says about it: "❄ rain", "⧉ mix of rain + live"
+function _recallLabel(fn, node) {
+    const b = _recallBinding(fn, node);
+    if (!b) return "";
+    return b.mix ? `⧉ mix of ${b.mix.sources.join(" + ")}` : `❄ ${b.snapshot}`;
 }
 
 // A change of bendings came back from the server: take it in, and refresh every
@@ -6871,6 +6945,125 @@ async function _deleteSnapshot(name) {
     if ((d.released || []).length) await _afterSnapshotBindings(d);
 }
 
+// ── mixing snapshots ─────────────────────────────────────────────────────────
+// Several snapshots of a node (and its live value) mixed into it: a Mix bending
+// with one weight per source -- the weights are sliders in the node's bendings
+// list, drivable by macros. The dialog picks what is mixed, how, and along
+// which dimension of the activation.
+let _mixModes = null;           // {modes, help}, from the server, once
+let _mixDialog = null;
+
+async function _loadMixModes() {
+    if (_mixModes) return _mixModes;
+    try { _mixModes = await (await fetch("/api/snapshots/mix/")).json(); }
+    catch (_) { _mixModes = { modes: ["linear"], help: {} }; }
+    return _mixModes;
+}
+
+function _closeMixDialog() {
+    if (_mixDialog) { _mixDialog.remove(); _mixDialog = null; }
+    document.removeEventListener("mousedown", _mixDialogOutside, true);
+}
+function _mixDialogOutside(e) {
+    if (_mixDialog && !_mixDialog.contains(e.target)) _closeMixDialog();
+}
+
+async function _openMixDialog(ctx, anchor) {
+    _closeMixDialog();
+    const { modes, help } = await _loadMixModes();
+    const current = (_recallBinding(ctx.fn, ctx.node) || {}).mix || null;
+    const snaps = _snapshotsOf(ctx.fn, ctx.node);
+    const shape = (snaps[0] && snaps[0].shape) || [];
+    const box = document.createElement("div");
+    box.className = "mix-dialog";
+    box.addEventListener("mousedown", (e) => e.stopPropagation());
+    const title = document.createElement("div");
+    title.className = "mix-title";
+    title.textContent = `Mix into ${ctx.node}`;
+    box.appendChild(title);
+
+    const srcBox = document.createElement("div");
+    srcBox.className = "mix-sources";
+    const recalled = _recallBinding(ctx.fn, ctx.node);
+    const chosen = new Set(current ? current.sources
+        : recalled && recalled.snapshot ? [recalled.snapshot, "live"] : snaps.map(s => s.name));
+    ["live", ...snaps.map(s => s.name)].forEach(name => {
+        const lab = document.createElement("label");
+        lab.className = "mix-source";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = chosen.has(name);
+        cb.addEventListener("change", () => { cb.checked ? chosen.add(name) : chosen.delete(name); sync(); });
+        lab.appendChild(cb);
+        lab.appendChild(document.createTextNode(name === "live" ? " live (the node's own value)" : " ❄ " + name));
+        srcBox.appendChild(lab);
+    });
+    box.appendChild(srcBox);
+
+    const row = document.createElement("div");
+    row.className = "mix-row";
+    const modeSel = document.createElement("select");
+    modes.forEach(m => modeSel.appendChild(new Option(m, m)));
+    modeSel.value = current ? current.mode : "linear";
+    const dimIn = document.createElement("input");
+    dimIn.type = "number";
+    dimIn.className = "mix-dim";
+    dimIn.step = 1;
+    dimIn.placeholder = "all";
+    dimIn.value = current ? (current.dim == null ? "" : current.dim) : 1;
+    row.appendChild(document.createTextNode("mode "));
+    row.appendChild(modeSel);
+    row.appendChild(document.createTextNode(" dim "));
+    row.appendChild(dimIn);
+    box.appendChild(row);
+    const dimHint = document.createElement("div");
+    dimHint.className = "mix-hint";
+    box.appendChild(dimHint);
+    const modeHelp = document.createElement("div");
+    modeHelp.className = "mix-help";
+    box.appendChild(modeHelp);
+
+    const go = document.createElement("button");
+    go.className = "mix-go";
+    const sync = () => {
+        modeHelp.textContent = help[modeSel.value] || "";
+        const d = dimIn.value === "" ? null : parseInt(dimIn.value, 10);
+        const axis = d == null ? "the whole tensor" : (shape.length
+            ? `axis ${d} of [${shape.join(", ")}]` + (shape[((d % shape.length) + shape.length) % shape.length] != null
+                ? ` — ${shape[((d % shape.length) + shape.length) % shape.length]} long` : "")
+            : `axis ${d}`);
+        dimHint.textContent = `along ${axis}`;
+        go.disabled = !chosen.size;
+        go.textContent = chosen.size ? `Mix ${chosen.size} source${chosen.size > 1 ? "s" : ""}` : "Pick a source";
+    };
+    modeSel.addEventListener("change", sync);
+    dimIn.addEventListener("input", sync);
+    go.addEventListener("click", async () => {
+        const sources = ["live", ...snaps.map(s => s.name)].filter(n => chosen.has(n));
+        const body = { fn: ctx.fn, node: ctx.node, sources, mode: modeSel.value,
+                       dim: dimIn.value === "" ? null : parseInt(dimIn.value, 10) };
+        go.disabled = true;
+        try {
+            const d = await _postSnapshotJSON("/api/snapshots/mix/", body);
+            _closeMixDialog();
+            showToast("info", `Mixing ${sources.join(" + ")} into ${ctx.node} (${body.mode}) — weights are in its bendings`);
+            await _afterSnapshotBindings(d);
+        } catch (e) {
+            showToast("error", "Mix failed: " + e.message, e.traceback);
+            go.disabled = false;
+        }
+    });
+    box.appendChild(go);
+    sync();
+
+    document.body.appendChild(box);
+    const r = anchor.getBoundingClientRect();
+    box.style.left = Math.min(r.left, window.innerWidth - 330) + "px";
+    box.style.top = (r.bottom + 4) + "px";
+    _mixDialog = box;
+    setTimeout(() => document.addEventListener("mousedown", _mixDialogOutside, true), 0);
+}
+
 // The same controls for every view of a node: they act on the graph, not on
 // the view.
 function _snapCtx(fn, node) {
@@ -6897,19 +7090,23 @@ function _snapBar(ctx) {
         save.addEventListener("click", async (e) => { e.stopPropagation(); await _saveSnapshot(ctx.fn, ctx.node); });
         bar.appendChild(save);
         const snaps = _snapshotsOf(ctx.fn, ctx.node);
+        const mixB = recalled === "__mix__" ? _recallBinding(ctx.fn, ctx.node) : null;
         const sel = document.createElement("select");
         sel.className = "snap-select";
         sel.appendChild(new Option(snaps.length ? "live" : "live (no snapshot yet)", ""));
         snaps.forEach(sn => sel.appendChild(new Option("❄ " + sn.name, sn.name)));
+        if (mixB) sel.appendChild(new Option(`⧉ mix: ${mixB.mix.sources.join(" + ")} (${mixB.mix.mode})`, "__mix__"));
         sel.value = recalled || "";
         sel.disabled = !snaps.length && !recalled;
-        sel.title = recalled
+        sel.title = mixB
+            ? `A mix of ${mixB.mix.sources.join(", ")} (${mixB.mix.mode}) is recalled here; its weights are in the node's bendings. Pick "live" to take it off.`
+            : recalled
             ? `'${recalled}' is recalled into the graph here: this node takes its value, and everything after it follows. Pick "live" to take it off.`
             : "Recall a snapshot into the graph: this node takes the saved value, and everything after it follows";
         sel.addEventListener("click", (e) => e.stopPropagation());
-        sel.addEventListener("change", () => ctx.set(sel.value || null));
+        sel.addEventListener("change", () => { if (sel.value !== "__mix__") ctx.set(sel.value || null); });
         bar.appendChild(sel);
-        if (recalled) {
+        if (recalled && !mixB) {
             const del = document.createElement("button");
             del.className = "snap-del-btn";
             del.textContent = "✕ delete";
@@ -6919,7 +7116,8 @@ function _snapBar(ctx) {
         }
         const status = document.createElement("span");
         status.className = "snap-status";
-        status.textContent = recalled ? "recalled — what follows uses it" : "following the graph";
+        status.textContent = mixB ? `mixed (${mixB.mix.mode}) — what follows uses it`
+            : recalled ? "recalled — what follows uses it" : "following the graph";
         bar.appendChild(status);
         bar.classList.toggle("snap-frozen", !!recalled);
     };
@@ -6957,7 +7155,7 @@ function _mountPanelSnap(fn, node) {
     host.appendChild(_snapBar(_snapCtx(fn, node)));
     const recalled = _recalledOn(fn, node);
     document.getElementById("viz-section").classList.toggle("viz-frozen", !!recalled);
-    if (recalled) document.getElementById("viz-label").textContent += `  ❄ ${recalled}`;
+    if (recalled) document.getElementById("viz-label").textContent += "  " + _recallLabel(fn, node);
 }
 
 function _refreshModalIfOpen() {
@@ -6986,8 +7184,8 @@ function openExpandModal() {
         if (_panelSnapNode && _panelSnapNode.node === label) {
             const { fn, node } = _panelSnapNode;
             snapHost.appendChild(_snapBar(_snapCtx(fn, node)));
-            const recalled = _recalledOn(fn, node);
-            if (recalled) document.getElementById("viz-modal-label").textContent += `  ❄ ${recalled}`;
+            if (_recalledOn(fn, node))
+                document.getElementById("viz-modal-label").textContent += "  " + _recallLabel(fn, node);
         }
     }
 
@@ -9643,6 +9841,8 @@ function toggleInputPanel() {
         panel.classList.add("hidden");
         btn.classList.remove("active");
     } else {
+        toggleProcessPanel(false);          // they share the right edge
+
         panel.classList.remove("hidden");
         btn.classList.add("active");
         if (currentGraphData) buildInputPanel(currentGraphData);
@@ -10538,7 +10738,7 @@ function _applyVisMutedInPlace() {
         });
         // params summary in bop-row header
         document.querySelectorAll(`.bop-row[data-bid="${b.id}"] .bop-params-summary`).forEach(el => {
-            el.textContent = _formatParamsSummary(b.params);
+            el.textContent = _formatParamsSummary(b.params, b.descriptor);
         });
     });
     // show-bent overlay
@@ -10657,7 +10857,7 @@ function renderBendingOpsSection(nodeData) {
 
         const summary = document.createElement("span");
         summary.className = "bop-params-summary";
-        summary.textContent = _formatParamsSummary(b.params);
+        summary.textContent = _formatParamsSummary(b.params, b.descriptor);
 
         const expandBtn = document.createElement("button");
         expandBtn.className = "bop-expand-btn";
@@ -11320,9 +11520,7 @@ async function _openBendDialog(nodeData) {
             nameLine.textContent = (b.name ? `${b.name} — ` : "") + b.node;
             const paramsLine = document.createElement("div");
             paramsLine.className = "bend-existing-params";
-            paramsLine.textContent = Object.entries(b.params || {})
-                .map(([k, v]) => `${k}=${typeof v === "number" ? v.toFixed(3) : v}`)
-                .join("  ·  ");
+            paramsLine.textContent = _formatParamsSummary(b.params, b.descriptor).split("  ").join("  ·  ");
 
             info.appendChild(nameLine);
             info.appendChild(paramsLine);
@@ -11656,7 +11854,87 @@ function _snapToChoices(v, choices) {
     return choices.reduce((best, c) => Math.abs(c - v) < Math.abs(best - v) ? c : best, choices[0]);
 }
 
+// A recalled snapshot's card offers to turn it into a mix; a mix's card shows
+// what it mixes, and its mode and dimension -- changed in place, the weights
+// (and whatever macro drives them) stay as they are.
+function _recallControls(binding) {
+    const box = document.createElement("div");
+    box.className = "recall-controls";
+    box.addEventListener("click", (e) => e.stopPropagation());
+    box.addEventListener("mousedown", (e) => e.stopPropagation());
+    const ctx = _snapCtx(binding.fn, binding.node);
+    if (binding.snapshot && !binding.mix) {
+        const line = document.createElement("span");
+        line.className = "recall-what";
+        line.textContent = `❄ ${binding.snapshot}`;
+        box.appendChild(line);
+        const btn = document.createElement("button");
+        btn.className = "snap-mix-btn";
+        btn.textContent = "⧉ mix…";
+        btn.title = "Mix this snapshot with others (and the live value)";
+        btn.addEventListener("click", () => _openMixDialog(ctx, btn));
+        box.appendChild(btn);
+        return box;
+    }
+    const mix = binding.mix;
+    const what = document.createElement("div");
+    what.className = "recall-what";
+    what.textContent = "⧉ " + mix.sources.join(" + ");
+    box.appendChild(what);
+    const row = document.createElement("div");
+    row.className = "recall-row";
+    const modeSel = document.createElement("select");
+    modeSel.className = "recall-mode";
+    const modes = (_mixModes && _mixModes.modes) || ["linear", "cosine", "slerp", "max", "min", "sweep"];
+    modes.forEach(m => modeSel.appendChild(new Option(m, m)));
+    modeSel.value = mix.mode;
+    modeSel.title = (_mixModes && _mixModes.help && _mixModes.help[mix.mode]) || "How the sources are mixed";
+    const dimIn = document.createElement("input");
+    dimIn.type = "number";
+    dimIn.step = 1;
+    dimIn.className = "recall-dim";
+    dimIn.placeholder = "all";
+    dimIn.value = mix.dim == null ? "" : mix.dim;
+    dimIn.title = "The dimension the mix works along (empty: the whole tensor)";
+    const send = async (body) => {
+        try {
+            const d = await _postSnapshotJSON(`/api/snapshots/mix/${encodeURIComponent(binding.id)}/`, body);
+            _syncBendingState(d);
+            _syncSnapBars();
+            await _refreshLiveViews();
+            _refreshModalIfOpen();
+        } catch (e) {
+            showToast("error", "Mix: " + e.message, e.traceback);
+            // back to what the mix is now -- not what it was when the card was drawn
+            const now = (_bendingBindings.find(x => x.id === binding.id) || binding).mix;
+            modeSel.value = now.mode;
+            dimIn.value = now.dim == null ? "" : now.dim;
+        }
+    };
+    modeSel.addEventListener("change", () => {
+        modeSel.title = (_mixModes && _mixModes.help && _mixModes.help[modeSel.value]) || "";
+        send({ mode: modeSel.value });
+    });
+    dimIn.addEventListener("change", () => send({ dim: dimIn.value === "" ? null : parseInt(dimIn.value, 10) }));
+    row.appendChild(document.createTextNode("mode "));
+    row.appendChild(modeSel);
+    row.appendChild(document.createTextNode(" dim "));
+    row.appendChild(dimIn);
+    const edit = document.createElement("button");
+    edit.className = "snap-mix-btn";
+    edit.textContent = "⧉ sources…";
+    edit.title = "Change what is mixed (resets the weights)";
+    edit.addEventListener("click", () => _openMixDialog(ctx, edit));
+    row.appendChild(edit);
+    box.appendChild(row);
+    _loadMixModes().then(() => {                      // the help, once it is in
+        modeSel.title = (_mixModes.help || {})[modeSel.value] || modeSel.title;
+    });
+    return box;
+}
+
 function _buildParamControls(container, binding, prefix) {
+    if (binding.snapshot || binding.mix) container.appendChild(_recallControls(binding));
     const desc = binding.descriptor || {};
     const ps   = desc.params || {};
     const isActivation = !((desc.weight_compatible) && !(desc.activation_compatible));
@@ -12899,9 +13177,12 @@ function _renderBendActModalView() {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-function _formatParamsSummary(params) {
+// "name=value" per parameter -- by its label when the callback gives one (a
+// mix's weights read "w · rain", not "w_0")
+function _formatParamsSummary(params, descriptor) {
+    const labels = (descriptor && descriptor.params) || {};
     return Object.entries(params || {})
-        .map(([k, v]) => `${k}=${typeof v === "number" ? v.toFixed(3) : v}`)
+        .map(([k, v]) => `${(labels[k] && labels[k].label) || k}=${typeof v === "number" ? v.toFixed(3) : v}`)
         .join("  ");
 }
 
@@ -13209,6 +13490,10 @@ document.addEventListener("DOMContentLoaded", () => {
     document.querySelectorAll("#update-mode-bar .update-mode-btn").forEach(b =>
         b.addEventListener("click", () => { if (b.dataset.mode !== _bendingUpdateMode) _setBendingMode(b.dataset.mode); }));
     _syncUpdateModeBar();
+    const _procBtn = document.getElementById("process-btn");
+    if (_procBtn) _procBtn.addEventListener("click", () => toggleProcessPanel());
+    const _procClose = document.getElementById("close-process-panel");
+    if (_procClose) _procClose.addEventListener("click", () => toggleProcessPanel(false));
     document.getElementById("viz-expand-btn").addEventListener("click", openExpandModal);
     document.getElementById("viz-save-btn").addEventListener("click", (e) => {
         if (!currentVizNode) return;

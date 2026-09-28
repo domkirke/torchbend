@@ -35,6 +35,9 @@
                 <button class="update-mode-btn" data-mode="live">live</button>
                 <button class="update-mode-btn" data-mode="manual">manual</button>
             </div>
+            <!-- the model's own account of how it works: shown when it has one -->
+            <button id="process-btn" class="process-btn" style="display:none"
+                    title="How this model works: its annotated steps, in order">?</button>
             <!-- manual mode: changes wait here until applied, all at once -->
             <button id="apply-all-btn" class="apply-all-btn" style="display:none"
                     title="Manual mode: send every pending bending and macro change, then recompute once"></button>
@@ -202,12 +205,6 @@
                 </div>
             </div>
 
-            <!-- the model's own account of its process: its annotated values, in order -->
-            <div class="sidebar-section" id="process-section" style="display:none">
-                <div class="section-title">Process</div>
-                <div id="process-list"></div>
-            </div>
-
             <div class="sidebar-section">
                 <div class="section-title">Legend</div>
                 <div class="legend-item">
@@ -308,6 +305,16 @@
                 <div id="graph-nav-code" style="display:none"></div>
             </div>
             <div id="graph-nav-next-hint" class="graph-nav-hint graph-nav-hint-next"></div>
+        </div>
+
+        <!-- Process pane (toggled by ?): the model's annotated steps, in order -->
+        <div id="process-panel" class="hidden">
+            <div id="process-panel-header">
+                <span class="section-title">Process</span>
+                <span id="process-panel-count" class="process-panel-count"></span>
+                <button id="close-process-panel" title="Close">×</button>
+            </div>
+            <div id="process-list"></div>
         </div>
 
         <!-- Input panel (toggled by + button) -->

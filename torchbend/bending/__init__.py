@@ -15,6 +15,6 @@ from .permute import Permute
 from .time import Reverse, Unphase
 from .filter import Filter
 from .interpolation import InterpolateActivation
-from .snapshot import Snapshot
+from .snapshot import Snapshot, Mix
 from .node_effects import ChangeNode
 from .utils import import_hacks_from_file

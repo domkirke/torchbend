@@ -174,3 +174,55 @@ def api_snapshot_release(request):
     if released:
         _bindings_changed()
     return JsonResponse({"ok": True, "released": released, **_binding_state(session)})
+
+
+@csrf_exempt
+def api_snapshot_mix(request):
+    """POST {fn, node, sources: [name | "live"], mode, dim, weights?} → mix them
+    into ``node`` (replacing whatever was recalled there)."""
+    from torchbend.bending.snapshot import MIX_MODES, MIX_MODE_HELP
+    if request.method == "GET":
+        return JsonResponse({"modes": list(MIX_MODES), "help": MIX_MODE_HELP})
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    bended_module = get_module()
+    session = V._get_bending_session()
+    if bended_module is None or session is None:
+        return JsonResponse({"error": "No module loaded"}, status=404)
+    body = _body(request)
+    fn = body.get("fn") or "forward"
+    node = V._view_base_node(body.get("node") or "")
+    if not node:
+        return JsonResponse({"error": "which node?"}, status=400)
+    try:
+        bid = session.mix_snapshots(bended_module, fn, node, list(body.get("sources") or []),
+                                    mode=body.get("mode") or "linear", dim=body.get("dim", 1),
+                                    weights=body.get("weights"))
+    except Exception as exc:
+        return V._error_json(exc, 400)
+    _bindings_changed()
+    return JsonResponse({"ok": True, "binding": bid, **_binding_state(session)})
+
+
+@csrf_exempt
+def api_snapshot_mix_update(request, bid):
+    """POST {mode?, dim?} → change a mix in place (its weights are kept)."""
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    bended_module = get_module()
+    session = V._get_bending_session()
+    if bended_module is None or session is None:
+        return JsonResponse({"error": "No module loaded"}, status=404)
+    body = _body(request)
+    try:
+        mix = session.update_mix(bended_module, bid, mode=body.get("mode"),
+                                 dim=body["dim"] if "dim" in body else "keep")
+    except KeyError as exc:
+        return JsonResponse({"error": str(exc)}, status=404)
+    except Exception as exc:
+        return V._error_json(exc, 400)
+    # a value changed, not the topology: invalidate what the mix feeds
+    b = session.bindings[bid]
+    V._play_mark_dirty(b.get("nodes", [b["node"]]))
+    V._sync_save_session()
+    return JsonResponse({"ok": True, "mix": mix, **_binding_state(session)})

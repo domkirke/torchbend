@@ -645,11 +645,13 @@ kbd {
     transition: transform 220ms ease;
 }
 #callback-panel.hidden,
+#process-panel.hidden,
 #input-panel.hidden {
     transform: translateX(100%);
 }
 
 #callback-panel-header,
+#process-panel-header,
 #input-panel-header {
     display: flex;
     align-items: center;
@@ -5005,6 +5007,7 @@ kbd {
 #node-info-tooltip {
     position: fixed;
     z-index: 9999;
+    color: #eceaf2;
     background: rgba(15, 15, 22, 0.92);
     border: 1px solid rgba(255,255,255,0.1);
     font-size: 11px;
@@ -7056,15 +7059,75 @@ kbd {
 .annot-meta { margin-top: 4px; border-collapse: collapse; font-size: 10px; }
 .annot-meta td { padding: 1px 6px 1px 0; vertical-align: top; }
 .annot-meta-key { color: var(--text-dim, #888); white-space: nowrap; }
-.nit-annot { display: block; max-width: 320px; white-space: normal; margin-top: 2px; }
-#process-list { display: flex; flex-direction: column; gap: 3px; }
-.process-step { display: flex; gap: 6px; align-items: flex-start; padding: 3px 4px; border-radius: 4px; cursor: pointer; font-size: 11px; }
-.process-step:hover { background: var(--bg-hover, #eef); }
-.process-step-hidden { opacity: 0.5; cursor: default; }
-.process-num {
-    flex: 0 0 auto; min-width: 16px; height: 16px; border-radius: 8px; background: #7a5cc4; color: #fff;
-    font-size: 10px; display: inline-flex; align-items: center; justify-content: center; padding: 0 3px;
+.nit-annot { display: block; max-width: 320px; white-space: normal; margin-top: 2px;
+             color: #e6e0f7; line-height: 1.45; }
+.nit-annot b { color: #c9b6ff; }
+/* the Process pane: slides in from the right, like the input panel */
+#process-panel {
+    position: absolute; right: 0; top: 44px; bottom: 0; width: 360px; z-index: 16;
+    background: var(--bg-panel); border-left: 1px solid var(--bg-border);
+    overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column;
+    transition: transform 220ms ease;
 }
-.process-title { font-weight: 600; }
-.process-desc { color: var(--text-dim, #777); font-size: 10px; line-height: 1.35;
-                display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.process-panel-count { margin-left: 6px; margin-right: auto; font-size: 10px; color: var(--text-dim, #888); }
+#close-process-panel { background: none; border: none; font-size: 16px; cursor: pointer; color: var(--text-dim, #888); }
+#close-process-panel:hover { color: var(--text, #222); }
+#process-list { display: flex; flex-direction: column; padding: 6px 10px 12px 10px; }
+.process-step { position: relative; padding: 6px 4px 8px 30px; border-radius: 5px; cursor: pointer; }
+.process-step:hover { background: var(--bg-hover, #eef); }
+.process-step.current { background: color-mix(in srgb, #7a5cc4 12%, transparent); }
+.process-step-hidden { opacity: 0.55; cursor: default; }
+/* the thread joining the steps */
+.process-step:not(:last-child)::before {
+    content: ""; position: absolute; left: 13px; top: 26px; bottom: -6px; width: 2px;
+    background: color-mix(in srgb, #7a5cc4 35%, transparent);
+}
+.process-num {
+    position: absolute; left: 3px; top: 6px; min-width: 20px; height: 20px; border-radius: 10px;
+    background: #7a5cc4; color: #fff; font-size: 11px; font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center; padding: 0 4px;
+}
+.process-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.process-title { font-weight: 600; font-size: 12px; }
+.process-node { margin-left: auto; font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--text-dim, #888); }
+.process-desc { font-size: 11px; line-height: 1.45; margin-top: 3px; color: var(--text, #333); }
+.process-step .annot-meta { margin-top: 5px; }
+/* the ? in the top bar */
+.process-btn {
+    margin-left: 10px; width: 22px; height: 22px; border-radius: 11px; padding: 0;
+    border: 1px solid #7a5cc4; background: none; color: #7a5cc4;
+    font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.process-btn:hover, .process-btn.active { background: #7a5cc4; color: #fff; }
+
+/* ── mixing snapshots ─────────────────────────────────────────────────────── */
+.snap-bar button { white-space: nowrap; flex-shrink: 0; }
+.snap-mix-btn {
+    background: var(--bg, #fff); border: 1px solid var(--border, #ccc); border-radius: 3px;
+    color: var(--text, #333); cursor: pointer; font: inherit; font-size: 10px; line-height: 1; padding: 2px 6px;
+}
+.snap-mix-btn:hover { border-color: #2c6fb3; color: #2c6fb3; }
+.mix-dialog {
+    position: fixed; z-index: 10050; width: 310px; padding: 10px 12px;
+    background: var(--bg-panel, #fff); border: 1px solid var(--border, #ccc); border-radius: 6px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.18); font-size: 11px; color: var(--text, #222);
+}
+.mix-title { font-weight: 600; margin-bottom: 6px; }
+.mix-sources { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; max-height: 160px; overflow: auto; }
+.mix-row { display: flex; align-items: center; gap: 4px; }
+.mix-dim { width: 52px; font: inherit; font-size: 11px; }
+.mix-hint { color: var(--text-dim, #888); font-size: 10px; margin: 2px 0 4px 0; }
+.mix-help { color: var(--text-dim, #666); font-size: 10px; line-height: 1.4; margin-bottom: 8px; }
+.mix-go { width: 100%; padding: 4px; border: none; border-radius: 4px; background: #2c6fb3; color: #fff;
+          font: inherit; font-size: 11px; font-weight: 600; cursor: pointer; }
+.mix-go:disabled { opacity: 0.5; cursor: default; }
+.recall-controls {
+    display: flex; flex-direction: column; gap: 4px; padding: 5px 7px; margin: 2px 0 6px 0;
+    border-left: 3px solid #2c6fb3; background: color-mix(in srgb, #2c6fb3 7%, transparent);
+    border-radius: 0 4px 4px 0; font-size: 11px;
+}
+.recall-controls:has(> .recall-what:only-of-type) { flex-direction: row; align-items: center; }
+.recall-what { font-weight: 600; color: #2c6fb3; overflow: hidden; text-overflow: ellipsis; }
+.recall-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.recall-mode { font-size: 11px; }
+.recall-dim { width: 48px; font: inherit; font-size: 11px; }

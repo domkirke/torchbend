@@ -607,11 +607,51 @@ class BendingSession:
         del self.snapshots[name]
 
     def recalled(self, fn: str, node: str):
-        """The binding that recalls a snapshot onto ``node``, as ``(id, binding)``."""
+        """The binding that recalls a snapshot -- or a mix of them -- onto
+        ``node``, as ``(id, binding)``. One per node."""
         for bid, b in self.bindings.items():
-            if b.get("snapshot") and b["fn"] == fn and node in b.get("nodes", [b["node"]]):
+            if (b.get("snapshot") or b.get("mix")) and b["fn"] == fn \
+                    and node in b.get("nodes", [b["node"]]):
                 return bid, b
         return None, None
+
+    def mix_snapshots(self, bended_module, fn: str, node: str, sources: list,
+                      mode: str = "linear", dim=1, weights=None) -> str:
+        """Mix several snapshots (and ``"live"``, the node's own value) into
+        ``node``: a :class:`~torchbend.bending.Mix` bending, one weight per
+        source. Replaces whatever was recalled there. Returns the binding id."""
+        from torchbend.bending.snapshot import Mix
+        if not sources:
+            raise ValueError("a mix needs at least one source")
+        tensors, names = [], []
+        for src in sources:
+            if src == "live":
+                tensors.append(None)
+                names.append("live")
+            elif src in self.snapshots:
+                tensors.append(self.snapshots[src]["tensor"])
+                names.append(src)
+            else:
+                raise KeyError("no snapshot named %r" % src)
+        dim = None if dim in (None, "") else int(dim)
+        callback = Mix.build(tensors, names, mode=mode, dim=dim, weights=weights)
+        old, _ = self.recalled(fn, node)
+        if old is not None:
+            self.remove_binding(bended_module, old)
+        try:
+            bended_module.bend(callback, node, fn=fn)
+        except Exception as exc:
+            raise ValueError(f"Could not mix into '{node}': {exc}") from exc
+        bid = str(uuid.uuid4())[:8]
+        self.bindings[bid] = {
+            "fn": fn, "node": node, "nodes": [node], "callback": callback,
+            "params": {k: float(callback.get(k)) for k in callback.controllable_params},
+            "bp_links": {}, "mix": {"sources": list(sources), "mode": mode, "dim": dim},
+            "name": "⧉ " + " + ".join(names),
+        }
+        self._invalidate_bent_module(fn)
+        self._mark_dirty_nodes(bended_module, fn, [node])
+        return bid
 
     def recall_snapshot(self, bended_module, name: str, fn: str, node: str,
                         mix: float = 1.0) -> str:
@@ -640,6 +680,35 @@ class BendingSession:
         self._mark_dirty_nodes(bended_module, fn, [node])
         return bid
 
+    def update_mix(self, bended_module, binding_id: str, mode=None, dim="keep") -> dict:
+        """Change a mix's mode and/or target dimension in place: its weights,
+        and any macro linked to them, are left as they are. ``dim=None`` means
+        the whole tensor; leave it out to keep the current one."""
+        from torchbend.bending.snapshot import MIX_MODES
+        b = self.bindings.get(binding_id)
+        if b is None or not b.get("mix"):
+            raise KeyError("binding %r is not a mix" % binding_id)
+        cb = b["callback"]
+        if mode is not None:
+            if mode not in MIX_MODES:
+                raise ValueError("unknown mix mode %r (have: %s)" % (mode, ", ".join(MIX_MODES)))
+            cb.mode = mode
+            b["mix"]["mode"] = mode
+        if dim != "keep":
+            dim = None if dim in (None, "") else int(dim)
+            if dim is not None:
+                try:
+                    shape = bended_module.activation_shape(b["node"], fn=b["fn"])
+                except Exception:
+                    shape = None
+                if shape is not None and not -len(shape) <= dim < len(shape):
+                    raise ValueError("dim %d is out of range for %s, of shape %s"
+                                     % (dim, b["node"], list(shape)))
+            cb.dim = dim
+            b["mix"]["dim"] = dim
+        self._mark_dirty_nodes(bended_module, b["fn"], b.get("nodes", [b["node"]]))
+        return dict(b["mix"])
+
     def release_snapshot(self, bended_module, fn: str, node: str) -> bool:
         """Take a recalled snapshot off ``node``: it follows the graph again."""
         bid, _ = self.recalled(fn, node)
@@ -650,7 +719,8 @@ class BendingSession:
 
     def release_snapshot_everywhere(self, bended_module, name: str) -> list:
         """Take snapshot ``name`` off every node it is recalled onto."""
-        gone = [bid for bid, b in self.bindings.items() if b.get("snapshot") == name]
+        gone = [bid for bid, b in self.bindings.items()
+                if b.get("snapshot") == name or name in ((b.get("mix") or {}).get("sources") or [])]
         for bid in gone:
             self.remove_binding(bended_module, bid)
         return gone
@@ -686,8 +756,9 @@ class BendingSession:
                 # constructor-only settings (dim, invert, ...): not live
                 # params, but part of what the bending does
                 "init_params":   _init_param_values(cb),
-                # a recalled snapshot: which one
+                # a recalled snapshot: which one; a mix: of what, how
                 "snapshot":      b.get("snapshot"),
+                "mix":           b.get("mix"),
             })
         return result
 
@@ -1328,6 +1399,7 @@ class BendingSession:
                 "bp_maps":       dict(b.get("bp_maps", {})),
                 "vis_muted":     bid in self.vis_muted,
                 "snapshot":      b.get("snapshot"),
+                "mix":           b.get("mix"),
             })
         bps = []
         for name, bp in self.bending_params.items():
@@ -1393,7 +1465,19 @@ class BendingSession:
         # Re-create bindings
         for b_data in data.get("bindings", []):
             try:
-                if b_data.get("snapshot"):
+                if b_data.get("mix"):
+                    mix = b_data["mix"]
+                    missing = [s for s in mix.get("sources", []) if s != "live" and s not in self.snapshots]
+                    if missing:
+                        logger.warning("mix on %s: snapshot(s) %s are gone, not restored",
+                                       b_data["node"], ", ".join(missing))
+                        continue
+                    params = b_data.get("params") or {}
+                    bid = self.mix_snapshots(
+                        bended_module, b_data["fn"], b_data["node"], mix["sources"],
+                        mode=mix.get("mode", "linear"), dim=mix.get("dim"),
+                        weights=[params.get("w_%d" % i, 1.0) for i in range(len(mix["sources"]))])
+                elif b_data.get("snapshot"):
                     # a recalled snapshot: its tensor is in self.snapshots (loaded
                     # before the session), not in the saved params
                     if b_data["snapshot"] not in self.snapshots:
