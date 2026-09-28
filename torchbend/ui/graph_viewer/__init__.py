@@ -1,6 +1,7 @@
 import threading
 
 from .node_views import NodeView   # re-exported as the public per-node view spec
+from .default_inputs import Expr, as_bench_value   # tb.ui.Expr — a default given as source
 
 default_app_config = "torchbend.ui.graph_viewer.apps.GraphViewerConfig"
 
@@ -43,10 +44,15 @@ class ModelEntry:
     """One slot in the multi-model registry — may be pre-loaded or lazily loaded."""
 
     def __init__(self, name, factory=None, module=None, memory_hint_mb=None,
-                 default_inputs=None, views=None, view_defaults=None):
+                 default_inputs=None, views=None, view_defaults=None, interface=None):
         self.name = name
         self.factory = factory          # () -> BendedModule, or None if pre-loaded
         self.module = module            # cached BendedModule
+        # The Interface the module came from, when it came from one.  Unwrapping
+        # to the BendedModule loses every method the interface adds — RAVE's
+        # audio round trip, GPT-2's generate — and those are exactly what a
+        # declared callback offers to the UI, so keep hold of it.
+        self.interface = interface
         self.memory_hint_mb = memory_hint_mb
         self.default_inputs = default_inputs or {}
         self.views = _normalize_views(views)   # {node: NodeView} for this model
@@ -136,6 +142,7 @@ class ModelRegistry:
                     result = entry.factory()
                     # Accept BendedModule or Interface; unwrap Interface to BendedModule.
                     bm = _unwrap(result)
+                    entry.interface = result if _is_interface(result) else None
                     if bm is None:
                         return False, (
                             f"Factory for '{name}' returned {type(result)}, "
@@ -162,6 +169,17 @@ def _is_bended_module(val):
 def _is_interface(val):
     """True for torchbend Interface objects (wrap a BendedModule as ._model)."""
     return hasattr(val, "_model") and _is_bended_module(getattr(val, "_model", None))
+
+def _own_default_inputs(val):
+    """A bare module's ``_default_inputs``. An interface declares its defaults
+    in its ``methods`` instead, read per method when the bench asks."""
+    return None if _is_interface(val) else getattr(val, "_default_inputs", None)
+
+
+def _as_interface(val):
+    """The value itself when it is an Interface, else None."""
+    return val if _is_interface(val) else None
+
 
 def _unwrap(val):
     """Return the BendedModule from a BendedModule or an Interface; else None."""
@@ -195,7 +213,14 @@ def _to_registry(arg):
         for name, val in arg.items():
             bm = _unwrap(val)
             if bm is not None:
-                entries.append(ModelEntry(name, module=bm))
+                # An interface can seed the bench too, not only a lazy factory:
+                # a model whose inputs have no signature default (Bark's fine
+                # stage needs a codebook index) otherwise opens with nothing to
+                # run on and no hint of what would be valid.
+                entries.append(ModelEntry(name, module=bm, interface=_as_interface(val),
+                                          default_inputs=_own_default_inputs(val),
+                                          views=getattr(val, "_views", None),
+                                          view_defaults=getattr(val, "_view_defaults", None)))
             elif callable(val):
                 di = getattr(val, '_default_inputs', None)
                 vi = getattr(val, '_views', None)
@@ -216,7 +241,11 @@ def _to_registry(arg):
                 hint = item[2] if len(item) >= 3 else None
                 bm = _unwrap(val)
                 if bm is not None:
-                    entries.append(ModelEntry(name, module=bm, memory_hint_mb=hint))
+                    entries.append(ModelEntry(name, module=bm, memory_hint_mb=hint,
+                                              interface=_as_interface(val),
+                                              default_inputs=_own_default_inputs(val),
+                                              views=getattr(val, "_views", None),
+                                              view_defaults=getattr(val, "_view_defaults", None)))
                 elif callable(val):
                     di = getattr(val, '_default_inputs', None)
                     vi = getattr(val, '_views', None)
@@ -228,7 +257,11 @@ def _to_registry(arg):
             else:
                 bm = _unwrap(item)
                 if bm is not None:
-                    entries.append(ModelEntry(_module_class_name(bm), module=bm))
+                    entries.append(ModelEntry(_module_class_name(bm), module=bm,
+                                              interface=_as_interface(item),
+                                              default_inputs=_own_default_inputs(item),
+                                              views=getattr(item, "_views", None),
+                                              view_defaults=getattr(item, "_view_defaults", None)))
                 else:
                     raise TypeError(f"Unexpected item in modules list: {type(item)}")
         return ModelRegistry(entries)
@@ -236,7 +269,7 @@ def _to_registry(arg):
     # Single BendedModule or Interface (backward compat)
     bm = _unwrap(arg)
     if bm is not None:
-        return ModelRegistry([ModelEntry(_module_class_name(bm), module=bm)])
+        return ModelRegistry([ModelEntry(_module_class_name(bm), module=bm, interface=_as_interface(arg))])
 
     raise TypeError(f"Unsupported modules argument type: {type(arg)}")
 
@@ -278,6 +311,24 @@ def get_module():
     return _REGISTRY.current
 
 
+def get_interface():
+    """The Interface behind the active model, or None if it is a bare module."""
+    if _REGISTRY is None:
+        return None
+    entry = _REGISTRY._entries.get(_REGISTRY._current_name)
+    return getattr(entry, "interface", None) if entry else None
+
+
+def get_snapshots(model=None) -> dict:
+    """The activations saved in the viewer, ``{name: tensor}``, for ``model``
+    (a registry name; the active model by default)."""
+    if _REGISTRY is None:
+        return {}
+    entry = _REGISTRY._entries.get(model or _REGISTRY.current_name)
+    session = getattr(entry, "session", None) if entry is not None else None
+    return {n: s["tensor"] for n, s in (getattr(session, "snapshots", None) or {}).items()}
+
+
 def set_default_inputs(defaults):
     global _DEFAULT_INPUTS
     _DEFAULT_INPUTS = dict(defaults) if defaults else {}
@@ -287,14 +338,37 @@ def get_default_inputs():
     return _DEFAULT_INPUTS
 
 
-def get_current_default_inputs():
+def get_current_default_inputs(fn=None):
     """Return per-model default inputs, falling back to the global defaults only when
-    there is no registry entry (single-model backward-compat path)."""
+    there is no registry entry (single-model backward-compat path).
+
+    An interface's own defaults (``Input(default=...)`` in its ``methods``) come
+    first -- ``fn``'s, or every method's when ``fn`` is None -- and the ones
+    given to the viewer override them."""
     if _REGISTRY is not None:
         entry = _REGISTRY._entries.get(_REGISTRY.current_name)
         if entry is not None:
-            return entry.default_inputs   # may be {} — don't inject another model's globals
+            declared = _interface_default_inputs(entry.interface, fn)
+            # may be {} — don't inject another model's globals
+            return {**declared, **(entry.default_inputs or {})}
     return _DEFAULT_INPUTS
+
+
+def _interface_default_inputs(iface, fn=None):
+    if iface is None:
+        return {}
+    try:
+        spec = iface.spec
+        methods = [fn] if fn is not None else list(iface.methods)
+        out = {}
+        for name in methods:
+            for key, value in spec.method(name).default_inputs().items():
+                out.setdefault(key, value)
+        return out
+    except Exception as exc:
+        import warnings
+        warnings.warn("default inputs of %s: %s" % (type(iface).__name__, exc))
+        return {}
 
 
 def set_views(views):

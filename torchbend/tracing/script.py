@@ -18,10 +18,24 @@ class ScriptedBendedException(Exception):
 
 
 import enum
-class ScriptableState(enum.Enum): 
-    Scriptable=False
-    NotScriptable=False
-    Unknown=True
+class ScriptableState(enum.Enum):
+    """Whether a module can be scripted.  Truthy means "go ahead and try".
+
+    The values have to be distinct: an Enum aliases members that share one, and
+    with ``Scriptable`` and ``NotScriptable`` both ``False`` they were literally
+    the same member -- ``ScriptableState.Scriptable is ScriptableState.NotScriptable``
+    -- so a model that reported itself scriptable was refused by ``script()``,
+    and RAVE's distinction between the two collapsed silently.
+    """
+    NotScriptable = 0    # falsy: script() refuses
+    Scriptable    = 1    # truthy
+    Unknown       = 2    # truthy: unverified, but let the user try
+
+    def __bool__(self):
+        # A plain Enum member is truthy whatever its value, so without this the
+        # `bool(self.scriptable)` guards never fired and every module -- however
+        # firmly it said otherwise -- was handed to torch.jit.script.
+        return self is not ScriptableState.NotScriptable
 
 
 former_method_template = """

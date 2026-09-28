@@ -151,6 +151,28 @@ def _find_clean_frontier(
     return list(frontier) if frontier else None
 
 
+def _computed_on_the_way(graph, target_names: List[str], stop_at) -> Set[str]:
+    """Names of the nodes a run computes in order to produce ``target_names``.
+
+    The backward walk a slice does: from the targets, through ``all_input_nodes``,
+    cutting at ``stop_at`` (the frontier, whose values arrive as inputs and are
+    not recomputed). These are the nodes that could be kept at no extra cost.
+    """
+    node_map = {n.name: n for n in graph.nodes}
+    stop_at = set(stop_at or ())
+    seen: Set[str] = set()
+    stack = [node_map[t] for t in target_names if t in node_map]
+    while stack:
+        node = stack.pop()
+        if node.name in seen:
+            continue
+        seen.add(node.name)
+        if node.name in stop_at:
+            continue
+        stack.extend(node.all_input_nodes)
+    return seen
+
+
 # ── slice compilation ─────────────────────────────────────────────────────────
 
 def _compiled_slice(cache, fn: str, module, graph,
@@ -526,6 +548,7 @@ def run_activations_with_cache(
     pinned_nodes: Optional[Set[str]] = None,
     bent_module=None,
     bent_graph=None,
+    retain: Optional[Set[str]] = None,
 ) -> Tuple[Dict[str, torch.Tensor], Optional[str]]:
     """Lazily compute and return activations for *target_nodes* only.
 
@@ -536,10 +559,19 @@ def run_activations_with_cache(
         computed via the minimal subgraph (from its nearest clean ancestor).
         If None, no new computation is triggered — only already-clean entries
         are returned.
+    retain:
+        Names of nodes worth keeping (an interface's joints — see
+        ``Method(retain=...)``). Any of them that the run computes on the
+        way to a target is stored too, though not returned: it was computed
+        anyway, and later requests — the node itself, or anything downstream of
+        a bending — then resume from it instead of from the inputs. Only the
+        nodes a run passes through qualify, so retaining adds memory and no
+        computation. Retained nodes are pinned, so eviction takes them last.
     """
     input_id = _hash_inputs(kwargs)
+    retain = set(retain or ())
     cache.set_bended_nodes(bended_nodes or set())
-    cache.set_pinned(pinned_nodes or set())
+    cache.set_pinned(set(pinned_nodes or ()) | retain)
 
     with actlog.step("cache.request",
                      "fn=%s  targets=%s  input=%s"
@@ -578,17 +610,30 @@ def run_activations_with_cache(
             if to_compute:
                 cache_entry = cache._entries.get((fn, input_id), {})
                 frontier = _find_clean_frontier(bended_graph, to_compute, cache_entry)
+                frontier_tensors = {
+                    n: t for n in (frontier or ())
+                    if (t := cache.get_clean(fn, input_id, n)) is not None
+                }
+
+                # Joints this run passes through: computed on the way anyway, so
+                # ask for them too and keep them. Decided before the run, since
+                # they are extra outputs of the same slice.
+                extras: List[str] = []
+                if retain:
+                    on_the_way = _computed_on_the_way(bended_graph, to_compute, frontier)
+                    extras = [n for n in all_act_names
+                              if n in retain and n in on_the_way and n not in to_compute
+                              and not cache.is_clean(fn, input_id, n)]
+                    if extras:
+                        actlog.log("retain   %s (computed on the way, kept)", actlog.fmt_names(extras))
+                compute = to_compute + extras
 
                 computed: Optional[Dict[str, torch.Tensor]] = None
                 if frontier:
                     actlog.log("frontier %s  → resume from nearest clean ancestor(s)",
                                actlog.fmt_names(sorted(frontier)))
-                    frontier_tensors = {
-                        n: t for n in frontier
-                        if (t := cache.get_clean(fn, input_id, n)) is not None
-                    }
                     computed = _compute_from_frontier(
-                        bended_module, fn, to_compute, frontier, frontier_tensors, kwargs,
+                        bended_module, fn, compute, frontier, frontier_tensors, kwargs,
                         bent_module=bent_module, bent_graph=bended_graph, cache=cache,
                     )
                 elif actlog.enabled():
@@ -612,9 +657,9 @@ def run_activations_with_cache(
                     # Use pre-built module/graph when available to avoid redundant deep-copy.
                     m = bent_module if bent_module is not None else bended_module.bend_module(fn=fn)
                     with actlog.step("cache.full_run",
-                                     "targets=%s" % actlog.fmt_names(to_compute)):
+                                     "targets=%s" % actlog.fmt_names(compute)):
                         try:
-                            gm = _compiled_slice(cache, fn, m, bended_graph, [], to_compute)
+                            gm = _compiled_slice(cache, fn, m, bended_graph, [], compute)
                             fn_method = getattr(gm, fn)
                             _t0 = actlog.tick()
                             inputs_obj = bended_module.inputs_for_fn(fn_method, kwargs)
@@ -622,10 +667,10 @@ def run_activations_with_cache(
                             actlog.log("run FROM INPUTS (whole prefix recomputed)  %s",
                                        actlog.tock(_t0))
                             if isinstance(outs, torch.Tensor):
-                                computed = {to_compute[0]: outs.detach()}
+                                computed = {compute[0]: outs.detach()}
                             elif isinstance(outs, (tuple, list)):
-                                computed = {to_compute[i]: outs[i].detach()
-                                            for i in range(min(len(to_compute), len(outs)))
+                                computed = {compute[i]: outs[i].detach()
+                                            for i in range(min(len(compute), len(outs)))
                                             if isinstance(outs[i], torch.Tensor)}
                             else:
                                 computed = {}
@@ -634,6 +679,8 @@ def run_activations_with_cache(
                                        type(e).__name__, e, level=logging.WARNING)
                             warnings.warn(f"[ActivationCache] BendedGraphModule run failed ({e}), falling back to get_activations")
                             try:
+                                # what was asked for, without the extras: the
+                                # retry is about getting an answer, not keeping more
                                 raw = bended_module.get_activations(*to_compute, fn=fn, **kwargs)
                             except Exception:
                                 # The retry is the same computation by another
@@ -645,10 +692,23 @@ def run_activations_with_cache(
                             computed = {k: v.detach() for k, v in raw.items() if isinstance(v, torch.Tensor)}
                         actlog.log_tensors(computed, prefix="→ ")
 
-                ok, err = cache.store(fn, input_id, computed)
+                asked = {k: v for k, v in computed.items() if k not in extras}
+                ok, err = cache.store(fn, input_id, asked)
                 if not ok:
                     warn_msg = err
                     freshly_computed = computed  # return even if we couldn't cache
+                kept = {k: v for k, v in computed.items() if k in extras}
+                if ok and kept:
+                    # best effort, and never at the expense of what was just
+                    # asked for: a joint that does not fit is simply not kept
+                    room = cache.max_bytes - cache.used_bytes()
+                    need = sum(t.numel() * t.element_size() for t in kept.values())
+                    if need <= room:
+                        cache.store(fn, input_id, kept)
+                    else:
+                        actlog.log("retain   skipped — %s needed, %s free",
+                                   actlog.fmt_bytes(need), actlog.fmt_bytes(room),
+                                   level=logging.WARNING)
             elif actlog.enabled():
                 unknown = [n for n in target_nodes if n not in all_act_names]
                 actlog.log("nothing to compute — %s",

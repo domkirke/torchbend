@@ -9,7 +9,10 @@ from collections import OrderedDict
 import abc
 import os
 from ..tracing import BendedWrapper, BendedModule, ScriptableState
+from ..sample_rates import (SampleRateError, SampleRateMixin,
+                            normalize_sample_rates, resolve_sample_rate)
 from .. import _TORCHBEND_DEFAULT_MODEL_DIR
+from .spec import BendingInterfaceException, InterfaceSpec, SpecError, check_class
 
 def wrap_model_method(ext, func, hook=None):
     @functools.wraps(func)
@@ -33,8 +36,6 @@ from pathlib import Path
 
 
 
-class BendingInterfaceException(Exception):
-    pass
 
 def _get_name_from_url(url):
     out = re.match("^.*=(.+).(pkl|ckpt|pth)", urllib.parse.urlparse(url).query)
@@ -58,8 +59,62 @@ def name_from_type(cls):
 
     
 
-class Interface(object):
+class Interface(SampleRateMixin, object):
+    """A model, traced, with what it knows about itself declared alongside.
+
+    The declarations -- ``methods``, ``options``, ``callbacks``, ``tokens`` --
+    are built from :mod:`torchbend.interfaces.spec` and read through
+    :attr:`spec`; see that module for the whole vocabulary.
+    """
+
     _imported_callbacks_ = []
+
+    #: ``{fn: Method(...)}``: the traced methods, their inputs, outputs,
+    #: batching, device support and retained activations.
+    methods = {}
+    #: ``{name: Option(...)}``: settings that outlive any one call.
+    options = {}
+    #: ``{name: Callback(...)}``: interface methods a UI can run.
+    callbacks = {}
+    #: ``Tokens(...)``: how token ids read as text, when the model has any.
+    tokens = None
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        check_class(cls)
+
+    @property
+    def spec(self) -> InterfaceSpec:
+        """The declarations, validated against this interface, to query.
+
+        Rebuilt when an instance swaps a declaration for its own (an interface
+        whose graphs are chosen at construction does), kept otherwise.
+        """
+        key = (id(self.methods), id(self.options), id(self.callbacks), id(self.tokens))
+        cached = self.__dict__.get("_spec_cache")
+        if cached is None or cached[0] != key:
+            cached = (key, InterfaceSpec(self))
+            self.__dict__["_spec_cache"] = cached
+        return cached[1]
+
+    def on_inputs(self, fn, kwargs):
+        """Called with the inputs each viewer run uses. Override to remember them.
+
+        A callback receives only its own declared arguments, so without this an
+        interface has no way to act on *what the graph is currently running on*.
+        BLIP captions the image sitting in the input bench; it learns which one
+        from here. Must not raise -- it is a notification, not a step in the run.
+        """
+
+    def sample_rate_for(self, node, fn=None, shape=None):
+        """The rate ``node`` is audio at: a declared :class:`~.spec.Audio`
+        output first, then ``_sample_rates_``."""
+        for name in ([fn] if fn is not None else list(self.methods)):
+            if name in self.methods:
+                rate = self.spec.method(name).output_rate(node)
+                if rate:
+                    return rate
+        return super().sample_rate_for(node, fn=fn, shape=shape)
 
     def __init__(self, model):
         self.model = model

@@ -28,9 +28,14 @@ def _safe_dir_name(name: str) -> str:
 def _serialize_inputs(inputs: dict) -> dict:
     """Convert {name: tensor|scalar} to a JSON-safe dict."""
     import torch
+    from .default_inputs import Expr
     out = {}
     for k, v in inputs.items():
-        if isinstance(v, torch.Tensor):
+        if isinstance(v, Expr):
+            # kept as source, not as whatever it evaluated to: the point of an
+            # Expr is that the expression is the input
+            out[k] = {"__type__": "expr", "value": v.source}
+        elif isinstance(v, torch.Tensor):
             out[k] = {
                 "__type__": "tensor",
                 "dtype": str(v.dtype).replace("torch.", ""),
@@ -49,10 +54,13 @@ def _serialize_inputs(inputs: dict) -> dict:
 
 def _deserialize_inputs(raw: dict) -> dict:
     import torch
+    from .default_inputs import Expr
     out = {}
     for k, v in raw.items():
         t = v.get("__type__")
-        if t == "tensor":
+        if t == "expr":
+            out[k] = Expr(v["value"])
+        elif t == "tensor":
             dtype = getattr(torch, v.get("dtype", "float32"), torch.float32)
             out[k] = torch.tensor(v["data"], dtype=dtype)
         elif t == "scalar":
@@ -142,7 +150,7 @@ class SyncManager:
     def compute_fingerprint(self, bm, graph: dict | None = None) -> dict:
         if graph is None:
             from . import serializer
-            graph = serializer.serialize_graph(bm)
+            graph = serializer.serialize_graph(bm, display=serializer.RAW)
         return {
             "class_name": type(bm._module).__name__,
             "graph_hash": _graph_hash(graph),
@@ -189,6 +197,32 @@ class SyncManager:
         p = self.model_dir(name) / "session.json"
         if p.exists():
             p.unlink()
+
+    # ── activation snapshots ──────────────────────────────────────────────────
+    # Tensors, so torch.save rather than JSON: they are what a later session
+    # interpolates between, and a restart must not lose them.
+
+    def save_snapshots(self, name: str, snapshots: dict) -> None:
+        import torch
+        path = self.model_dir(name) / "snapshots.pt"
+        try:
+            if snapshots:
+                torch.save(snapshots, str(path))
+            elif path.exists():
+                path.unlink()
+        except Exception as exc:
+            print(f"[sync] Warning: could not save snapshots for '{name}': {exc}")
+
+    def load_snapshots(self, name: str) -> dict:
+        import torch
+        path = self.model_dir(name) / "snapshots.pt"
+        if not path.exists():
+            return {}
+        try:
+            return dict(torch.load(str(path), weights_only=False))
+        except Exception as exc:
+            print(f"[sync] Warning: could not load snapshots for '{name}': {exc}")
+            return {}
 
     # ── inputs ────────────────────────────────────────────────────────────────
 
@@ -253,7 +287,7 @@ def startup_sync_check(registry, sync_manager: SyncManager) -> None:
         bm = entry.module
         graph = None
         try:
-            graph = _ser.serialize_graph(bm)
+            graph = _ser.serialize_graph(bm, display=_ser.RAW)
         except Exception as exc:
             print(f"[sync] Warning: could not serialize graph for '{name}': {exc}")
 
@@ -375,7 +409,7 @@ def post_load_sync_check(name: str, entry, sync_manager: SyncManager) -> None:
     graph = None
     try:
         from . import serializer as _ser
-        graph = _ser.serialize_graph(bm)
+        graph = _ser.serialize_graph(bm, display=_ser.RAW)
     except Exception:
         pass
 

@@ -5,7 +5,69 @@ treated as **batched**: a tensor is only unsqueezed to reach the minimum batched
 rank 2, so rank maps directly to a taxonomy — ``2D = B×N``, ``3D = B×C×N``,
 ``4D = B×C×H×W``.
 """
+import contextvars
+
 import torch
+
+
+# ── token decoding ────────────────────────────────────────────────────────────
+# Whether ids can be shown as text depends on the model, not on the tensor, and
+# `ViewType.accepts` is asked before any per-request context exists. The active
+# interface's decoder is published here for the length of one serialization.
+_TOKEN_DECODER = contextvars.ContextVar("tb_token_decoder", default=None)
+
+
+def set_token_decoder(fn):
+    return _TOKEN_DECODER.set(fn)
+
+
+def reset_token_decoder(token):
+    _TOKEN_DECODER.reset(token)
+
+
+def token_decoder():
+    """The active interface's ``spec.tokens.decode``, or None if it declares none."""
+    return _TOKEN_DECODER.get()
+
+
+_TOKEN_EOS = contextvars.ContextVar("tb_token_eos", default=None)
+
+
+def set_token_eos(eos_id):
+    return _TOKEN_EOS.set(eos_id)
+
+
+def reset_token_eos(token):
+    _TOKEN_EOS.reset(token)
+
+
+def token_eos_id():
+    """The active tokenizer's end-of-sequence id, if it has one."""
+    return _TOKEN_EOS.get()
+
+
+# A decoder alone isn't enough to tell a real logits/id tensor apart from any
+# other tensor that happens to have a matching rank and a wide enough last
+# dim — a vision model's patch embeddings are ``[B, N, 768]`` too, and would
+# get argmaxed and "decoded" into nonsense (mostly a tokenizer's reserved
+# ``[unusedN]`` ids, since those sit at the low end of the vocabulary and an
+# out-of-vocabulary argmax lands there disproportionately often). Publishing
+# the real vocabulary size lets ``TextView.accepts`` require a match instead
+# of guessing from shape alone.
+_TOKEN_VOCAB_SIZE = contextvars.ContextVar("tb_token_vocab_size", default=None)
+
+
+def set_token_vocab_size(size):
+    return _TOKEN_VOCAB_SIZE.set(size)
+
+
+def reset_token_vocab_size(token):
+    _TOKEN_VOCAB_SIZE.reset(token)
+
+
+def token_vocab_size():
+    """The active tokenizer's vocabulary size, if known."""
+    return _TOKEN_VOCAB_SIZE.get()
 
 
 def as_batched(t: torch.Tensor) -> torch.Tensor:

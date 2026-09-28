@@ -1,0 +1,3 @@
+# coqui TTS pins python<3.12; XTTS-v2 weights are fetched from the Hub on first use
+TTS>=0.22.0
+huggingface_hub

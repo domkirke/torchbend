@@ -1,0 +1,837 @@
+/* TorchBend — Play mode styles (layers on top of style.css) */
+
+.play-body { overflow: hidden; }
+
+.play-badge {
+    color: #fff;
+    background: var(--accent);
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-size: 11px;
+    font-weight: bold;
+}
+
+#play-method-selector {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+#play-topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
+}
+
+.play-ctl {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--text-dim);
+}
+.play-ctl select {
+    font: inherit;
+    font-size: 11px;
+    padding: 2px 4px;
+    border: 1px solid var(--bg-border);
+    border-radius: 4px;
+    background: var(--bg-panel);
+    color: var(--text);
+}
+
+#play-recompile, #play-back, #play-orient {
+    background: transparent;
+    border: 1px solid var(--bg-border);
+    color: var(--text-dim);
+    padding: 3px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    text-decoration: none;
+}
+#play-recompile:hover, #play-back:hover, #play-orient:hover { border-color: var(--accent); color: var(--text); }
+
+.play-mode-badge {
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-weight: bold;
+    letter-spacing: 0.02em;
+}
+.play-mode-badge.scripted { background: #e6f4ea; color: #1e7e34; border: 1px solid #b6e0c2; }
+.play-mode-badge.eager    { background: #fdf0e3; color: #b06a17; border: 1px solid #f0d2a8; }
+
+/* status bar */
+#play-status-bar {
+    position: absolute;
+    top: 44px; left: 0; right: 0;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 14px;
+    font-size: 11px;
+    color: var(--text-dim);
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--bg-border);
+    z-index: 15;
+}
+.play-perf { margin-left: auto; color: var(--accent); font-weight: bold; }
+
+/* three-pane layout — order: input · macros · output */
+#play-layout {
+    position: absolute;
+    top: 70px; left: 0; right: 0; bottom: 0;
+    display: grid;
+    grid-template-columns: minmax(240px, 1fr) minmax(220px, 0.9fr) minmax(300px, 1.6fr);
+    gap: 1px;
+    background: var(--bg-border);
+}
+/* rows orientation: panes stacked top→bottom, each full width (good for 1-D signals) */
+#play-layout.orient-rows {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(90px, 26%) minmax(90px, 22%) 1fr;
+}
+.play-pane {
+    background: var(--bg);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+.play-pane-header {
+    position: sticky;
+    top: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: bold;
+    color: var(--text);
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--bg-border);
+    z-index: 2;
+}
+.play-pill {
+    background: var(--bg-hover);
+    color: var(--text-dim);
+    border-radius: 9px;
+    padding: 0 7px;
+    font-size: 10px;
+    font-weight: normal;
+}
+.play-empty {
+    padding: 24px 16px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.6;
+    text-align: center;
+}
+
+/* macros */
+#play-macros { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.play-macro {
+    background: var(--bg-panel);
+    border: 1px solid var(--bg-border);
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+.play-macro-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.play-macro-name { font-weight: bold; color: var(--text); font-size: 12px; }
+.play-macro-tags { margin-left: auto; display: flex; gap: 4px; }
+.play-tag {
+    font-size: 9px; padding: 1px 5px; border-radius: 3px;
+    background: var(--bg-hover); color: var(--text-dim);
+}
+.play-tag.fast { background: #e6f4ea; color: #1e7e34; }
+.play-tag.slow { background: #fdf0e3; color: #b06a17; }
+.play-macro-row { display: flex; align-items: center; gap: 8px; }
+.play-macro-slider { flex: 1; }
+.play-macro-num {
+    width: 70px; font: inherit; font-size: 11px;
+    border: 1px solid var(--bg-border); border-radius: 4px; padding: 2px 4px;
+    background: var(--bg); color: var(--text);
+}
+.play-macro-val { min-width: 54px; text-align: right; color: var(--accent); font-size: 11px; }
+.play-macro-toggle { width: 16px; height: 16px; }
+
+/* input bench */
+#play-inputs { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.play-batch-toggle { margin-left: auto; font-size: 11px; font-weight: normal; color: var(--text-dim); display: flex; align-items: center; gap: 4px; }
+.play-input {
+    background: var(--bg-panel);
+    border: 1px solid var(--bg-border);
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+.play-input-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.play-input-name { font-weight: bold; color: #4A90D9; font-size: 12px; }
+.play-input-shape { color: var(--text-muted); font-size: 10px; }
+/* the first button in the head starts the right-hand cluster (import, remove) */
+.play-input-head .play-mini-btn:first-of-type { margin-left: auto; }
+.play-input-col { display: flex; flex-direction: column; gap: 5px; margin-top: 5px; }
+.play-input-entry { display: flex; align-items: center; gap: 6px; }
+.play-img-widget { display: block; }
+.play-input-expr {
+    flex: 1; font: inherit; font-size: 11px; resize: vertical;
+    border: 1px solid var(--bg-border); border-radius: 4px; padding: 4px 6px;
+    background: var(--bg); color: var(--text); min-height: 26px;
+}
+.play-file-chip {
+    flex: 1; font-size: 11px; color: var(--text-dim);
+    background: var(--bg-hover); border-radius: 4px; padding: 4px 8px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.play-mini-btn {
+    background: transparent; border: 1px solid var(--bg-border); color: var(--text-dim);
+    border-radius: 4px; padding: 2px 7px; cursor: pointer; font: inherit; font-size: 10px;
+}
+.play-mini-btn:hover { border-color: var(--accent); color: var(--text); }
+.play-mini-btn.danger:hover { border-color: #d9534f; color: #d9534f; }
+
+/* output / transport */
+#play-transport { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.play-mode-switch { display: flex; border: 1px solid var(--bg-border); border-radius: 4px; overflow: hidden; }
+.play-mode-switch button {
+    background: transparent; border: none; color: var(--text-dim);
+    padding: 3px 9px; cursor: pointer; font: inherit; font-size: 10px;
+}
+.play-mode-switch button.active { background: var(--accent); color: #fff; }
+.play-run-btn {
+    background: #5CB85C; border: 1px solid #4cae4c; color: #fff;
+    padding: 3px 12px; border-radius: 4px; cursor: pointer; font: inherit;
+    font-size: 11px; font-weight: bold;
+}
+.play-run-btn:hover { background: #4cae4c; }
+.play-run-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* ── run feedback ─────────────────────────────────────────────────────────── */
+/* status-bar pill, lit for as long as a forward pass is in flight */
+.play-busy {
+    display: none;
+    align-items: center;
+    gap: 5px;
+    margin-left: 10px;
+    font-size: 10px;
+    color: var(--accent);
+}
+.play-busy.on { display: inline-flex; }
+.play-busy-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor;
+    animation: play-pulse 900ms ease-in-out infinite;
+}
+@keyframes play-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+@keyframes play-spin  { to { transform: rotate(360deg); } }
+
+/* An output already on screen is the *previous* one while a new is computed:
+   dim it and spin in the header. (Only then — with nothing on screen yet the
+   pane shows its own spinner below, and two would just be noise.) */
+#play-output-pane.is-busy.has-output #play-output { opacity: 0.45; transition: opacity 120ms; }
+#play-output-pane.is-busy.has-output .play-pane-header::after {
+    content: "";
+    width: 12px; height: 12px;
+    margin-left: 8px;
+    border: 2px solid var(--bg-border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: play-spin 700ms linear infinite;
+}
+
+/* first run / recompile: the pane itself waits, instead of telling the user to
+   press Generate while the model is already working */
+.play-computing {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 28px 12px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.play-computing-spinner {
+    width: 16px; height: 16px;
+    border: 2px solid var(--bg-border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: play-spin 700ms linear infinite;
+}
+
+#play-output { padding: 10px; display: flex; flex-direction: column; gap: 12px; }
+.play-out {
+    background: var(--bg-panel);
+    border: 1px solid var(--bg-border);
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+.play-out-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.play-out-label { font-weight: bold; color: var(--text); font-size: 12px; }
+.play-out-shape { color: var(--text-muted); font-size: 10px; }
+.play-out-head .play-mini-btn { margin-left: auto; }
+.play-canvas { display: block; border: 1px solid var(--bg-border); border-radius: 4px; margin: 2px 0; max-width: 100%; }
+.play-canvas-img {
+    display: block;
+    border: 1px solid var(--bg-border);
+    border-radius: 4px;
+    margin: 2px;
+    image-rendering: pixelated;   /* crisp upscaling for small images (e.g. MNIST) */
+    max-width: 100%;
+}
+.play-scalar { font-size: 22px; font-weight: bold; color: var(--accent); padding: 8px; }
+.play-grid { display: flex; flex-wrap: wrap; gap: 4px; }
+.play-unsupported { color: var(--text-muted); font-size: 11px; padding: 8px; font-style: italic; }
+.play-audio { width: 100%; margin-top: 8px; }
+
+/* toast */
+.play-toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: #1c1c1e; color: #fff; padding: 9px 16px; border-radius: 6px;
+    font-size: 12px; opacity: 0; pointer-events: none; transition: opacity 160ms, transform 160ms;
+    z-index: 100; max-width: 70%;
+}
+.play-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.play-toast.error { background: #d9534f; }
+
+.play-batch-hint { margin-left: auto; font-size: 10px; font-weight: normal; color: var(--text-muted); }
+
+/* ── input bench: add / import / optional controls ───────────────────────── */
+.play-mini-select {
+    font: inherit; font-size: 10px; font-weight: normal;
+    padding: 2px 4px; max-width: 190px;
+    border: 1px solid var(--bg-border); border-radius: 4px;
+    background: var(--bg-panel); color: var(--text-dim);
+    cursor: pointer;
+}
+.play-mini-select:hover { border-color: var(--accent); color: var(--text); }
+
+/* an optional argument is a guest in the bench — dashed edge, so it reads as
+   "added on purpose, removable" next to the required inputs */
+.play-input-optional { border-style: dashed; }
+.play-input-kind {
+    font-size: 9px; padding: 1px 5px; border-radius: 3px;
+    background: var(--bg-hover); color: var(--text-dim);
+}
+.play-input-kind.kind-image { background: #eaf1fb; color: #2f6cb5; }
+.play-input-kind.kind-audio { background: #eef7ee; color: #3d7a3d; }
+.play-input-kind.kind-tokens  { background: #fdf0e3; color: #a75a11; }
+.play-input-kind.kind-indices { background: #fbeade; color: #8c4409; }
+.play-input-kind.kind-mask    { background: #e6f5f2; color: #16736a; }
+.play-input-kind.kind-tensor  { background: #eef0f2; color: #4a5764; }
+.play-input-opt-tag {
+    font-size: 9px; padding: 1px 5px; border-radius: 3px;
+    background: #fdf0e3; color: #b06a17;
+}
+.play-input-adder {
+    margin-top: 6px; padding-top: 6px;
+    border-top: 1px dashed var(--bg-border);
+    display: flex; flex-direction: column; gap: 5px;
+}
+/* the editor's drop zone, sized down for the narrower play pane */
+.play-input-adder .upload-area { padding: 10px 8px; font-size: 11px; }
+.play-input-adder .input-or-sep { font-size: 10px; margin: 0; }
+.play-input-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.play-audio-widget { display: block; }
+/* an argument the trace folded away: the control is there, but inert until a
+   re-trace — say so instead of letting it look live */
+.play-input-baked-tag {
+    font-size: 9px; padding: 1px 5px; border-radius: 3px;
+    background: #fbe9e9; color: #b23b3b;
+}
+
+/* ── bench layout ──────────────────────────────────────────────────────────
+   The panes are narrow in columns mode and short in rows mode, so every
+   toolbar wraps rather than pushing its tail out of sight. */
+.play-pane-header { flex-wrap: wrap; row-gap: 4px; }
+
+/* run-shaping controls (resample, batch mode) on their own quiet row, so the
+   header carries only what names the pane */
+.play-bench-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    flex-shrink: 0;          /* a flex column would otherwise squash it */
+    gap: 6px;
+    padding: 5px 12px;
+    border-bottom: 1px solid var(--bg-border);
+    background: var(--bg);
+}
+.play-bench-bar .play-batch-hint { margin-left: auto; }
+
+/* In rows orientation the panes are wide and short: one column would put most
+   cards below the fold. Flow them instead. */
+#play-layout.orient-rows #play-inputs,
+#play-layout.orient-rows #play-macros {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    align-items: start;
+}
+
+/* the folded add block */
+.play-adder-toggle { margin-top: 6px; width: 100%; padding: 3px 7px; }
+
+/* a macro the picker just brought in, so it is findable in a long list */
+.play-macro.flash {
+    animation: play-macro-flash 1.2s ease-out;
+}
+@keyframes play-macro-flash {
+    0%   { border-color: var(--accent); background: rgba(74, 144, 217, 0.20); }
+    100% { border-color: var(--bg-border); background: var(--bg-panel); }
+}
+
+/* the value a normalised macro's 0…1 currently maps to on its target */
+.play-macro-mapped {
+    min-width: 54px;
+    text-align: right;
+    font-size: 10px;
+    color: var(--text-muted);
+}
+
+/* ── derived values ────────────────────────────────────────────────────────
+   One macro reads 0…1 and lands on a different number at every attachment;
+   this folds open to show all of them at once. */
+.play-derived {
+    margin-top: auto;                  /* sits at the foot of the macros pane */
+    border-top: 1px solid var(--bg-border);
+    background: var(--bg-panel);
+    flex-shrink: 0;
+}
+.play-derived-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 6px 12px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: left;
+}
+.play-derived-head:hover { color: var(--text); }
+.play-derived-caret { font-size: 9px; width: 10px; }
+.play-derived-body {
+    max-height: 40vh;
+    overflow-y: auto;
+    padding: 0 12px 8px;
+}
+.play-derived-group + .play-derived-group { margin-top: 8px; }
+.play-derived-macro {
+    font-size: 10px;
+    font-weight: bold;
+    color: var(--accent);
+    padding: 3px 0 2px;
+}
+.play-derived-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 1px 0 1px 8px;
+    font-size: 11px;
+}
+.play-derived-target {
+    flex: 1; min-width: 0;
+    color: var(--text-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.play-derived-range { font-size: 9px; color: var(--text-muted); white-space: nowrap; }
+.play-derived-value {
+    min-width: 62px; text-align: right;
+    color: var(--text); font-weight: bold;
+}
+
+
+/* ── bendings ──────────────────────────────────────────────────────────────
+   A bending's parameters are playable as they are; a macro is for tying
+   several together, not a toll to pay first. */
+.play-subhead { font-size: 11px; font-weight: bold; color: var(--text); }
+#play-bendings { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.play-bind {
+    background: var(--bg-panel);
+    border: 1px solid var(--bg-border);
+    border-radius: 6px;
+    padding: 6px 9px;
+}
+.play-bind-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.play-bind-type { font-size: 11px; font-weight: bold; color: #F0AD4E; }
+.play-bind-node { font-size: 10px; color: var(--text-muted); }
+.play-bind-head .play-mini-btn { margin-left: auto; }
+.play-bind-none { font-size: 10px; color: var(--text-muted); font-style: italic; }
+.play-bind-param {
+    display: flex; align-items: center; gap: 6px;
+    padding: 2px 0;
+    border-radius: 4px;
+}
+.play-bind-label {
+    font-size: 10px; color: var(--text-dim);
+    min-width: 52px; max-width: 52px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.play-bind-val { min-width: 54px; text-align: right; font-size: 10px; color: var(--text-dim); }
+.play-bind-macro {
+    flex: 1; font-size: 10px; color: var(--accent);
+    background: rgba(74, 144, 217, 0.10); border-radius: 3px; padding: 1px 6px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* drag handle — the whole row is the drop target */
+.play-bind-grip { cursor: grab; color: var(--text-muted); font-size: 11px; user-select: none; }
+.play-bind-grip:active { cursor: grabbing; }
+.play-bind-param.dragging { opacity: 0.45; }
+.play-bind-param.drop-target {
+    background: rgba(74, 144, 217, 0.16);
+    outline: 1px dashed var(--accent);
+}
+
+/* ── macro edit mode ───────────────────────────────────────────────────────
+   Where a macro's 0…1 lands, per attachment — kept out of the performing view. */
+.play-mini-btn.active { border-color: var(--accent); color: var(--accent); }
+.play-macro-edit {
+    margin-top: 6px; padding-top: 5px;
+    border-top: 1px dashed var(--bg-border);
+    display: flex; flex-direction: column; gap: 3px;
+}
+.play-macro-edit-none { font-size: 10px; color: var(--text-muted); font-style: italic; }
+.play-macro-edit-row { display: flex; align-items: center; gap: 4px; }
+.play-macro-edit-target {
+    flex: 1; min-width: 0; font-size: 10px; color: var(--text-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.play-macro-edit-arrow { font-size: 9px; color: var(--text-muted); }
+.play-macro-edit-direct { font-size: 9px; color: var(--text-muted); font-style: italic; }
+.play-macro-edit-inp {
+    width: 48px; font: inherit; font-size: 10px; padding: 1px 3px;
+    border: 1px solid var(--bg-border); border-radius: 3px;
+    background: var(--bg); color: var(--text);
+}
+.play-macro-edit-inp:focus { border-color: var(--accent); }
+
+/* ── modal (add bend) ──────────────────────────────────────────────────────── */
+.play-modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 9000;
+}
+.play-modal {
+    background: var(--bg-panel);
+    border: 1px solid var(--bg-border);
+    border-radius: 8px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    width: min(520px, 92vw);
+    max-height: 82vh;
+    display: flex; flex-direction: column; overflow: hidden;
+}
+.play-modal-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 9px 13px;
+    border-bottom: 1px solid var(--bg-border);
+    background: var(--bg);
+}
+.play-modal-title { font-size: 12px; font-weight: bold; color: var(--text); }
+.play-modal-close {
+    background: none; border: none; cursor: pointer;
+    color: var(--text-muted); font-size: 17px; line-height: 1;
+}
+.play-modal-close:hover { color: var(--text); }
+.play-modal-body { padding: 10px 13px; overflow: auto; }
+.play-modal-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--text-muted); margin: 6px 0 3px;
+}
+.play-modal-search, .play-modal-select {
+    width: 100%; font: inherit; font-size: 11px; padding: 4px 6px;
+    border: 1px solid var(--bg-border); border-radius: 4px;
+    background: var(--bg); color: var(--text);
+}
+.play-modal-search:focus, .play-modal-select:focus { border-color: var(--accent); }
+.play-modal-list {
+    margin-top: 5px;
+    max-height: 34vh; overflow-y: auto;
+    border: 1px solid var(--bg-border); border-radius: 4px;
+}
+.play-modal-row {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 3px 8px; cursor: pointer; font-size: 11px;
+}
+.play-modal-row:hover { background: var(--bg-hover); }
+.play-modal-row.active { background: rgba(74, 144, 217, 0.16); }
+.play-modal-row-name { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.play-modal-row-dim { font-size: 9px; color: var(--text-muted); }
+.play-modal-row-op { font-size: 9px; color: var(--text-muted); }
+.play-modal-none { padding: 10px; font-size: 11px; color: var(--text-muted); text-align: center; }
+.play-modal-foot {
+    display: flex; justify-content: flex-end; gap: 8px;
+    padding: 9px 13px; border-top: 1px solid var(--bg-border);
+}
+
+/* a macro card lit up as a drop target for a dragged bending parameter */
+.play-macro.drop-target {
+    border-color: var(--accent);
+    background: rgba(74, 144, 217, 0.14);
+    outline: 1px dashed var(--accent);
+}
+.play-macro-name-inp {
+    flex: 1; min-width: 0;
+    font: inherit; font-size: 11px; font-weight: bold;
+    padding: 2px 5px;
+    border: 1px solid var(--bg-border); border-radius: 3px;
+    background: var(--bg); color: var(--text);
+}
+.play-macro-name-inp:focus { border-color: var(--accent); }
+
+/* ── shared node search (TBSearch picker) ─────────────────────────────────
+   The picker is built from the editor's own activation-browser markup, so it
+   inherits #act-modal-search-bar, #act-filter-panel, .act-modal-row and the
+   rest from style.css. Only what the modal gets from its own container is
+   restated here, plus the two bits the editor has no class for. */
+.play-modal-picker { margin-top: 4px; display: flex; flex-direction: column; gap: 6px; }
+.play-modal-picker #act-modal-search-bar { position: static; padding: 0; border: none; background: none; }
+.play-modal-picker #act-filter-panel { position: static; max-height: 22vh; overflow-y: auto; }
+.play-modal-picker #act-bookmark-bar { display: flex; flex-wrap: wrap; gap: 4px; padding: 0; }
+.play-modal-picker #act-modal-list {
+    max-height: 34vh; overflow-y: auto;
+    border: 1px solid var(--bg-border); border-radius: 4px;
+}
+.act-modal-count { font-size: 9px; color: var(--text-muted); text-align: right; }
+.act-modal-empty { padding: 10px; font-size: 11px; color: var(--text-muted); text-align: center; }
+.act-op-filter { font-size: 10px; color: var(--text-dim); display: inline-flex; align-items: center; gap: 3px; margin-right: 8px; }
+.act-bm-chip { display: inline-flex; align-items: center; border: 1px solid var(--bg-border); border-radius: 10px; overflow: hidden; }
+.act-bm-go, .act-bm-del, .act-bm-add {
+    background: transparent; border: none; cursor: pointer;
+    font: inherit; font-size: 10px; color: var(--text-dim); padding: 2px 7px;
+}
+.act-bm-go:hover, .act-bm-add:hover { color: var(--text); }
+.act-bm-del { padding: 2px 5px; color: var(--text-muted); }
+.act-bm-del:hover { color: #d9534f; }
+.act-bm-add { border: 1px dashed var(--bg-border); border-radius: 10px; }
+
+/* the callback chooser play mode adds to the shared browser's panel */
+.act-modal-foot {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 13px; border-top: 1px solid var(--bg-border);
+    background: var(--bg);
+    flex-shrink: 0;
+}
+.act-modal-foot-label { font-size: 10px; color: var(--text-muted); }
+.act-modal-foot .play-modal-select { width: auto; flex: 1; }
+.act-modal-foot .play-run-btn { margin-left: auto; }
+
+/* ── interface callback arguments ─────────────────────────────────────────────
+   The controls for whatever operation Generate is pointed at. They sit above
+   the output because they shape it, and they are built from the interface's
+   declaration rather than from anything guessed here. */
+.play-cb-args {
+    border: 1px solid var(--bg-border);
+    border-radius: 5px;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    background: var(--bg-hover);
+}
+.play-cb-doc {
+    font-size: 10px;
+    color: var(--text-muted);
+    line-height: 1.45;
+    margin-bottom: 7px;
+}
+.play-cb-arg { margin-bottom: 6px; }
+.play-cb-arg:last-child { margin-bottom: 0; }
+.play-cb-label {
+    display: block;
+    font-size: 10px;
+    color: var(--text-dim);
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    margin-bottom: 2px;
+}
+.play-cb-label .play-cb-optional { color: var(--text-muted); font-style: italic; }
+.play-cb-input, .play-cb-text {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--bg-panel);
+    border: 1px solid var(--bg-border);
+    border-radius: 3px;
+    color: var(--text);
+    font: inherit;
+    font-size: 11px;
+    padding: 4px 6px;
+}
+.play-cb-text { resize: vertical; min-height: 48px; line-height: 1.5; }
+.play-cb-input:focus, .play-cb-text:focus { outline: none; border-color: var(--accent); }
+.play-cb-row { display: flex; align-items: center; gap: 6px; }
+.play-cb-row .play-cb-input { max-width: 76px; }
+.play-cb-range { flex: 1; accent-color: var(--accent); }
+
+/* Generated prose is the output here, so it reads as prose. */
+.play-out-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--text);
+    background: var(--bg-hover);
+    border-left: 2px solid var(--accent);
+    border-radius: 3px;
+    padding: 9px 11px;
+    margin-bottom: 6px;
+}
+
+/* ── input modes ──────────────────────────────────────────────────────────── */
+.play-input-mode { margin-top: 6px; }
+.play-input-mode-bar { display: flex; margin-bottom: 5px; }
+.play-input-mode-btn {
+    background: none;
+    border: 1px solid var(--bg-border);
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 9px;
+    padding: 1px 7px;
+    cursor: pointer;
+}
+.play-input-mode-btn:first-child { border-radius: 3px 0 0 3px; }
+.play-input-mode-btn:last-child { border-radius: 0 3px 3px 0; border-left: none; }
+.play-input-mode-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.play-input-mode-btn:not(.active):hover { color: var(--text); }
+.play-input-mode-text {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--bg-hover);
+    border: 1px solid var(--bg-border);
+    border-radius: 3px;
+    color: var(--text);
+    font: inherit;
+    font-size: 11px;
+    line-height: 1.5;
+    padding: 4px 6px;
+    min-height: 46px;
+    resize: vertical;
+}
+.play-input-mode-text:focus { outline: none; border-color: var(--accent); }
+.play-input-mode-note {
+    font-size: 9px;
+    color: var(--text-muted);
+    font-style: italic;
+    margin-top: 3px;
+}
+.play-input-claimed { opacity: 0.55; }
+
+/* a recording loaded for an audio input mode (style/voice reference): heard, not edited */
+.play-mode-audio {
+    display: block;
+    width: 100%;
+    height: 30px;
+    margin-top: 4px;
+}
+
+/* ── foldable panes ────────────────────────────────────────────────────────
+   A folded pane keeps only its header: a thin strip with the title running
+   down it in columns mode, a one-line bar in rows mode (where the output's
+   transport stays reachable). The grid tracks are set by applyFold(). */
+.play-fold-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 10px;
+    width: 14px;
+    padding: 0;
+    flex-shrink: 0;
+}
+.play-fold-btn:hover { color: var(--text); }
+.play-pane.folded { overflow: hidden; }
+.play-pane.folded > :not(.play-pane-header) { display: none !important; }
+.play-pane.folded .play-pane-title { cursor: pointer; }
+#play-layout:not(.orient-rows) .play-pane.folded .play-pane-header {
+    writing-mode: vertical-rl;
+    flex: 1;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    padding: 10px 0;
+    border-bottom: none;
+    cursor: pointer;
+}
+#play-layout:not(.orient-rows) .play-pane.folded .play-pane-header
+    > :not(.play-fold-btn):not(.play-pane-title):not(.play-pill) { display: none !important; }
+
+/* ── generate mode ──────────────────────────────────────────────────────────
+   Play mode's page with the sweep designer and the export panel in place of
+   the macros and the output. The bench iterates every included entry, so the
+   batch switch has nothing to say here. */
+.gen-page #play-bench-bar .play-batch-toggle,
+.gen-page #play-batch-mode,
+.gen-page #play-batch-hint,
+.gen-page #play-topbar-right .play-ctl:has(#play-scripted) { display: none; }
+.gen-badge { background: #6f5bd6 !important; color: #fff !important; }
+.play-nav {
+    border: 1px solid var(--bg-border);
+    border-radius: 4px;
+    padding: 2px 9px;
+    font-size: 11px;
+    color: var(--text-dim);
+    text-decoration: none;
+}
+.play-nav:hover { border-color: var(--accent); color: var(--text); }
+
+.gen-run-count { margin-left: auto; font-weight: normal; color: var(--accent); }
+.gen-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.gen-section { padding: 8px 12px; border-bottom: 1px solid var(--bg-border); font-size: 11px; }
+.gen-section:empty { display: none; }
+#gen-params { padding: 6px 10px; display: flex; flex-direction: column; gap: 6px; }
+.gen-param {
+    border: 1px solid var(--bg-border);
+    border-radius: 5px;
+    padding: 6px 8px;
+    background: var(--bg-panel);
+    font-size: 11px;
+}
+.gen-param-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.gen-param-label { font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gen-type {
+    font-size: 9px; padding: 0 5px; border-radius: 3px;
+    background: var(--bg-hover); color: var(--text-dim);
+}
+.gen-count { margin-left: auto; color: var(--accent); font-size: 10px; }
+.gen-remove { padding: 0 5px; }
+.gen-param-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 3px 0; }
+.gen-field { display: inline-flex; align-items: center; gap: 4px; }
+.gen-field-label { color: var(--text-dim); font-size: 10px; }
+.gen-section > .gen-field { display: flex; margin: 4px 0; }
+.gen-input {
+    font: inherit; font-size: 11px; width: 62px; padding: 2px 4px;
+    border: 1px solid var(--bg-border); border-radius: 3px;
+    background: var(--bg); color: var(--text);
+}
+.gen-input[type="checkbox"] { width: auto; }
+.gen-input.gen-wide { flex: 1; width: auto; min-width: 120px; }
+.gen-input.gen-group { width: 80px; }
+.gen-hint { color: var(--text-dim); font-size: 10px; }
+.gen-error { color: #b23b3b; font-size: 11px; margin: 4px 0; white-space: pre-wrap; }
+.gen-chips { display: flex; flex-wrap: wrap; gap: 3px; margin: 2px 0 6px 0; }
+.gen-chip {
+    font: inherit; font-size: 10px; padding: 0 5px; cursor: pointer;
+    border: 1px solid var(--bg-border); border-radius: 3px;
+    background: var(--bg-hover); color: var(--text-dim);
+}
+.gen-chip:hover { color: var(--text); border-color: var(--accent); }
+.gen-flags { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.gen-flag { color: var(--text-dim); }
+.gen-names {
+    font-family: ui-monospace, Menlo, monospace; font-size: 10px;
+    max-height: 180px; overflow: auto; margin-top: 3px;
+}
+.gen-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gen-bar { height: 6px; border-radius: 3px; background: var(--bg-hover); overflow: hidden; }
+.gen-bar-fill { height: 100%; background: #6f5bd6; transition: width 300ms; }
+.gen-status { margin: 5px 0 2px 0; }
+.gen-dir { font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--text-dim);
+           word-break: break-all; }
+#gen-combine .play-subhead { display: block; margin-top: 6px; }
+.gen-outputs { margin: 6px 0; }
+.gen-output { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+.gen-output.gen-off .gen-output-label, .gen-output.gen-off .gen-hint { opacity: 0.45; }
+.gen-output-label { font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gen-output-format { margin-left: auto; }

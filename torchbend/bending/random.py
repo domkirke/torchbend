@@ -75,12 +75,12 @@ class Normal(BendingCallback):
         return noise
 
     def _add_noise(self, name, shape):
-        noise = self._init_rnd_(shape)
-        self._noises.append(noise)
-        # disable gradient
-        self._noises[-1].requires_grad_(False)
-        self._noise_names.append(name)
-        self._noise_shapes.value.append(shape)
+        noise = self._init_rnd_(shape).requires_grad_(False)
+        if name not in self._noise_names:
+            self._noise_shapes.value.append(shape)
+        else:
+            self._noise_shapes.value[self._noise_names.index(name)] = shape
+        self._upsert_buffer(self._noises, self._noise_names, name, noise)
 
     def _noise_from_name(self, name: str) -> torch.Tensor:
         for i, m in enumerate(self._masks):
@@ -124,9 +124,10 @@ class Normal(BendingCallback):
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor) -> None:
         std = self.get('std')
         if std is not None:
+            std = torch.as_tensor(std)
             if self.op == "mul":
                 param.set_(self.get_noise_from_id(idx).to(cache) * cache * std.to(cache))
-            else: 
+            else:
                     param.set_(self.get_noise_from_id(idx).to(param) * std.to(param) + cache)
 
     def bend_input(self, x: torch.Tensor, std: torch.Tensor | None = None, seed: torch.Tensor | None = None, name: str | None = None):
@@ -136,5 +137,134 @@ class Normal(BendingCallback):
             return x * (noise * std)
         elif self.op == "add":
             return x + (noise * std)
+        else:
+            raise BendingCallbackException('op %s not known'%(self.op))
+
+
+class Uniform(BendingCallback):
+    """Adds (or multiplies) uniform noise drawn from U(-amp, amp) to the tensor. Same shape as
+    Normal, with a bounded (rather than unbounded, bell-shaped) noise distribution."""
+    weight_compatible = True
+    activation_compatible = True
+    jit_compatible = True
+    nntilde_compatible = True
+    valid_ops = ['add', 'mul']
+    controllable_params = {'amp': ((float, torch.FloatTensor), 0.3), 'seed': (int, 0)}
+    _param_ui = {
+        'amp': {
+            'range': [0., 5.],
+            'step':  0.01,
+            'description': "Half-width of the noise range: noise is drawn from U(-amp, amp). 0 = no noise.",
+            'guard': lambda v: True if v >= 0. else ValueError(f"amp must be ≥ 0, got {v:.4f}"),
+        },
+        'seed': {
+            'range':  [-1, 999],
+            'widget': 'int',
+            'description': "Seed for reproducible noise patterns. -1 = new random noise on every forward pass.",
+            'guard':  lambda v: True if v >= -1 else ValueError("seed must be ≥ -1  (-1 = random)"),
+        },
+    }
+    _extra_init_params = {
+        "dim": {"type": "int", "default": None, "required": False, "label": "dim (axis)",
+                "description": "Restrict noise to a single axis. Leave empty to perturb all dimensions."},
+        "op":  {"type": "str", "default": "add", "required": False, "label": "op", "choices": ["add", "mul"],
+                "description": "How the noise is combined with the signal: additive or multiplicative."},
+    }
+
+    def __init__(self, amp: float | torch.Tensor | BendingParameter = 0.3, seed: int | BendingParameter = 0, dim=None, op = "add"):
+        super().__init__(amp=amp, seed=seed)
+        assert op in self.valid_ops
+        self.op = op
+        self.dim = dim
+
+        # init masks
+        self._noises = torch.nn.ParameterList()
+        self._noise_names = []
+        self._noise_shapes = torch.jit.Attribute([], List[List[int]])
+
+    def __repr__(self):
+        rp =  f"{type(self).__name__}(amp={float(self.amp):.3f}"
+        if self.seed is not None:
+            rp += f", seed={int(self.seed)}"
+        rp+=")"
+        return rp
+
+    def _get_rnd_shape(self, shape: List[int]):
+        dim = self.dim
+        if dim is None:
+            return shape
+        rnd_shape = [1] * len(shape)
+        if isinstance(dim, int):
+            rnd_shape[dim] = shape[dim]
+        elif isinstance(dim, list):
+            for d in dim:
+                rnd_shape[d] = shape[d]
+        return rnd_shape
+
+    def _init_rnd_(self, shape: List[int]):
+        seed = self.get("seed")
+        if seed is not None:
+            torch.manual_seed(int(seed))
+        assert shape is not None, "mask preinit must be given target shape"
+        noise = torch.rand(self._get_rnd_shape(shape)) * 2. - 1.
+        return noise
+
+    def _add_noise(self, name, shape):
+        noise = self._init_rnd_(shape).requires_grad_(False)
+        if name not in self._noise_names:
+            self._noise_shapes.value.append(shape)
+        else:
+            self._noise_shapes.value[self._noise_names.index(name)] = shape
+        self._upsert_buffer(self._noises, self._noise_names, name, noise)
+
+    def register_weight(self, parameter: List[torch.nn.Parameter], name=None, cache: bool = True):
+        name = super().register_weight(parameter, name=name, cache=cache)
+        self._add_noise(name, parameter.shape)
+
+    def register_activation(self, name, shape):
+        super(Uniform, self).register_activation(name, shape)
+        name = name.replace('.', '_')
+        self._add_noise(name, shape)
+
+    def _noise_from_name(self, name: str) -> torch.Tensor:
+        for i, m in enumerate(self._noises):
+            if self._noise_names[i] == name:
+                return m
+        raise RuntimeError('does not have noise for name %s'%name)
+
+    def get_noise(self, param, name: Optional[str]) -> torch.Tensor:
+        if name is not None:
+            noise = self._noise_from_name(name)
+        else:
+            noise = (torch.rand_like(param) * 2. - 1.).to(param)
+        return noise
+
+    def get_noise_from_id(self, idx: int) -> torch.nn.Parameter:
+        #grrrr
+        for i, v in enumerate(self._noises):
+            if i == idx:
+                return v
+        raise BendingCallbackException('%s not present in masks'%idx)
+
+    def update(self):
+        for i, v in enumerate(self._noises):
+            v.set_(self._init_rnd_(v.shape).to(v.device))
+
+    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor) -> None:
+        amp = self.get('amp')
+        if amp is not None:
+            amp = torch.as_tensor(amp)
+            if self.op == "mul":
+                param.set_(self.get_noise_from_id(idx).to(cache) * cache * amp.to(cache))
+            else:
+                param.set_(self.get_noise_from_id(idx).to(param) * amp.to(param) + cache)
+
+    def bend_input(self, x: torch.Tensor, amp: torch.Tensor | None = None, seed: torch.Tensor | None = None, name: str | None = None):
+        if amp is None: return x
+        noise = self.get_noise(x, name).to(x)
+        if self.op == "mul":
+            return x * (noise * amp)
+        elif self.op == "add":
+            return x + (noise * amp)
         else:
             raise BendingCallbackException('op %s not known'%(self.op))

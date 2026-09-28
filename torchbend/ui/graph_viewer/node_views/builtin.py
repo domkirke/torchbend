@@ -7,7 +7,7 @@ tensor that is already batched (ndim >= 2).
 import torch
 import torch.nn.functional as F
 
-from .base import ViewType, ViewOption
+from .base import ViewType, ViewOption, token_decoder, token_eos_id, token_vocab_size
 
 # display caps
 _MAX_B = 16          # batches for 1-D / image views
@@ -222,6 +222,236 @@ class Heatmap3dView(ViewType):
                 "batches": batches, "n_batches": int(B)}
 
 
+def _find_eos(ids, eos_id):
+    """Where each row hits the tokenizer's end-of-sequence marker, if at all."""
+    blank = {"at": [None] * int(ids.shape[0]), "id": eos_id}
+    if eos_id is None:
+        return blank
+    at = []
+    for row in ids.tolist():
+        at.append(next((j for j, i in enumerate(row) if int(i) == int(eos_id)), None))
+    return {"at": at, "id": eos_id}
+
+
+def _separators(decode, ids, pieces):
+    """What goes *before* each position when the pieces are reassembled.
+
+    Some tokenizers carry the separator inside the piece (GPT-2's BPE decodes
+    " the", leading space and all) and some do not — and for the ones that do
+    not, whether a space belongs there depends on the neighbours: a word takes
+    one, a comma does not. So this is asked per adjacent pair rather than once
+    for the sequence, which is what a single sampled pair got wrong whenever it
+    happened to land on punctuation.
+
+    One batched decode of every adjacent pair, not one call per position.
+    """
+    # only as far as the positions that were actually sent: the alternatives are
+    # capped well below the sequence length, and walking past them would index
+    # off the end of `pieces`
+    row = [int(i) for i in ids[0].tolist()][:len(pieces)]
+    seps = [""] * len(row)
+    if decode is None or len(row) < 2:
+        return seps
+    try:
+        pairs = decode(torch.tensor([[row[j - 1], row[j]] for j in range(1, len(row))],
+                                    dtype=torch.long), skip_special_tokens=False)
+    except Exception:
+        return seps
+    for j, pair in enumerate(pairs, start=1):
+        left, right = pieces[j - 1], pieces[j]
+        if pair == left + right:
+            seps[j] = ""
+        elif pair.startswith(left) and pair.endswith(right):
+            seps[j] = pair[len(left):len(pair) - len(right)]
+        else:
+            seps[j] = ""
+    return seps
+
+
+#: Positions carrying alternatives in one payload. Each costs `topk` ids, pieces
+#: and probabilities; a whole context window of them would dwarf the tensor.
+_MAX_INTERACTIVE_POS = 128
+
+
+def _decode_pieces(ids, ctx):
+    """``{id: piece}`` for the ids present, or None when nothing can decode them.
+
+    Decoding is per distinct id rather than per position: a long sequence
+    repeats its ids heavily, and a tokenizer call each time is the difference
+    between instant and noticeable.
+    """
+    decode = ctx.get("decode") or token_decoder()
+    if decode is None:
+        return None
+    uniq = sorted({int(i) for row in ids.tolist() for i in row})
+    if not uniq:
+        return None
+    try:
+        # one row per id, so each decodes independently of its neighbours
+        pieces = decode(torch.tensor(uniq, dtype=torch.long).unsqueeze(1),
+                        skip_special_tokens=False)
+    except Exception:
+        return None
+    return {str(i): str(p) for i, p in zip(uniq, pieces)}
+
+
+class TextView(ViewType):
+    """Token ids as the text they stand for.
+
+    Accepts both sides of the round trip: a ``[B, T]`` tensor of ids, and a
+    ``[B, T, V]`` tensor of logits, which is argmaxed first — that second case
+    is how you read what a language model just generated instead of squinting
+    at a vocabulary-wide grid of floats.
+
+    Offered only when the interface declares a token decoder; without one there
+    is nothing to invert the ids with.
+    """
+
+    name = "text"; label = "decoded text"; priority = 60; ranks = (2, 3)
+    options = [
+        ViewOption("skip_special", "bool", True, label="skip special tokens",
+                   description="Hide padding and end-of-sequence markers."),
+        ViewOption("max_tokens", "int", 512, label="max tokens", range=[16, 4096],
+                   description="How many positions to decode per row."),
+        ViewOption("topk", "int", 5, label="alternatives", range=[0, 10],
+                   description="How many runner-up tokens to carry per position, "
+                               "for the expanded view. 0 sends none."),
+        ViewOption("continue_steps", "int", 16, label="continue for", range=[1, 64],
+                   description="How many tokens to predict after you change one. "
+                               "Stops earlier if the model produces its end token."),
+    ]
+
+    @staticmethod
+    def _looks_like_vocab(width):
+        """Is `width` a plausible vocabulary size for the active decoder?
+
+        Without this a `[B, N, C]` tensor is "logits" purely because C is wide
+        enough — which any vision transformer's patch embeddings satisfy too
+        (768-wide is completely ordinary). Argmaxing those and decoding the
+        result as tokens doesn't error, it just produces near-random ids —
+        mostly a tokenizer's reserved `[unusedN]` slots, since those sit at the
+        low end of the vocabulary and an out-of-range argmax lands there
+        disproportionately often. When the real vocab size is known, requiring
+        a close match rules that out; some slack covers the few extra rows a
+        model's output head is often padded to.
+        """
+        vocab = token_vocab_size()
+        if vocab:
+            return abs(width - vocab) <= max(64, int(vocab * 0.01))
+        return width >= 8
+
+    def accepts(self, shape, dtype=None):
+        if token_decoder() is None:
+            return False
+        if len(shape) == 2:
+            # a row of ids; floats here are some other quantity entirely
+            return dtype is not None and not dtype.is_floating_point
+        if len(shape) == 3:
+            return self._looks_like_vocab(shape[-1])
+        return False
+
+    def name_hint(self, name, shape, dtype=None):
+        n = (name or "").lower()
+        if any(k in n for k in ("input_ids", "token", "logit", "text", "prompt")):
+            return True
+        # the graph's own output, when it is wide enough to be a vocabulary —
+        # that is the tensor someone means by "the generated text"
+        return "output" in n and len(shape) == 3 and self._looks_like_vocab(shape[-1])
+
+    def serialize(self, t, opts, ctx):
+        decode = ctx.get("decode") or token_decoder()
+        if decode is None:
+            return {"view": "text", "shape": [int(s) for s in t.shape],
+                    "texts": [], "error": "this model declares no token decoder"}
+
+        ids = t.argmax(dim=-1) if t.ndim == 3 else t
+        ids = ids[:_MAX_B_2D]
+        limit = max(16, int(opts.get("max_tokens") or 512))
+        ids = ids[:, :limit].long().cpu()
+        skip = bool(opts.get("skip_special", True))
+
+        # the sequence's own end-of-sequence marker, if the tokenizer has one and
+        # it occurs: a default the user can move, not a setting they must find
+        end = _find_eos(ids, token_eos_id())
+        try:
+            texts = self._decode_rows(ids, end["at"], skip, decode)
+        except Exception as exc:                      # a tokenizer is user code
+            return {"view": "text", "shape": [int(s) for s in t.shape],
+                    "texts": [], "error": str(exc)}
+
+        payload = {"view": "text", "shape": [int(s) for s in t.shape],
+                   "texts": [str(x) for x in texts],
+                   "from_logits": bool(t.ndim == 3),
+                   "n_tokens": int(ids.shape[-1]), "n_batches": int(ids.shape[0]),
+                   # where each row was cut, and whether the token was there at
+                   # all — a request that matched nothing must say so rather
+                   # than look like a sequence that simply never ended
+                   "end_at": end["at"], "end_id": end["id"],
+                   "eos_id": token_eos_id(),
+                   "continue_steps": int(opts.get("continue_steps") or 16)}
+        if t.ndim == 3:
+            positions = self._positions(t, ids, opts, decode)
+            payload["positions"] = positions
+            if positions:
+                payload["seps"] = _separators(decode, ids,
+                                              [p["piece"] for p in positions[0]])
+        return payload
+
+    @staticmethod
+    def _decode_rows(ids, cuts, skip, decode):
+        """Decode each row, stopping where its end token was found.
+
+        Rows are decoded together while none of them is cut — that is the common
+        case and one call is cheaper than B — and one at a time once their
+        lengths diverge.
+        """
+        if not any(c is not None for c in cuts):
+            return decode(ids, skip_special_tokens=skip)
+        out = []
+        for b, cut in enumerate(cuts):
+            row = ids[b, :cut] if cut is not None else ids[b]
+            if row.numel() == 0:
+                out.append("")
+                continue
+            out.append(decode(row.unsqueeze(0), skip_special_tokens=skip)[0])
+        return out
+
+    def _positions(self, logits, ids, opts, decode):
+        """Per position: what was chosen, how sure, and what nearly won.
+
+        Only for the expanded view — a sequence's worth of alternatives is far
+        more than a sidebar card can show, so it is capped hard here rather than
+        sent in full and thrown away by the client.
+        """
+        topk = int(opts.get("topk") if opts.get("topk") is not None else 5)
+        if topk <= 0:
+            return None
+        topk = min(topk, 10, int(logits.shape[-1]))
+        n_pos = min(int(ids.shape[-1]), _MAX_INTERACTIVE_POS)
+
+        # detach: an activation captured under grad would otherwise warn on every
+        # single probability read out of it
+        probs = torch.softmax(logits[:, :n_pos].detach().float(), dim=-1)
+        top_p, top_i = probs.topk(topk, dim=-1)
+
+        pieces = _decode_pieces(top_i.reshape(top_i.shape[0], -1), {"decode": decode})
+        if pieces is None:
+            return None
+
+        out = []
+        for b in range(top_i.shape[0]):
+            row = []
+            for j in range(n_pos):
+                alts = [{"id": int(top_i[b, j, k]),
+                         "piece": pieces.get(str(int(top_i[b, j, k])), ""),
+                         "prob": round(float(top_p[b, j, k]), 5)}
+                        for k in range(topk)]
+                row.append({"id": alts[0]["id"], "piece": alts[0]["piece"],
+                            "prob": alts[0]["prob"], "alts": alts})
+            out.append(row)
+        return out
+
+
 class TokensView(ViewType):
     name = "tokens"; label = "token sequence (B×T×C)"; priority = 20; ranks = (3,)
     options = [
@@ -243,10 +473,13 @@ class TokensView(ViewType):
         tt = t[:, :T_show, :]
         topk = max(1, min(int(opts.get("topk") or 1), 10, C))
         vals, idx = tt.topk(topk, dim=-1)
+        ids = idx[..., 0]
         return {"view": "tokens", "shape": [int(B), int(T), int(C)],
-                "ids": idx[..., 0].tolist(),                 # [B, T_show] argmax ids
+                "ids": ids.tolist(),                         # [B, T_show] argmax ids
                 "topk_ids": idx.tolist() if topk > 1 else None,
+                # a hand-pasted vocabulary still wins; otherwise ask the model
                 "names": opts.get("names") or None,
+                "pieces": None if opts.get("names") else _decode_pieces(ids, ctx),
                 "n_tokens": int(T_show), "vocab": int(C), "n_batches": int(B)}
 
 
@@ -316,6 +549,6 @@ class ScalarView(ViewType):
 ALL_VIEWS = [
     ScalarView,
     LineView, ScatterView, BarView, CategoryView,
-    ChannelLinesView, AudioView, Heatmap3dView, TokensView,
+    ChannelLinesView, AudioView, Heatmap3dView, TokensView, TextView,
     ImageView, ChannelGridView,
 ]

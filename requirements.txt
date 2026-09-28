@@ -18,3 +18,4 @@ flask-moment
 requests
 jupyter_bokeh
 ninja
+django

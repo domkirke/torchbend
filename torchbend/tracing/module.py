@@ -21,6 +21,8 @@ from torch.fx import Graph, GraphModule
 from torch.fx.proxy import TraceError
 from typing import Union , NoReturn, Optional, Tuple, List
 from .. import get_output, TorchbendOutput, _TORCHBEND_DEFAULT_TRACE_METHOD
+from ..sample_rates import (SampleRateMixin, normalize_sample_rates,
+                             resolve_sample_rate)
 from . import interp, tracing_experimental as tbe 
 from .input import Inputs
 from .graphmodule import BendedGraphModule
@@ -28,9 +30,34 @@ from .tracing import BendingTracer, ActivationProperties, BendedGraph
 from .utils import BendingError, get_model_copy, _get_weight_properties, _get_signature_from_graph, _get_graph_inputs
 from .utils import _import_to_interface, make_graph_jit_compatible, clone_parameters, display_table_for_jupyter, get_kwargs_from_gm 
 from .graph import graph_insert_callbacks, graph_get_activations, graph_from_activations, graph_transform_nodes, graph_subset
+from .loop import loop_policy
 from . import activation_log as actlog
 from ..utils import checklist, checktuple, get_parameter, _resolve_code, resolve_state_dict, StateDictReference
 from ..bending import BendingCallback, CallbackChain, is_bending_callback, BendingConfig, BendingParameter
+
+def _module_sample_rate(module, node, fn=None, shape=None):
+    """Ask a plain ``nn.Module`` what rate one of its nodes runs at.
+
+    A model may answer with a ``sample_rate_for`` method of its own, or with a
+    ``_sample_rates_`` declaration; either is resolved against the module, so a
+    method name in the table resolves on the model rather than on the wrapper.
+    """
+    if module is None:
+        return None
+    own = getattr(module, "sample_rate_for", None)
+    if callable(own):
+        try:
+            rate = own(node, fn=fn, shape=shape)
+        except TypeError:
+            rate = own(node)
+        if rate is not None:
+            return rate
+    declared = getattr(module, "_sample_rates_", None)
+    if not declared:
+        return None
+    return resolve_sample_rate(module, normalize_sample_rates(module, declared),
+                               node, fn=fn, shape=shape)
+
 
 _DEFAULT_ACT_EXCLUDE_LIST = ['getattr.*', 'cat.*', 'getitem.*', 'copy.*', 'reshape.*']
 _DEFAULT_ACTIVATION_FIELDS = ['name', 'op', 'target', 'shape', 'args', 'kwargs']
@@ -142,7 +169,7 @@ def bend(fn):
     return fn
 
 
-class BendedModule(object):
+class BendedModule(SampleRateMixin, object):
     """Wrapper around an ``nn.Module`` providing inspection, bending, versioning and export.
 
     The wrapped module is never modified: weight and activation bendings are kept
@@ -172,7 +199,9 @@ class BendedModule(object):
     _wrapped_methods = ['forward']
 
     __copy_attrs__ = [
-        "_graphs", "_activations",
+        # `_trace_kwargs` travels with `_graphs`: a copy that keeps the graphs
+        # but forgets how they were traced cannot re-trace itself correctly.
+        "_graphs", "_activations", "_trace_kwargs", "_trace_config",
         "_bending_callbacks", "_bended_params", 
         "_bended_params_history", "_bended_activations",
         "_interp_dict", "_interp_func",
@@ -246,6 +275,13 @@ class BendedModule(object):
     def __init__(self, module, _wrapped_methods=[]):
         self._graphs = {}
         self._activations = {}
+        # Non-tensor keywords each method was traced with. A re-trace has to
+        # reproduce them: they are how the method was configured, not data.
+        # GPT-2 is traced with ``use_cache=False`` because a Cache object cannot
+        # go through fx; re-tracing without it fails on the cache, not on
+        # anything the user changed.
+        self._trace_kwargs = {}
+        self._trace_config = {}
         # callback, parameters and activations
         self._bending_callbacks = []
         self._bended_params = {self._default_version_key: {}}
@@ -629,7 +665,7 @@ class BendedModule(object):
         else:
             return out_gm.graph
 
-    def trace(self, fn="forward", trace_method=None, *args, _save_as=None, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, _wrap_recurrent=False, **kwargs):
+    def trace(self, fn="forward", trace_method=None, *args, _save_as=None, _return_out=False, _proxied_buffers=[], _no_tensor_for_args=None, _wrap_recurrent=False, _loop_policy=None, reinit_bending_state=False, **kwargs):
         """Trace a method of the wrapped module with concrete example inputs.
 
         Tracing records the computation graph of ``fn`` together with the shape,
@@ -654,6 +690,23 @@ class BendedModule(object):
                 to Python scalars (helps TorchScript export).
             _wrap_recurrent (bool): wrap RNN modules so they survive the
                 proxy_tensor functionalization.
+            _loop_policy (dict | None): how :func:`torchbend.loop` calls reached
+                during this trace are compacted, e.g.
+                ``{"mode": "auto", "max_unroll": 8, "pack": 1}`` — pack a loop
+                into one node per iteration once it runs more than 8 times.
+                ``mode`` is ``"auto"``/``"pack"``/``"unroll"``; ``pack`` is
+                iterations per node; ``unroll_range`` inlines a window of
+                iterations fully; ``loops`` holds per-loop overrides keyed by
+                loop name. Defaults to ``DEFAULT_LOOP_POLICY``. Raw ``for``
+                loops are unaffected — only ``tb.loop`` reads this.
+            reinit_bending_state (bool): after tracing, call
+                :meth:`reinit_bending_state` for ``fn`` (default ``False``).
+                A retrace can change a node's shape (e.g. a different sequence
+                length); any callback still bent to that node re-registers
+                against the fresh shape instead of running with whatever it
+                cached at the previous trace. Off by default so a plain
+                ``trace()`` keeps today's behavior; the graph viewer passes
+                ``True`` on every retrace.
             **kwargs: example inputs for the traced method (e.g. ``x=tensor``).
                 Missing inputs fall back to signature defaults with a warning.
 
@@ -662,12 +715,47 @@ class BendedModule(object):
         """
         trace_method = trace_method or _TORCHBEND_DEFAULT_TRACE_METHOD
         assert trace_method in TORCHBEND_TRACE_METHODS
-        if trace_method == "vanilla":
-            return self._trace_vanilla(fn=fn, *args, _return_out=_return_out, _proxied_buffers=_proxied_buffers, _no_tensor_for_args=_no_tensor_for_args, **kwargs)
-        elif trace_method == "proxy_tensor":
-            return self._trace_experimental(fn=fn, *args, _save_as=_save_as, _return_out=_return_out, _proxied_buffers=_proxied_buffers, _no_tensor_for_args=_no_tensor_for_args, _wrap_recurrent=_wrap_recurrent, **kwargs)
-        else:
-            raise ValueError('trace_method %s not handled. Available : %s'%(trace_method, TORCHBEND_TRACE_METHODS))
+        # Remember how this method was configured, so `retrace` can reproduce it
+        # from new inputs alone. Tensors are the inputs and get replaced; the
+        # rest is configuration and has to carry over.
+        self._trace_kwargs[_save_as or fn] = {
+            k: v for k, v in kwargs.items() if not isinstance(v, torch.Tensor)
+        }
+        # The tracer's own settings are configuration too, and were being lost:
+        # a graph traced with `_wrap_recurrent=True` came back from a retrace
+        # without it, and a model that needed it simply failed to re-trace.
+        self._trace_config[_save_as or fn] = {
+            "trace_method": trace_method,
+            "_proxied_buffers": _proxied_buffers,
+            "_no_tensor_for_args": _no_tensor_for_args,
+            "_wrap_recurrent": _wrap_recurrent,
+            "_loop_policy": _loop_policy,
+        }
+        # Any `tb.loop` reached while tracing reads this; outside the context it
+        # stays a plain Python loop. Wrapping the dispatch rather than one
+        # backend covers both tracers from a single place.
+        with loop_policy(_loop_policy):
+            if trace_method == "vanilla":
+                out = self._trace_vanilla(fn=fn, *args, _return_out=_return_out, _proxied_buffers=_proxied_buffers, _no_tensor_for_args=_no_tensor_for_args, **kwargs)
+            elif trace_method == "proxy_tensor":
+                out = self._trace_experimental(fn=fn, *args, _save_as=_save_as, _return_out=_return_out, _proxied_buffers=_proxied_buffers, _no_tensor_for_args=_no_tensor_for_args, _wrap_recurrent=_wrap_recurrent, **kwargs)
+            else:
+                raise ValueError('trace_method %s not handled. Available : %s'%(trace_method, TORCHBEND_TRACE_METHODS))
+        if reinit_bending_state:
+            self.reinit_bending_state(fn=_save_as or fn)
+        return out
+
+    def trace_kwargs(self, fn="forward"):
+        """The non-tensor keywords ``fn`` was traced with, if it was traced."""
+        return dict(self._trace_kwargs.get(fn, {}))
+
+    def trace_config(self, fn="forward"):
+        """How the *tracer* was configured for ``fn`` — backend and flags.
+
+        Separate from :meth:`trace_kwargs`, which is what the model was called
+        with. A retrace needs both or it is not the same trace.
+        """
+        return dict(self._trace_config.get(fn, {}))
 
     @_import_to_interface
     def graph(self, fn="forward", bended: bool = False):
@@ -686,14 +774,70 @@ class BendedModule(object):
         else:
             return self.bend_graph(fn)
 
+    @property
+    def _strided_audio_(self):
+        """Whether the model is one timeline at several strides.
+
+        Read through to the module: the flag describes the *model*, and the
+        wrapper's own class attribute would otherwise shadow one written where
+        it belongs.
+        """
+        if self.__dict__.get("_strided_audio_override_"):
+            return True
+        return bool(getattr(self._module, "_strided_audio_", False))
+
+    @_strided_audio_.setter
+    def _strided_audio_(self, value):
+        self.__dict__["_strided_audio_override_"] = bool(value)
+
+    # Not exported to the interface: an Interface reads its own declaration,
+    # and importing this one over it would be a conflict rather than a gift.
+    def sample_rate_for(self, node, fn=None, shape=None):
+        """The rate ``node`` is audio at, or ``None`` if nothing says it is.
+
+        Declared with :meth:`set_sample_rates`, with a ``_sample_rates_``
+        attribute on the wrapper, or -- most naturally -- with one on the
+        wrapped ``nn.Module`` itself::
+
+            class Codec(nn.Module):
+                _sample_rates_ = {"audio_out": 44100, "z": 44100 / 2048}
+
+        The wrapper is asked first, so ``set_sample_rates`` overrides what the
+        model shipped with; the module is asked only when the wrapper is silent.
+        Without the second half, a declaration written on the model -- the
+        obvious place for it -- was shadowed by the wrapper's empty table and
+        did nothing at all.
+
+        See :mod:`torchbend.sample_rates`.
+        """
+        rate = SampleRateMixin.sample_rate_for(self, node, fn=fn, shape=shape)
+        if rate is not None:
+            return rate
+        return _module_sample_rate(self._module, node, fn=fn, shape=shape)
+
     @_import_to_interface
+    def annotations(self, fn="forward"):
+        """Everything ``mark()`` said about ``fn``'s values, by node:
+        ``{node: {"alias", "aliases", "description", "meta", "mode"}}``.
+
+        A mark with only a name is here too, so this is the one place that
+        lists every marked value; ``aliases()`` lists the named ones by name.
+        """
+        import copy
+        return copy.deepcopy(getattr(self.graph(fn=fn), "annotations", None) or {})
+
     def aliases(self, fn="forward"):
         """Return ``{alias: (node_names, ...)}`` registered with mark() for a traced method."""
         alias_dict = self.graph(fn=fn).aliases
-        alias_out = {}
-        for k, v in alias_dict.items():
-            alias_out[k] = sum(list(map(checktuple, v)), tuple())
-        return alias_out
+        def _flatten(entry):
+            # an entry is either a node name or a (possibly nested) group of them,
+            # from a marked sequence; yield the leaf node names in order.
+            if isinstance(entry, (list, tuple)):
+                for e in entry:
+                    yield from _flatten(e)
+            else:
+                yield entry
+        return {k: tuple(_flatten(v)) for k, v in alias_dict.items()}
 
 
     # -- callbacks --
@@ -823,11 +967,44 @@ class BendedModule(object):
                 self._bending_callbacks.append(callback)
             if fn not in self._bended_activations: self._bended_activations[fn] = {}
             self._bended_activations[fn][parameter] = self._bended_activations[fn].get(parameter, []) + [callback]
-            try: 
+            try:
                 callback.register_activation(f"{fn}:{parameter}", shape=self.activation_shape(parameter, fn=fn))
             except Exception as e:
                 raise BendingError('Cannot bend activation %s with callback %s.\nException : %s\n Proceeding'%(parameter, callback, e))
-        
+
+    @_import_to_interface
+    def reinit_bending_state(self, fn=None):
+        """Rebuild every bent activation's callback-side state from its current shape.
+
+        Registering a callback against an activation lets it cache shape-dependent per-target
+        state under that activation's name (masks, noise, permutations, shift patterns...). If
+        the graph is later retraced with different example inputs (e.g. a different sequence
+        length), that cached state goes stale relative to the activation's new shape — the next
+        call can crash or silently use the wrong pattern. This re-registers every currently bent
+        activation (by name, for ``fn`` or every traced method) whose shape actually changed
+        since it was last registered, so each affected callback rebuilds what it needs to.
+        An activation whose shape is unchanged is left untouched — e.g. a fixed random mask or
+        permutation keeps the exact pattern it had, rather than being redrawn on every retrace
+        regardless of whether anything relevant to it moved. Weights are untouched altogether: a
+        parameter's shape does not change at runtime, so there is nothing there to go stale.
+
+        ``fn=None`` (default) covers every traced method with bent activations; pass a method
+        name to limit it to one. See :meth:`trace`'s ``reinit_bending_state`` argument to run
+        this automatically right after a retrace.
+        """
+        fns = list(self._bended_activations.keys()) if fn is None else checklist(fn)
+        for f in fns:
+            if f not in self._bended_activations or f not in self._graphs:
+                continue
+            for parameter, callbacks in list(self._bended_activations[f].items()):
+                full_name = f"{f}:{parameter}"
+                new_shape = self.activation_shape(parameter, fn=f)
+                for callback in callbacks:
+                    old_shape = callback.get_bent_shape(full_name)
+                    if old_shape is not None and list(old_shape) == list(new_shape):
+                        continue
+                    callback.register_activation(full_name, shape=new_shape)
+
     @_import_to_interface
     def bend_module(self, fn=None, version=None, copy_parameters=True, jit_compatible: bool = False):
         """Return a copy of the wrapped module with bendings baked in.
@@ -859,13 +1036,21 @@ class BendedModule(object):
             return module
 
     @_import_to_interface
-    def bend_graph(self, fn="forward", make_bending_placeholders=False):
+    def bend_graph(self, fn="forward", make_bending_placeholders=False, reinit_bending_state=False):
         """Return a copy of the traced graph with activation callbacks inserted.
 
         Each bended activation gets a ``<node>_bended`` call_module node and its
         consumers are rerouted to it. ``make_bending_placeholders`` adds
         placeholder inputs for controllables declared ``as_input=True``.
+        ``reinit_bending_state`` (default ``False``) calls
+        :meth:`reinit_bending_state` for ``fn`` first, so every bent
+        activation's callback-side state (masks, noise, permutations, shift
+        patterns...) is rebuilt from its current shape before the graph is
+        assembled — useful when shapes may have drifted since these callbacks
+        were registered (e.g. after a retrace).
         """
+        if reinit_bending_state:
+            self.reinit_bending_state(fn=fn)
         _logger.debug("[bend_graph] fn=%s  bended_activations=%s", fn,
                       list(self._bended_activations.get(fn, {}).keys()))
         callbacks = {k: CallbackChain(*v) for k, v in self._bended_activations[fn].items()}
@@ -1101,8 +1286,9 @@ class BendedModule(object):
         signature = inspect.signature(fn)
         args = []
         kwargs = {}
-        if isinstance(inputs, Inputs):
-            inputs = dict(**inputs)
+        # a copy either way: the loop below pops what it consumes, and the
+        # caller's dict is often reused for the next request
+        inputs = dict(**inputs) if isinstance(inputs, Inputs) else dict(inputs)
         for k, v in dict(signature.parameters).items():
             if v.kind == v.POSITIONAL_ONLY: 
                 assert k in inputs

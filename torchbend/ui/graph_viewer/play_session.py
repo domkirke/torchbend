@@ -31,44 +31,10 @@ import time
 import torch
 
 from torchbend.tracing import activation_log as actlog
-
-
-# ── device discovery ────────────────────────────────────────────────────────
-
-def available_devices() -> list:
-    """Return the torch devices usable for play mode (always includes 'cpu')."""
-    devices = ["cpu"]
-    try:
-        if torch.cuda.is_available():
-            for i in range(torch.cuda.device_count()):
-                devices.append(f"cuda:{i}")
-    except Exception:
-        pass
-    try:
-        mps = getattr(torch.backends, "mps", None)
-        if mps is not None and mps.is_available():
-            devices.append("mps")
-    except Exception:
-        pass
-    return devices
-
-
-def _device_label(dev: str) -> str:
-    if dev == "cpu":
-        return "CPU"
-    if dev == "mps":
-        return "MPS (Apple)"
-    if dev.startswith("cuda"):
-        try:
-            idx = int(dev.split(":")[1]) if ":" in dev else 0
-            return f"{torch.cuda.get_device_name(idx)} ({dev})"
-        except Exception:
-            return f"CUDA ({dev})"
-    return dev
-
-
-def device_options() -> list:
-    return [{"value": d, "label": _device_label(d)} for d in available_devices()]
+# `available_devices`/`device_options` used to live here; now shared with the
+# graph editor's own device switch. Re-exported so nothing that imported them
+# from this module breaks.
+from .devices import available_devices, device_options  # noqa: F401
 
 
 # ── PlaySession ──────────────────────────────────────────────────────────────
@@ -87,7 +53,6 @@ class PlaySession:
         self._bm = None                        # the source BendedModule
         self._weight_macros: set = set()       # macro names driving weight callbacks
         self._output_nodes: list = []          # graph nodes feeding the output
-        self._orig_device: str = "cpu"         # module device before play moved it
         self._eager_gm = None                  # compiled eager runtime (fallback)
         self._needs_rebuild: bool = False      # a weight macro moved: rebuild it
         self._session = None                   # editor BendingSession (macro source)
@@ -119,9 +84,9 @@ class PlaySession:
         if fn not in getattr(bended_module, "_graphs", {}):
             raise ValueError(f"Method '{fn}' is not traced")
 
-        # restore any previous device move before switching
-        self._restore_device()
-
+        # The module's device is not play mode's to set: it belongs to the model
+        # and is shared with the graph editor (BendingSession.set_device, called
+        # by the view before this). `device` is where it already is.
         self.fn = fn
         self.device = device
         self.error = None
@@ -149,10 +114,8 @@ class PlaySession:
             except Exception as exc:
                 self.error = f"{type(exc).__name__}: {exc}"
         if self._scripted is None:
+            # eager runs the live module, already on `device`
             self.mode = "eager"
-            # eager runs get_activations on the live module — move it to the
-            # requested device (restored on the next compile / release).
-            self._move_device(device)
         compile_ms = (time.perf_counter() - t0) * 1000.0
 
         return {
@@ -175,38 +138,36 @@ class PlaySession:
             graph = bended_module.bend_graph(fn=fn)
         except Exception:
             return []
+        def _walk(obj):
+            """Yield every node in the return value, however it is packed.
+
+            A model returning ``{'logits': tensor}`` puts its only output inside
+            a dict; walking lists and tuples alone finds nothing there, and the
+            session then believes it has no outputs and renders none.
+            """
+            if isinstance(obj, _fx.Node):
+                yield obj
+            elif isinstance(obj, dict):
+                for v in obj.values():
+                    yield from _walk(v)
+            elif isinstance(obj, (tuple, list)):
+                for v in obj:
+                    yield from _walk(v)
+
         names = []
         for node in graph.nodes:
             if node.op != "output":
                 continue
             ret = node.args[0] if node.args else None
-            for n in (ret if isinstance(ret, (tuple, list)) else [ret]):
-                if isinstance(n, _fx.Node):
+            for n in _walk(ret):
+                if n.name not in names:
                     names.append(n.name)
         return names
 
-    def _move_device(self, device: str) -> None:
-        if device == "cpu" or self._bm is None:
-            self._orig_device = "cpu"
-            return
-        try:
-            params = list(self._bm._module.parameters())
-            self._orig_device = str(params[0].device) if params else "cpu"
-            self._bm._module.to(device)
-        except Exception:
-            self._orig_device = "cpu"
-
-    def _restore_device(self) -> None:
-        if self._bm is not None and getattr(self, "device", "cpu") != "cpu" \
-                and self._orig_device == "cpu":
-            try:
-                self._bm._module.to("cpu")
-            except Exception:
-                pass
-
     def release(self) -> None:
-        """Restore the module to its original device (call when leaving play mode)."""
-        self._restore_device()
+        """Drop the compiled runtimes (call when leaving play mode). The module's
+        device is left alone: it is the model's, shared with the graph editor --
+        moving it back to CPU here undid a device chosen there."""
         self._scripted = None
         self._eager_gm = None
 

@@ -11,7 +11,7 @@ class Permute(BendingCallback):
     activation_compatible = True
     jit_compatible = True
     nntilde_compatible = True
-    controllable_params = {'seed': (int, -1)}
+    controllable_params = {'seed': (int, -1), 'prob': (float, 1.0)}
     _param_ui = {
         'seed': {
             'range':  [-1, 999],
@@ -19,19 +19,41 @@ class Permute(BendingCallback):
             'description': "Seed that determines the shuffle order. -1 = random shuffle every forward pass; any other value = fixed permutation.",
             'guard':  lambda v: True if v >= -1 else ValueError("seed must be ≥ -1  (-1 = random)"),
         },
+        'prob': {
+            'range':  [0., 1.],
+            'step':   0.01,
+            'description': "Chance for each index to be shuffled; the rest stay in place. 1 = full permutation, 0 = identity.",
+            'guard':  lambda v: True if 0. <= v <= 1. else ValueError(f"prob must be in [0, 1], got {v:.4f}"),
+        },
     }
     _extra_init_params = {
         "dim": {"type": "int", "default": 0, "required": True, "label": "dim (axis)",
                 "description": "The tensor dimension along which elements are permuted (e.g. 0 = batch, 1 = channels)."},
     }
 
-    def __init__(self, dim: int, seed: int = -1):
-        super().__init__(seed=seed)
+    def __init__(self, dim: int, seed: int = -1, prob: float = 1.0):
+        super().__init__(seed=seed, prob=prob)
         if getattr(self.seed, "as_input", False):
             raise ValueError('seed cannot be fed as input in graph. Please set as_input=False')
         self.register_buffer('dim', torch.tensor(dim).int())
         self._perms = torch.nn.ParameterList()
         self._perm_keys = []
+
+    def _partial_randperm(self, C: int, prob: float) -> torch.Tensor:
+        """A permutation of arange(C) where each index has `prob` chance of being shuffled
+        (the shuffled indices are permuted only among themselves, so the result stays bijective;
+        unaffected indices map to themselves)."""
+        perm = torch.arange(C)
+        if prob <= 0.:
+            return perm
+        if prob >= 1.:
+            return torch.randperm(C)
+        mask = torch.rand(C) < prob
+        idx = torch.nonzero(mask).flatten()
+        n = idx.numel()
+        if n > 1:
+            perm[idx] = idx[torch.randperm(n)]
+        return perm
 
     def __repr__(self):
         return f"Permute(dim={self.dim})"
@@ -52,25 +74,27 @@ class Permute(BendingCallback):
         assert shape is not None, "mask preinit must be given target shape"
         self.dim = len(shape) + self.dim if self.dim < 0 else self.dim
         torch.manual_seed(int(self.get("seed")))
-        if self.dim < len(shape): 
-            perm = torch.randperm(shape[self.dim], requires_grad=False)
-            self._perms.append(torch.nn.Parameter(perm, requires_grad=False))
-            self._perm_keys.append(name)
-        else: 
+        if self.dim < len(shape):
+            prob = self.get("prob")
+            prob = 1. if prob is None else float(prob)
+            perm = self._partial_randperm(shape[self.dim], prob)
+        else:
             # no perm
-            self._perms.append(torch.nn.Parameter(torch.Tensor([]), requires_grad=False))
-            self._perm_keys.append(name)
+            perm = torch.Tensor([])
+        self._upsert_buffer(self._perms, self._perm_keys, name, perm)
 
     def update(self):
         seed = self.get('seed')
         if seed is None: seed = torch.tensor(-1)
         if int(seed) < 0:
             return
+        prob = self.get('prob')
+        prob = 1. if prob is None else float(prob)
         for i, perm in enumerate(self._perms):
             if perm.numel() != 0:
                 torch.manual_seed(int(seed))
                 with torch.no_grad():
-                    perm.set_(torch.randperm(perm.shape[0], device=perm.device))
+                    perm.set_(self._partial_randperm(perm.shape[0], prob).to(perm.device))
 
     def register_weight(self, parameter, name=None, cache: bool = True):
         name = super().register_weight(parameter, name=name, cache=cache) 
@@ -82,25 +106,27 @@ class Permute(BendingCallback):
         name = name.replace('.', '_')
         self._init_permute_(name, shape)
     
-    def get_permutation(self, param, name: Optional[str]) -> torch.Tensor:
+    def get_permutation(self, param, name: Optional[str], prob: Optional[torch.Tensor] = None) -> torch.Tensor:
         if name is not None:
             prm = self._get_perm_from_name(name)
         else:
-            prm = torch.randperm(param.shape[int(self.dim)]).to(device=param.device)
-        return prm 
+            p = 1. if prob is None else float(prob)
+            prm = self._partial_randperm(param.shape[int(self.dim)], p).to(device=param.device)
+        return prm
 
     def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor) -> None:
         with torch.no_grad():
             seed = self.get("seed")
             if seed is None: seed = torch.tensor(-1)
             if int(seed) < 0:
-                return 
+                return
             perm = self._get_perm_from_id(idx)
             if perm.numel() == 0: return
             param.set_(torch.index_select(cache, self.dim, perm.to(cache.device)))
 
-    def bend_input(self, x: torch.Tensor, seed: Optional[torch.Tensor] = None, name: Optional[str] = None):
-        permute = self.get_permutation(x, name).to(device=x.device)
+    def bend_input(self, x: torch.Tensor, seed: Optional[torch.Tensor] = None,
+                    prob: Optional[torch.Tensor] = None, name: Optional[str] = None):
+        permute = self.get_permutation(x, name, prob).to(device=x.device)
         # return permute.float().unsqueeze(-1).unsqueeze(0).expand_as(x)
         # return torch.full(x.shape, float(permute.numel()))
         if seed is None: seed = torch.tensor(-1)

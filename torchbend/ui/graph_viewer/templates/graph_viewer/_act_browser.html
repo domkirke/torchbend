@@ -1,0 +1,83 @@
+{# The activation browser, shared verbatim by the graph editor and play mode.
+   Both pages render the same DOM so the browser looks and behaves identically;
+   graph.js drives it with every mode, play mode drives it in list mode to pick
+   a node to bend. #}
+    <!-- Activation browser modal -->
+    <div id="act-modal" style="display:none">
+        <div id="act-modal-backdrop"></div>
+        <div id="act-modal-panel">
+            <div id="act-modal-header">
+                <span id="act-modal-title">Activations</span>
+                <div id="act-modal-mode-btns">
+                    <button class="act-mode-btn active" id="act-mode-list" title="List view">≡</button>
+                    <button class="act-mode-btn" id="act-mode-detail" title="Detail view">⊡</button>
+                    <button class="act-mode-btn" id="act-mode-bend" title="Bending view">⚡</button>
+                </div>
+                <button id="act-pin-all-btn" title="Pin all visible nodes to dashboard">⊕ all</button>
+                <button id="act-add-to-list-btn" title="Add all filtered nodes to a list">⊞ list</button>
+                <button id="act-modal-close">×</button>
+            </div>
+            <div id="act-modal-search-bar">
+                <input id="act-modal-search" type="text" placeholder="name  target:  mod:  shape:  src:  #alias  1x?x512" spellcheck="false" autocomplete="off" />
+                <button id="act-sort-btn" title="Group by op type">⊞ group</button>
+                <button id="act-filter-toggle" title="Show / hide filters">⊟ filters</button>
+            </div>
+            <div id="act-bookmark-bar" style="display:none"></div>
+            <div id="act-filter-panel"></div>
+            <div id="act-modal-list"></div>
+            <!-- Multi-selection action bar (hidden until nodes are selected) -->
+            <div id="act-selection-bar" style="display:none">
+                <span id="act-sel-count"></span>
+                <button id="act-sel-all" title="Select all visible">all</button>
+                <button id="act-sel-pin" title="Pin selected to dashboard">⊕ pin</button>
+                <button id="act-sel-star" title="Toggle star on selected">★ star</button>
+                <button id="act-sel-detail" title="Browse selected in detail view">⊡ browse</button>
+                <button id="act-sel-addlist" title="Add selected to list">⊞ list</button>
+                <button id="act-sel-clear" title="Clear selection">✕</button>
+            </div>
+            <div id="act-modal-detail" style="display:none">
+                <div id="act-detail-nav">
+                    <button id="act-detail-prev" title="Previous (←)">←</button>
+                    <span id="act-detail-counter">— / —</span>
+                    <button id="act-detail-next" title="Next (→)">→</button>
+                    <span style="flex:1"></span>
+                    <button id="act-detail-save-btn" title="Save activation">⬇ save</button>
+                    <button id="act-detail-pin-btn" title="Pin to dashboard">⊕ pin</button>
+                </div>
+                <div id="act-detail-info">
+                    <span id="act-detail-badge"></span>
+                    <span id="act-detail-name"></span>
+                </div>
+                <div id="act-detail-tabs">
+                    <button class="act-detail-tab active" id="act-tab-viz">viz</button>
+                    <button class="act-detail-tab" id="act-tab-code">{ } code</button>
+                </div>
+                <div id="act-detail-props"></div>
+                <div id="act-detail-view-picker"></div>
+                <div id="act-detail-viz"></div>
+                <div id="act-detail-code" style="display:none"></div>
+            </div>
+            <!-- Bending view: macros + active bendings (shown when act-mode-bend is active) -->
+            <div id="act-modal-bend-view" style="display:none">
+                <div id="act-bend-toolbar">
+                    <span class="act-bend-title">Bendings</span>
+                    <select id="act-bend-mode-select" title="Update mode">
+                        <option value="auto">mode: auto</option>
+                        <option value="live">mode: live</option>
+                        <option value="manual">mode: manual</option>
+                    </select>
+                    <input id="act-bend-threshold" type="number" min="50" max="5000" step="50"
+                           title="Auto-mode threshold (ms)" placeholder="500 ms">
+                </div>
+                <div id="act-bend-list" style="overflow-y:auto;flex:1;min-height:0"></div>
+                <div id="act-bend-export-row">
+                    <button id="act-bend-export-btn">⬇ export TorchScript</button>
+                </div>
+                <div class="act-bend-config-row">
+                    <button id="act-bend-save-btn" class="act-bend-config-btn" title="Save bending config as JSON">⬇ save config</button>
+                    <button id="act-bend-load-btn" class="act-bend-config-btn" title="Load bending config from JSON">⬆ load config</button>
+                    <input id="act-bend-load-input" type="file" accept=".json" style="display:none">
+                </div>
+            </div>
+        </div>
+    </div>

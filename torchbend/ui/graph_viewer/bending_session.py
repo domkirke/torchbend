@@ -54,8 +54,39 @@ def _find_callback_class(name: str) -> type:
     return classes[name]
 
 
+def _init_param_values(cb) -> dict:
+    """A callback's declared init options (``_extra_init_params``) as it holds
+    them now, JSON-safe -- for showing what a bending was built with."""
+    out = {}
+    for name in (getattr(type(cb), "_extra_init_params", None) or {}):
+        try:
+            val = getattr(cb, name)
+        except Exception:
+            continue
+        if torch.is_tensor(val):
+            val = val.tolist()
+        if isinstance(val, (list, tuple)):
+            val = [v.tolist() if torch.is_tensor(v) else v for v in val]
+        if val is None or isinstance(val, (bool, int, float, str, list)):
+            out[name] = val
+        else:
+            out[name] = repr(val)
+    return out
+
+
 def _coerce(val, type_str):
     """Coerce a value coming from JSON to the right Python type."""
+    if type_str == "ints":
+        # a list of axes: from the UI as a list, or typed as "1, 2"
+        if isinstance(val, str):
+            val = [v for v in val.replace(",", " ").split() if v]
+        if not isinstance(val, (list, tuple)):
+            val = [val]
+        return [int(round(float(v))) for v in val]
+    if type_str == "bool":
+        if isinstance(val, str):
+            return val.strip().lower() not in ("", "0", "false", "no", "off")
+        return bool(val)
     if type_str == "int":
         try:
             return int(round(float(val)))
@@ -278,6 +309,10 @@ class BendingSession:
     """Manages the set of active BendingCallback bindings and BendingParameters for one model."""
 
     def __init__(self):
+        # Saved activations: name -> {"fn", "node", "tensor", "created",
+        # "sample_rate"}. Frozen copies a view can be recalled to, and the
+        # material activation interpolation works from.
+        self.snapshots: dict = {}
         self.bindings: dict = {}
         self.bending_params: dict = {}   # name → BendingParameter (float ones live in 0…1)
         # name → (lo, hi): the range a float macro's 0…1 should span when it is
@@ -294,6 +329,44 @@ class BendingSession:
         # cache miss. Invalidated when bindings change (add/remove/rebuild).
         self._bent_module_cache: dict = {}
         self._bent_graph_cache: dict = {}
+        # The active interface's joints per traced graph: {(fn, id(graph)): {label: node}}
+        self._key_node_cache: dict = {}
+        # The device the module is currently moved to, for graph exploration --
+        # same mechanic as play mode's device switch (see .devices), applied to
+        # the module this session bends rather than a compiled play runtime.
+        self.device: str = "cpu"
+
+    # ── device ─────────────────────────────────────────────────────────────
+
+    def set_device(self, bended_module, device: str) -> None:
+        """Move ``bended_module`` to ``device`` for graph exploration.
+
+        Whatever was built against the old device -- bent modules/graphs,
+        compiled slices, cached activation tensors -- is invalidated, since
+        none of it is valid on a different device; the next request rebuilds
+        it there. Raises if ``device`` is not one this process has.
+        """
+        from .devices import available_devices
+        if device not in available_devices():
+            raise ValueError("device %r is not available" % device)
+        if device == self.device:
+            return
+        bended_module._module.to(device)
+        self.device = device
+        self._invalidate_bent_module()
+        self._get_cache().clear()
+
+    def restore_device(self, bended_module) -> None:
+        """Move back to CPU (call when leaving the graph editor for this
+        model, or switching models, so a GPU is not held for nothing)."""
+        if self.device != "cpu":
+            try:
+                bended_module._module.to("cpu")
+            except Exception:
+                pass
+            self.device = "cpu"
+            self._invalidate_bent_module()
+            self._get_cache().clear()
 
     # ── node view selection ──────────────────────────────────────────────────
 
@@ -370,6 +443,32 @@ class BendingSession:
                 nodes.update(b.get("nodes", [b["node"]]))
         return nodes
 
+    def key_nodes(self, bended_module, fn: str) -> dict:
+        """``{label: node name}`` of the joints the active interface names for ``fn``.
+
+        See ``Method(retain=...)``. Asked once per traced graph -- a retrace is
+        a new graph object, so it is asked again -- and a model that is not an
+        interface, or an interface that names none, simply has none.
+        """
+        from . import get_interface
+        iface = get_interface()
+        if iface is None:
+            return {}
+        try:
+            raw = bended_module.graph(fn=fn, bended=True)   # the traced graph itself
+        except Exception:
+            return {}
+        key = (fn, id(raw))
+        if key not in self._key_node_cache:
+            try:
+                names = iface.spec.method(fn).retained(raw)
+            except Exception as exc:
+                actlog.log("retain   %s: retain for %s failed: %s: %s",
+                           type(iface).__name__, fn, type(exc).__name__, exc)
+                names = {}
+            self._key_node_cache[key] = names
+        return self._key_node_cache[key]
+
     def get_cached_activations(
         self,
         bended_module,
@@ -394,10 +493,64 @@ class BendingSession:
             pinned_nodes=set(pinned_nodes or []),
             bent_module=bent_module,
             bent_graph=bent_graph,
+            retain=set(self.key_nodes(bended_module, fn).values()),
         )
 
     def clear_cache(self, fn: str = None) -> None:
         self._get_cache().clear(fn=fn)
+
+    def graph_changed(self, fn: str = None) -> None:
+        """The traced graph of ``fn`` was replaced (a retrace): drop everything
+        built from the old one -- the bent module and graph, the compiled
+        slices, the activation-name index, the cached activations. Keeping any
+        of it would run, or look names up in, the graph that no longer exists.
+        """
+        self._invalidate_bent_module(fn)
+        self.clear_cache(fn=fn)
+        self._key_node_cache = {k: v for k, v in self._key_node_cache.items()
+                                if fn is not None and k[0] != fn}
+
+    def retain_output(self, bended_module, fn: str, kwargs: dict, output) -> list:
+        """Keep a run's output in the activation cache, for the inputs ``kwargs``.
+
+        A retrace from the bench runs the model on the bench's own inputs, and
+        its output is exactly what the viewer asks for next -- without this it
+        is thrown away and computed again. Only when nothing is bent (the trace
+        runs the unbent module, so with a bending its output is not what the
+        graph computes) and only for real tensors. Returns the node names kept.
+        """
+        from torch._subclasses.fake_tensor import FakeTensor
+        from .activation_cache import _hash_inputs
+        if bended_module.bended_keys(fn=fn):
+            return []
+        graph = bended_module.graph(fn=fn, bended=True)     # the raw traced graph
+        out_node = next((n for n in graph.nodes if n.op == "output"), None)
+        if out_node is None or not out_node.args:
+            return []
+        kept = {}
+
+        def walk(spec, value):
+            if isinstance(spec, torch.fx.Node):
+                if (spec.op != "placeholder" and torch.is_tensor(value)
+                        and not isinstance(value, FakeTensor)):
+                    kept[spec.name] = value.detach()
+            elif isinstance(spec, (tuple, list)) and isinstance(value, (tuple, list)) \
+                    and len(spec) == len(value):
+                for s, v in zip(spec, value):
+                    walk(s, v)
+            elif isinstance(spec, dict) and isinstance(value, dict):
+                for k, s in spec.items():
+                    if k in value:
+                        walk(s, value[k])
+
+        walk(out_node.args[0], output)
+        if not kept:
+            return []
+        ok, _ = self._get_cache().store(fn, _hash_inputs(kwargs), kept)
+        if ok:
+            actlog.log("retain   %s from the trace's own run (not recomputed)",
+                       actlog.fmt_names(sorted(kept)))
+        return sorted(kept) if ok else []
 
     def cache_stats(self) -> dict:
         return self._get_cache().stats()
@@ -421,6 +574,94 @@ class BendingSession:
 
     # ── introspection ──────────────────────────────────────────────────────────
 
+    # ── snapshots ────────────────────────────────────────────────────────────
+
+    def save_snapshot(self, name: str, fn: str, node: str, tensor, sample_rate=None,
+                      overwrite: bool = False) -> dict:
+        """Keep a copy of ``node``'s activation under ``name``."""
+        import time as _time
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("a snapshot needs a name")
+        if name in self.snapshots and not overwrite:
+            raise ValueError("there is already a snapshot named %r" % name)
+        self.snapshots[name] = {
+            "fn": fn, "node": node, "tensor": tensor.detach().to("cpu").clone(),
+            "created": _time.time(), "sample_rate": sample_rate,
+        }
+        return self.snapshot_meta(name)
+
+    def snapshot_meta(self, name: str) -> dict:
+        s = self.snapshots[name]
+        return {"name": name, "fn": s["fn"], "node": s["node"],
+                "shape": list(s["tensor"].shape), "dtype": str(s["tensor"].dtype).replace("torch.", ""),
+                "created": s["created"], "sample_rate": s.get("sample_rate")}
+
+    def list_snapshots(self, fn: str = None, node: str = None) -> list:
+        return [self.snapshot_meta(n) for n, s in self.snapshots.items()
+                if (fn is None or s["fn"] == fn) and (node is None or s["node"] == node)]
+
+    def delete_snapshot(self, name: str) -> None:
+        if name not in self.snapshots:
+            raise KeyError("no snapshot named %r" % name)
+        del self.snapshots[name]
+
+    def recalled(self, fn: str, node: str):
+        """The binding that recalls a snapshot onto ``node``, as ``(id, binding)``."""
+        for bid, b in self.bindings.items():
+            if b.get("snapshot") and b["fn"] == fn and node in b.get("nodes", [b["node"]]):
+                return bid, b
+        return None, None
+
+    def recall_snapshot(self, bended_module, name: str, fn: str, node: str,
+                        mix: float = 1.0) -> str:
+        """Put snapshot ``name`` back into the graph at ``node``: a
+        :class:`~torchbend.bending.Snapshot` bending, so the node takes the saved
+        value and everything after it follows. One per node: recalling another
+        replaces it. Returns the binding id."""
+        from torchbend.bending.snapshot import Snapshot
+        if name not in self.snapshots:
+            raise KeyError("no snapshot named %r" % name)
+        old, _ = self.recalled(fn, node)
+        if old is not None:
+            self.remove_binding(bended_module, old)
+        callback = Snapshot(self.snapshots[name]["tensor"], mix=float(mix), snapshot_name=name)
+        try:
+            bended_module.bend(callback, node, fn=fn)
+        except Exception as exc:
+            raise ValueError(f"Could not recall '{name}' onto '{node}': {exc}") from exc
+        bid = str(uuid.uuid4())[:8]
+        self.bindings[bid] = {
+            "fn": fn, "node": node, "nodes": [node], "callback": callback,
+            "params": {"mix": float(mix)}, "bp_links": {},
+            "snapshot": name, "name": "❄ " + name,
+        }
+        self._invalidate_bent_module(fn)
+        self._mark_dirty_nodes(bended_module, fn, [node])
+        return bid
+
+    def release_snapshot(self, bended_module, fn: str, node: str) -> bool:
+        """Take a recalled snapshot off ``node``: it follows the graph again."""
+        bid, _ = self.recalled(fn, node)
+        if bid is None:
+            return False
+        self.remove_binding(bended_module, bid)
+        return True
+
+    def release_snapshot_everywhere(self, bended_module, name: str) -> list:
+        """Take snapshot ``name`` off every node it is recalled onto."""
+        gone = [bid for bid, b in self.bindings.items() if b.get("snapshot") == name]
+        for bid in gone:
+            self.remove_binding(bended_module, bid)
+        return gone
+
+    def default_snapshot_name(self, node: str) -> str:
+        """``<node>_1``, ``<node>_2``, … -- the first free one."""
+        k = 1
+        while "%s_%d" % (node, k) in self.snapshots:
+            k += 1
+        return "%s_%d" % (node, k)
+
     def list_bindings(self) -> list:
         result = []
         for bid, b in self.bindings.items():
@@ -442,6 +683,11 @@ class BendingSession:
                 "bp_links":      b.get("bp_links", {}),
                 # {param: [lo, hi]} — what a linked macro's 0…1 spans here
                 "bp_maps":       b.get("bp_maps", {}),
+                # constructor-only settings (dim, invert, ...): not live
+                # params, but part of what the bending does
+                "init_params":   _init_param_values(cb),
+                # a recalled snapshot: which one
+                "snapshot":      b.get("snapshot"),
             })
         return result
 
@@ -1081,6 +1327,7 @@ class BendingSession:
                 "bp_links":      dict(b.get("bp_links", {})),
                 "bp_maps":       dict(b.get("bp_maps", {})),
                 "vis_muted":     bid in self.vis_muted,
+                "snapshot":      b.get("snapshot"),
             })
         bps = []
         for name, bp in self.bending_params.items():
@@ -1146,13 +1393,24 @@ class BendingSession:
         # Re-create bindings
         for b_data in data.get("bindings", []):
             try:
-                bid = self.add_binding(
-                    bended_module,
-                    b_data["fn"],
-                    b_data["node"],
-                    b_data["callback_type"],
-                    b_data.get("params", {}),
-                )
+                if b_data.get("snapshot"):
+                    # a recalled snapshot: its tensor is in self.snapshots (loaded
+                    # before the session), not in the saved params
+                    if b_data["snapshot"] not in self.snapshots:
+                        logger.warning("snapshot %r is gone: not recalled onto %s",
+                                       b_data["snapshot"], b_data["node"])
+                        continue
+                    bid = self.recall_snapshot(
+                        bended_module, b_data["snapshot"], b_data["fn"], b_data["node"],
+                        mix=(b_data.get("params") or {}).get("mix", 1.0))
+                else:
+                    bid = self.add_binding(
+                        bended_module,
+                        b_data["fn"],
+                        b_data["node"],
+                        b_data["callback_type"],
+                        b_data.get("params", {}),
+                    )
                 if b_data.get("vis_muted"):
                     self.vis_muted.add(bid)
                 saved_maps = b_data.get("bp_maps") or {}

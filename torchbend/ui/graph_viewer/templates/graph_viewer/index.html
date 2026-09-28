@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+{% load static %}
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TorchBend — {{ module_type }}</title>
+    <link rel="stylesheet" href="{% static 'graph_viewer/style.css' %}?v={{ static_v }}">
+    <script src="{% static 'graph_viewer/cytoscape.min.js' %}"></script>
+    <script src="{% static 'graph_viewer/dagre.min.js' %}"></script>
+    <script src="{% static 'graph_viewer/cytoscape-dagre.min.js' %}"></script>
+</head>
+<body>
+    <div id="topbar">
+        <div id="title">
+            <span class="tb-logo">torchbend</span>
+            <span class="separator">/</span>
+            <div id="model-picker">
+                <button id="model-picker-btn" title="Switch model">
+                    <span id="module-name">{{ module_type }}</span>
+                    <span id="picker-arrow" class="picker-arrow">▾</span>
+                </button>
+                <div id="model-picker-popup"></div>
+            </div>
+            <span class="separator">·</span>
+            <span id="method-label">{{ default_fn }}</span>
+            <span id="compute-indicator" class="compute-indicator"
+                  title="The model is recomputing — cards showing a spinner are waiting for their new value">
+                <span class="compute-dot"></span>computing…
+            </span>
+            <!-- when a bending or macro change recomputes the graph -->
+            <div id="update-mode-bar" class="update-mode-bar">
+                <span class="update-mode-label">update</span>
+                <button class="update-mode-btn" data-mode="auto">auto</button>
+                <button class="update-mode-btn" data-mode="live">live</button>
+                <button class="update-mode-btn" data-mode="manual">manual</button>
+            </div>
+            <!-- manual mode: changes wait here until applied, all at once -->
+            <button id="apply-all-btn" class="apply-all-btn" style="display:none"
+                    title="Manual mode: send every pending bending and macro change, then recompute once"></button>
+        </div>
+
+        <div id="method-selector">
+            {% for method in methods %}
+            <button class="method-btn {% if method == default_fn %}active{% endif %}"
+                    data-fn="{{ method }}">{{ method }}</button>
+            {% endfor %}
+        </div>
+
+        <select id="graph-device" title="Run the graph on this device. Options the active method's interface does not expect to work are disabled."></select>
+
+        <div id="layout-controls">
+            <button id="fit-btn" title="Fit graph to screen">⊡ fit</button>
+            <button id="reset-layout-btn" style="display:none" title="Put hand-placed nodes back">↺ layout</button>
+            <button id="prune-btn" class="active" title="Hide nodes not connected to output">⌥ prune</button>
+            <button id="show-bent-btn" title="Highlight bent nodes and dim the rest">⚡ bent</button>
+            <div id="export-group">
+                <button id="graph-options-btn" title="Graph view options">⚙</button>
+            <div id="graph-options-panel" style="display:none">
+                <label class="gopt-row"><input type="checkbox" id="gopt-edge-labels"> permanent edge labels</label>
+                <hr class="gopt-sep">
+                <label class="gopt-row">
+                    node labels
+                    <select id="gopt-node-info">
+                        <option value="none">none</option>
+                        <option value="hover" selected>hover</option>
+                        <option value="permanent">permanent</option>
+                    </select>
+                </label>
+                <div class="gopt-subrow" id="gopt-node-info-opts">
+                    <label class="gopt-check"><input type="checkbox" id="gopt-node-info-shape" checked> shape</label>
+                </div>
+                <hr class="gopt-sep">
+                <label class="gopt-row">
+                    orientation
+                    <select id="layout-select" title="Layout direction">
+                        <option value="TB">top → bottom</option>
+                        <option value="LR">left → right</option>
+                    </select>
+                </label>
+                <label class="gopt-row" title="Show the graph as modules instead of every operation. Double-click a module to go inside it.">
+                    module depth
+                    <select id="module-depth-select">
+                        <option value="auto" selected>auto</option>
+                        <option value="0">off</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                    </select>
+                </label>
+                <label class="gopt-row">
+                    pane depth
+                    <select id="depth-select" title="Max module nesting depth shown">
+                        <option value="1" selected>1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                        <option value="0">∞</option>
+                    </select>
+                </label>
+                <hr class="gopt-sep">
+                <label class="gopt-row">
+                    block opacity
+                    <input type="range" id="gopt-compound-opacity" min="0" max="0.5" step="0.01" value="0.10" style="width:72px;vertical-align:middle">
+                    <span id="gopt-compound-opacity-val" style="min-width:28px;text-align:right">10%</span>
+                </label>
+                <hr class="gopt-sep">
+                <div class="gopt-head">simplify</div>
+                <label class="gopt-row" title="Hide sym_size and the arithmetic on it — shape plumbing, not data">
+                    <input type="checkbox" id="gopt-simplify-shape_calc" checked> hide shape arithmetic</label>
+                <label class="gopt-row" title="Fold getitem back into the op whose tuple it unpacks">
+                    <input type="checkbox" id="gopt-simplify-unpack" checked> merge tuple unpacking</label>
+                <label class="gopt-row" title="Collapse runs of view/transpose/clone into one node">
+                    <input type="checkbox" id="gopt-simplify-collapse" checked> collapse reshape chains</label>
+                <label class="gopt-row" title="Draw a widely-used node again next to each distant consumer, instead of running long edges across the graph">
+                    <input type="checkbox" id="gopt-alias-nodes" checked> alias distant reuse</label>
+                <div class="gopt-subrow">
+                    <button id="gopt-chains-expand" class="gopt-mini" title="Open every collapsed chain">expand all</button>
+                    <button id="gopt-chains-collapse" class="gopt-mini" title="Close every open chain">collapse all</button>
+                </div>
+                <hr class="gopt-sep">
+                <label class="gopt-row"><input type="checkbox" id="gopt-nav-skip-weights" checked> skip weights in navigation</label>
+                <label class="gopt-row"><input type="checkbox" id="gopt-nav-show-code"> show code during navigation</label>
+            </div>
+            <button id="save-config-btn" title="Save bending config (.tbconfig)">config ⬇</button>
+                <button id="export-script-btn" title="Export bended model as TorchScript (.pt)">script ⬇</button>
+            </div>
+            <div id="input-group">
+                <button id="input-panel-btn" title="Show / hide input panel">+ inputs</button>
+                <button id="topbar-retrace-btn" title="Retrace with current inputs" disabled>↺ retrace</button>
+                <button id="callback-panel-btn" title="Run an interface callback" style="display:none">▷ run</button>
+            </div>
+            <a id="play-mode-btn" href="/play/" title="Open play mode (fast macro interaction)">▶ play</a>
+            <a id="generate-mode-btn" href="/generate/" title="Open generate mode (render many combinations of bending values to files)">⚙ generate</a>
+        </div>
+    </div>
+
+    <!-- Depth map: the module the graph is currently inside, and every level
+         above it. Only shown while module depth is on. -->
+    <div id="graph-scope-bar" style="display:none"></div>
+
+    <div id="main-layout">
+        <!-- Left sidebar: filters + legend -->
+        <div id="sidebar">
+            <div class="sidebar-section">
+                <div class="section-title">Op types</div>
+                <div id="op-filters">
+                    <label class="filter-item">
+                        <span class="color-dot" style="background:#4A90D9"></span>
+                        <input type="checkbox" checked value="placeholder">
+                        <span>placeholder</span>
+                    </label>
+                    <label class="filter-item">
+                        <span class="color-dot" style="background:#5CB85C"></span>
+                        <input type="checkbox" checked value="call_module">
+                        <span>call_module</span>
+                    </label>
+                    <label class="filter-item">
+                        <span class="color-dot" style="background:#F0AD4E"></span>
+                        <input type="checkbox" checked value="call_function">
+                        <span>call_function</span>
+                    </label>
+                    <label class="filter-item">
+                        <span class="color-dot" style="background:#9B59B6"></span>
+                        <input type="checkbox" checked value="call_method">
+                        <span>call_method</span>
+                    </label>
+                    <label class="filter-item">
+                        <span class="color-dot" style="background:#45B39D"></span>
+                        <input type="checkbox" checked value="get_attr">
+                        <span>get_attr</span>
+                    </label>
+                    <label class="filter-item">
+                        <span class="color-dot" style="background:#E74C3C"></span>
+                        <input type="checkbox" checked value="output">
+                        <span>output</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
+                    Selection
+                    <span id="nav-scope-count" class="nav-scope-count"></span>
+                </div>
+                <!-- what is currently scoping the graph: a search, a list, an
+                     explicit selection, or one of the buttons below -->
+                <div id="sel-scope-summary" class="sel-scope-summary">
+                    <span id="sel-scope-kind" class="sel-scope-kind"></span>
+                    <span id="sel-scope-label" class="sel-scope-label"></span>
+                    <button id="sel-scope-clear" class="sel-scope-clear" title="Clear it">×</button>
+                </div>
+                <div class="nav-scope-btns">
+                    <button class="nav-scope-btn active" data-scope="all"    title="Navigate all nodes">all</button>
+                    <button class="nav-scope-btn"        data-scope="favs"   title="Navigate starred nodes">★ favs</button>
+                    <button class="nav-scope-btn"        data-scope="bended" title="Navigate bended nodes">⚡ bent</button>
+                    <button class="nav-scope-btn"        data-scope="list"   title="Navigate a node list">list</button>
+                </div>
+                <div id="nav-scope-list-row" style="display:none;margin-top:5px">
+                    <select id="nav-scope-list-sel"></select>
+                </div>
+            </div>
+
+            <!-- the model's own account of its process: its annotated values, in order -->
+            <div class="sidebar-section" id="process-section" style="display:none">
+                <div class="section-title">Process</div>
+                <div id="process-list"></div>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="section-title">Legend</div>
+                <div class="legend-item">
+                    <span class="swatch bent-swatch"></span>
+                    <span>has bending</span>
+                </div>
+                <div class="legend-item">
+                    <span class="swatch ancestor-swatch"></span>
+                    <span>ancestor path</span>
+                </div>
+                <div class="legend-item">
+                    <span class="swatch descendant-swatch"></span>
+                    <span>descendant path</span>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="section-title">Stats</div>
+                <div id="graph-stats" class="stats-grid">
+                    <span class="stat-label">nodes</span><span id="stat-nodes">—</span>
+                    <span class="stat-label">edges</span><span id="stat-edges">—</span>
+                    <span class="stat-label">bent</span><span id="stat-bent">—</span>
+                </div>
+                <div id="graph-hidden" class="graph-hidden" style="display:none"></div>
+            </div>
+
+            <!-- Settings the interface owns. Hidden unless it declares some;
+                 a bare BendedModule has nothing to put here. -->
+            <div class="sidebar-section" id="iface-options-section" style="display:none">
+                <div class="section-title">
+                    Model options
+                    <span id="iface-options-name" class="iface-options-name"></span>
+                </div>
+                <div id="iface-options"></div>
+                <div id="iface-options-stale" class="iface-stale" style="display:none">
+                    the trace no longer matches these — <button id="iface-retrace">retrace</button>
+                </div>
+            </div>
+
+            <div class="sidebar-section sidebar-section--help">
+                <button id="help-btn" title="Keyboard shortcuts &amp; help">? shortcuts</button>
+            </div>
+        </div>
+
+        <!-- Keyboard shortcuts modal -->
+        <div id="help-modal" style="display:none">
+            <div id="help-modal-box">
+                <div id="help-modal-header">
+                    <span>Keyboard shortcuts</span>
+                    <button id="help-modal-close">×</button>
+                </div>
+                <div id="help-modal-body">
+                    <div class="help-section-title">Graph navigation</div>
+                    <div class="help-row"><kbd>↑</kbd><kbd>↓</kbd> <span>navigate nodes (top→bottom layout)</span></div>
+                    <div class="help-row"><kbd>←</kbd><kbd>→</kbd> <span>navigate nodes (left→right layout)</span></div>
+                    <div class="help-row"><kbd>Esc</kbd> <span>deselect / close panels</span></div>
+                    <div class="help-section-title">Panels</div>
+                    <div class="help-row"><kbd>Space</kbd> <span>open / close pin dashboard</span></div>
+                    <div class="help-row"><kbd>Tab</kbd> <span>open / close activation browser</span></div>
+                    <div class="help-section-title">Nodes</div>
+                    <div class="help-row"><span class="help-click">click</span> <span>select node, show details &amp; activation</span></div>
+                    <div class="help-row"><span class="help-click">right-click</span> <span>node context menu</span></div>
+                    <div class="help-row"><kbd>⊕</kbd> <span>pin node activation to dashboard</span></div>
+                    <div class="help-row"><kbd>★</kbd> <span>star / favourite a node</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Graph canvas -->
+        <div id="graph-container">
+            <div id="cy"></div>
+            <div id="loading">Loading graph…</div>
+            <!-- Off-screen bent-node locators (GTA-radar style) -->
+            <div id="bent-locators" style="display:none"></div>
+            <!-- Per-node shape/op annotation overlay -->
+            <div id="node-info-overlay"></div>
+            <!-- Nav prev/next locators overlay -->
+            <div id="nav-locators" style="display:none"></div>
+        </div>
+
+        <!-- Nav panel: outside graph-container to avoid z-index/overflow clipping -->
+        <div id="graph-nav-panel" style="display:none">
+            <div id="graph-nav-prev-hint" class="graph-nav-hint graph-nav-hint-prev"></div>
+            <div id="graph-nav-box">
+                <div id="graph-nav-info">
+                    <div id="graph-nav-header">
+                        <span id="graph-nav-label"></span>
+                        <span id="graph-nav-idx"></span>
+                        <button id="graph-nav-code-btn" title="Show source code">&lt;/&gt;</button>
+                    </div>
+                    <div id="graph-nav-shape-row"><span id="graph-nav-shape"></span></div>
+                    <div id="graph-nav-meta">
+                        <span id="graph-nav-op"></span>
+                        <span id="graph-nav-target"></span>
+                    </div>
+                    <div id="graph-nav-args"></div>
+                </div>
+                <div id="graph-nav-code" style="display:none"></div>
+            </div>
+            <div id="graph-nav-next-hint" class="graph-nav-hint graph-nav-hint-next"></div>
+        </div>
+
+        <!-- Input panel (toggled by + button) -->
+        <div id="input-panel" class="hidden">
+            <div id="input-panel-header">
+                <span class="section-title">Inputs</span>
+                <div class="input-panel-header-actions">
+                    <button id="retrace-btn" title="Re-trace with current inputs — updates node shapes" disabled>↺ retrace</button>
+                    <button id="expand-input-panel" title="Open the inputs in a large window (Esc to return)">⤢</button>
+                    <button id="close-input-panel" title="Close">×</button>
+                </div>
+            </div>
+            <!-- batch: stack every entry of an input along the batch dimension,
+                 as play mode does, instead of running on the one selected -->
+            <div id="bench-batch-bar" class="bench-batch-bar">
+                <label class="bench-batch-toggle"
+                       title="Batch: every checked entry of an input is stacked along the batch dimension (as in play mode). Off: the selected entry alone.">
+                    <input type="checkbox" id="bench-batch-on"> batch
+                </label>
+                <select id="bench-batch-mode">
+                    <option value="pad" title="Zero-pad the shorter entries up to the largest, then stack.">pad</option>
+                    <option value="loop" title="Tile the shorter entries up to the largest, then stack — audio repeats instead of trailing off into silence.">loop</option>
+                    <option value="stack" title="Strict: the entries must already agree on every dimension but the first.">stack</option>
+                    <option value="sequential" title="Play mode runs one forward pass per entry; the graph shows one pass, so here it runs the selected entry.">sequential</option>
+                </select>
+                <span id="bench-batch-note" class="bench-batch-note"></span>
+            </div>
+            <div id="input-items"></div>
+        </div>
+        <div id="input-panel-backdrop" class="input-panel-backdrop"></div>
+
+        <!-- Interface callbacks: whole operations that run Python around the
+             graph (GPT-2's generate, a model's audio round trip). What each
+             argument is, and what the result is, comes from the interface's
+             own `_callbacks_` declaration. -->
+        <div id="callback-panel" class="hidden">
+            <div id="callback-panel-header">
+                <span class="section-title">Run</span>
+                <div class="input-panel-header-actions">
+                    <span id="callback-interface" class="callback-interface"></span>
+                    <button id="close-callback-panel" title="Close">×</button>
+                </div>
+            </div>
+            <div id="callback-items"></div>
+        </div>
+
+        <!-- Fold toggle buttons (always visible, slide with panels) -->
+        <button id="sidebar-fold-btn" class="pane-fold-tab pane-fold-tab--left" title="Toggle sidebar">◀</button>
+        <button id="details-fold-btn" class="pane-fold-tab pane-fold-tab--right" title="Toggle details">▶</button>
+
+        <!-- Right panel: node details -->
+        <div id="details-panel">
+            <div id="details-empty">
+                <div class="empty-hint">
+                    <div class="empty-icon">⬡</div>
+                    <div>click a node<br>to inspect it</div>
+                    <div class="empty-shortcuts">
+                        <span><kbd>Space</kbd> dashboard</span>
+                        <span><kbd>Tab</kbd> activations</span>
+                    </div>
+                </div>
+            </div>
+            <div id="details-content">
+                <div id="detail-header">
+                    <div id="detail-op-badge"></div>
+                    <div id="detail-name"></div>
+                </div>
+                <table id="details-table">
+                    <tr>
+                        <td class="dt-label">target</td>
+                        <td id="detail-target" class="dt-value"></td>
+                    </tr>
+                    <tr>
+                        <td class="dt-label">shape</td>
+                        <td id="detail-shape" class="dt-value"></td>
+                    </tr>
+                    <tr id="bending-row">
+                        <td class="dt-label">bending</td>
+                        <td id="detail-bending" class="dt-value bending-value"></td>
+                    </tr>
+                    <tr id="source-row">
+                        <td class="dt-label">source</td>
+                        <td id="detail-source" class="dt-value dt-source"></td>
+                    </tr>
+                </table>
+
+                <div id="detail-tags-section"></div>
+                <!-- what mark() says about this value -->
+                <div id="detail-annotation-section" style="display:none"></div>
+
+                <!-- members of a collapsed chain / outputs folded into a producer -->
+                <div id="detail-contents-section" style="display:none">
+                    <div class="detail-section-title" id="detail-contents-title">contents</div>
+                    <div id="detail-contents"></div>
+                </div>
+
+                <div class="detail-section-title">inputs</div>
+                <div id="detail-args"></div>
+                <!-- Bending operations for the selected node -->
+                <div id="bending-ops-section" style="display:none">
+                    <div id="bending-ops-header">
+                        <span class="bending-ops-title">⚡ bending</span>
+                        <span id="bending-ops-count" class="bending-ops-count"></span>
+                        <button id="bending-ops-add-btn" title="Add a bend operation">+ add</button>
+                        <div id="bending-update-mode-indicator" title="Update mode">
+                            <span id="bending-mode-label">auto</span>
+                        </div>
+                    </div>
+                    <div id="bending-ops-list"></div>
+                </div>
+
+                <div id="viz-section" style="display:none">
+                    <div class="viz-header">
+                        <div>
+                            <div class="viz-label" id="viz-label">data</div>
+                            <div class="viz-shape" id="viz-shape"></div>
+                        </div>
+                        <div class="viz-header-btns">
+                            <button id="viz-save-btn" title="Save activation">⬇</button>
+                            <button id="viz-pin-btn" title="Pin to comparison dashboard (Space)">⊕</button>
+                            <button id="viz-expand-btn" title="Expand">⊞</button>
+                        </div>
+                    </div>
+                    <!-- snapshots: save what the panel shows, recall it -->
+                    <div id="viz-snap" class="snap-toolbar-host"></div>
+                    <div id="viz-canvas-wrap" class="viz-canvas-wrap"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Expand modal -->
+    <div id="viz-modal" style="display:none">
+        <div id="viz-modal-backdrop"></div>
+        <div id="viz-modal-panel">
+            <div id="viz-modal-header">
+                <div>
+                    <span id="viz-modal-label"></span>
+                    <span id="viz-modal-shape" class="viz-shape" style="display:inline;margin-left:8px"></span>
+                </div>
+                <button id="viz-modal-close">×</button>
+            </div>
+            <div id="viz-modal-snap" class="snap-toolbar-host"></div>
+            <div id="viz-modal-wrap" class="viz-canvas-wrap"></div>
+        </div>
+    </div>
+
+    {% include "graph_viewer/_act_browser.html" %}
+
+    <!-- alias suggestion dropdown (body-level to avoid overflow:hidden clipping) -->
+    <div id="alias-suggest-list" style="display:none"></div>
+
+    <!-- toast notification -->
+    <div id="toast" style="display:none"></div>
+
+    <!-- Error log panel -->
+    <button id="error-log-badge" style="display:none" title="Show error log">⚠ <span id="error-log-count">0</span></button>
+    <div id="error-log-panel" style="display:none">
+        <div id="error-log-header">
+            <span id="error-log-title">⚠ Errors</span>
+            <div id="error-log-actions">
+                <button id="error-log-copy" title="Copy all errors">⎘ copy</button>
+                <button id="error-log-clear" title="Clear all errors">clear</button>
+                <button id="error-log-close">×</button>
+            </div>
+        </div>
+        <div id="error-log-body"></div>
+    </div>
+
+    <!-- Pin comparison dashboard — full-screen overlay (Space to toggle) -->
+    <div id="pin-dashboard" class="hidden">
+        <div id="pin-backdrop"></div>
+        <div id="pin-toolbar">
+            <span class="pin-toolbar-title">pinned</span>
+            <span id="pin-count" class="pin-count">0</span>
+            <button id="pin-sync-batch-btn" title="Sync batch indices across all cards">⇄ batch</button>
+            <button id="pin-retrace-btn" title="Retrace with current inputs and refresh all cards">↺ retrace</button>
+            <button id="pin-clear-btn" title="Clear all">clear all</button>
+            <label class="pin-zoom-label" title="Tile zoom">
+                <span>zoom</span>
+                <input type="range" id="pin-tile-zoom" min="0.25" max="3" step="0.05" value="1">
+                <span id="pin-tile-zoom-val">1×</span>
+            </label>
+            <button id="pin-dashboard-close" title="Close  (Space)">×</button>
+        </div>
+        <div id="pin-page-tabs"></div>
+        <div id="pin-items"></div>
+    </div>
+
+    <!-- Bend dialog — pick callback type + configure params for a node -->
+    <div id="bend-modal" style="display:none">
+        <div id="bend-modal-backdrop"></div>
+        <div id="bend-modal-panel">
+            <div id="bend-modal-header">
+                <div>
+                    <span class="bend-modal-title">⚡ bend</span>
+                    <span id="bend-modal-node-name" class="bend-modal-node"></span>
+                </div>
+                <button id="bend-modal-close">×</button>
+            </div>
+            <div id="bend-modal-layout">
+                <!-- Left: vertical tab buttons -->
+                <div id="bend-modal-tabbar">
+                    <button class="bend-modal-tab active" data-tab="new">New</button>
+                    <button class="bend-modal-tab" data-tab="existing">Bend with…</button>
+                </div>
+                <!-- Right: pane content -->
+                <div id="bend-modal-panes">
+                    <!-- "New" pane: left=callback list, right=params -->
+                    <div class="bend-pane" id="bend-pane-new">
+                        <div id="bend-cb-list"></div>
+                        <div id="bend-cb-detail">
+                            <!-- hidden select kept for _applyBendDialog compatibility -->
+                            <select id="bend-cb-select" style="display:none"></select>
+                            <div id="bend-cb-desc" class="bend-cb-desc"></div>
+                            <div id="bend-params-section"></div>
+                        </div>
+                    </div>
+                    <!-- "Bend with…" pane: existing bindings -->
+                    <div class="bend-pane" id="bend-pane-existing" style="display:none">
+                        <div id="bend-existing-pane-list"></div>
+                    </div>
+                </div>
+            </div>
+            <!-- hidden compatibility elements -->
+            <input type="checkbox" id="bend-add-to-existing" style="display:none">
+            <select id="bend-existing-select" style="display:none"></select>
+            <div id="bend-modal-footer">
+                <button id="bend-modal-cancel">Cancel</button>
+                <button id="bend-modal-apply" class="bend-apply-btn">Apply Bend</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Plotly for interactive pin-card viz. Download plotly-2.27.0.min.js locally for offline use. -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script>
+        const INITIAL_FN = "{{ default_fn }}";
+        const INITIAL_METHODS = {{ methods_json|safe }};
+        const INITIAL_MODELS = {{ models_json|safe }};
+    </script>
+    <script src="{% static 'graph_viewer/views.js' %}?v={{ static_v }}"></script>
+    <script src="{% static 'graph_viewer/errors.js' %}?v={{ static_v }}"></script>
+    <script src="{% static 'graph_viewer/search.js' %}?v={{ static_v }}"></script>
+    <script src="{% static 'graph_viewer/inputs.js' %}?v={{ static_v }}"></script>
+    <script src="{% static 'graph_viewer/bench.js' %}?v={{ static_v }}"></script>
+    <script src="{% static 'graph_viewer/graph.js' %}?v={{ static_v }}"></script>
+</body>
+</html>

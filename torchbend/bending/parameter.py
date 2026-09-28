@@ -373,6 +373,11 @@ class BendingParameter(nn.Module):
         child = BendingParameter(name=self.name, value=self.value,
                                  weight=weight, bias=bias,
                                  range=[self.min_clamp, self.max_clamp])
+        # Built from the parent's value *tensor*, the child would infer itself a
+        # tensor parameter -- and every callback declaring a plain float param
+        # (Permute's `prob`, the filter's `cutoff`) would refuse a macro linked
+        # through a range. It is the parent's value, so it is the parent's type.
+        child.param_type = self.param_type
         getattr(self, "_derived").append(child)
         return child
 

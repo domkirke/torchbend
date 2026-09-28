@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+{% load static %}
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TorchBend {% if page_mode == "generate" %}Generate{% else %}Play{% endif %} — {{ module_type }}</title>
+    <link rel="stylesheet" href="{% static 'graph_viewer/style.css' %}?v={{ static_v }}">
+    <link rel="stylesheet" href="{% static 'graph_viewer/play.css' %}?v={{ static_v }}">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+<body class="play-body{% if page_mode == "generate" %} gen-page{% endif %}">
+    <div id="topbar">
+        <div id="title">
+            <span class="tb-logo">torchbend</span>
+            <span class="separator">/</span>
+            <span id="module-name">{{ module_type }}</span>
+            <span class="separator">·</span>
+            {% if page_mode == "generate" %}<span class="play-badge gen-badge">⚙ generate</span>{% else %}<span class="play-badge">▶ play</span>{% endif %}
+        </div>
+
+        <div id="play-method-selector">
+            {% for method in methods %}
+            <button class="method-btn {% if method == default_fn %}active{% endif %}"
+                    data-fn="{{ method }}">{{ method }}</button>
+            {% endfor %}
+        </div>
+
+        <div id="play-topbar-right">
+            <label class="play-ctl">
+                device
+                <select id="play-device"></select>
+            </label>
+            <label class="play-ctl" title="Experimental: TorchScript the model for raw speed. Note: with the current as_input handling, macro changes may not propagate in scripted mode.">
+                <input type="checkbox" id="play-scripted"> script (exp.)
+            </label>
+            <button id="play-recompile" title="Recompile the runtime">⟳ compile</button>
+            <button id="play-orient" title="Layout: columns (left→right, good for images) / rows (top→bottom, good for 1-D signals)">⬌ columns</button>
+            <span id="play-mode-badge" class="play-mode-badge" title="Active runtime"></span>
+            {% if page_mode == "generate" %}
+            <a class="play-nav" href="/play/" title="Play mode: perform with the macros">▶ play</a>
+            {% else %}
+            <a class="play-nav" href="/generate/" title="Generate mode: render many combinations of bending values to files">⚙ generate</a>
+            {% endif %}
+            <a id="play-back" href="/" title="Back to graph editor">← editor</a>
+        </div>
+    </div>
+
+    <div id="play-status-bar">
+        <span id="play-status">Compiling…</span>
+        <span id="play-busy" class="play-busy" title="The model is running — the output below is the previous one">
+            <span class="play-busy-dot"></span>running…
+        </span>
+        <span id="play-perf" class="play-perf"></span>
+    </div>
+
+    <div id="play-layout">
+        <!-- Input bench (first) -->
+        <div id="play-inputs-pane" class="play-pane">
+            <div class="play-pane-header">
+                <button class="play-fold-btn" data-fold="inputs" title="Fold">▾</button>
+                <span class="play-pane-title">Input bench</span>
+                <span id="play-input-count" class="play-pill">0</span>
+                <button id="play-import-inputs" class="play-mini-btn" style="display:none"
+                        title="Import every input the graph editor has on its bench">⇩ editor</button>
+                <select id="play-add-optional" class="play-mini-select" style="display:none"
+                        title="Arguments with a default in the traced signature. Leave one out and the model runs on that default; add it to drive it here."></select>
+            </div>
+            <!-- run-shaping controls, on their own wrapping row so the header
+                 stays readable and nothing is clipped in the rows layout -->
+            <div id="play-bench-bar" class="play-bench-bar">
+                <button id="play-resample" class="play-mini-btn"
+                        title="Re-evaluate the input expressions. They are otherwise held fixed, so moving a macro changes only the macro — not the noise it runs on.">🎲</button>
+                <label class="play-batch-toggle"
+                       title="Batch: every checked entry of an input goes in (stacked, or one run each in sequential mode). Off: the selected entry alone. Shared with the graph editor.">
+                    <input type="checkbox" id="play-batch-on"> batch
+                </label>
+                <select id="play-batch-mode" class="play-mini-select"
+                        title="How several entries on one placeholder become a run.">
+                    <option value="pad">pad</option>
+                    <option value="loop">loop</option>
+                    <option value="stack">stack</option>
+                    <option value="sequential">sequential</option>
+                </select>
+                <span id="play-batch-hint" class="play-batch-hint"></span>
+            </div>
+            <div id="play-inputs"></div>
+        </div>
+
+        {% if page_mode == "generate" %}
+        <!-- Generate mode: what varies, and how the values combine -->
+        <div id="gen-sweep-pane" class="play-pane">
+            <div class="play-pane-header">
+                <span class="play-pane-title">Sweep</span>
+                <span id="gen-param-count" class="play-pill">0</span>
+                <select id="gen-add-param" class="play-mini-select"
+                        title="A macro, or a parameter of a bending no macro drives"></select>
+                <span id="gen-run-count" class="gen-run-count"></span>
+            </div>
+            <div id="gen-params"></div>
+            <div id="gen-no-params" class="play-empty">
+                Pick values to vary with <b>＋ parameter</b>: the macros, and the
+                parameters of this method's bendings. Anything not listed keeps
+                its current value.
+            </div>
+            <div id="gen-combine" class="gen-section"></div>
+        </div>
+
+        <!-- Generate mode: where the files go, and the job -->
+        <div id="gen-export-pane" class="play-pane">
+            <div class="play-pane-header">
+                <span class="play-pane-title">Export</span>
+                <div class="gen-actions">
+                    <button id="gen-start" class="play-run-btn">▶ Generate</button>
+                    <button id="gen-cancel" class="play-mini-btn" style="display:none">■ stop</button>
+                </div>
+            </div>
+            <div id="gen-export" class="gen-section"></div>
+            <div id="gen-preview" class="gen-section"></div>
+            <div id="gen-progress" class="gen-section" style="display:none"></div>
+        </div>
+        {% endif %}
+
+        <!-- Macros -->
+        <div id="play-macros-pane" class="play-pane"{% if page_mode == "generate" %} style="display:none"{% endif %}>
+            <div class="play-pane-header">
+                <span>Macros</span>
+                <span id="play-macro-count" class="play-pill">0</span>
+                <button id="play-refresh-macros" class="play-mini-btn"
+                        title="Re-read the BendingParameters from the editor — one created since this runtime was compiled appears without recompiling.">⇩ editor</button>
+                <select id="play-add-macro" class="play-mini-select"
+                        title="Anything that can become a macro: the editor's BendingParameters, and bendable callback parameters that no macro drives yet — picking one of those promotes it first."></select>
+                <button id="play-macro-edit" class="play-mini-btn"
+                        title="Edit mode: show each macro's attachments and the range it maps 0…1 onto for each">✎ ranges</button>
+            </div>
+            <div id="play-macros"></div>
+            <div id="play-no-macros" class="play-empty" style="display:none">
+                No macros defined.<br>
+                Create <b>BendingParameters</b> in the editor and link them to
+                callbacks, then return here to play with them.
+            </div>
+
+            <!-- Active bendings. Their parameters are playable as they are: a
+                 macro is for binding several together or for a named control,
+                 not a toll you pay before you can move anything. -->
+            <div id="play-bend-bar" class="play-bench-bar">
+                <span class="play-subhead">Bendings</span>
+                <span id="play-bend-count" class="play-pill">0</span>
+                <button id="play-add-bend" class="play-mini-btn"
+                        title="Attach a bending callback to a node of this method">＋ bend</button>
+                <span class="play-batch-hint" title="Drag one parameter onto another to drive both from a single macro">drag to join</span>
+            </div>
+            <div id="play-bendings"></div>
+
+            <!-- Every derived parameter the macros feed. A macro reads 0…1 and
+                 each of its attachments maps that onto its own range, so what a
+                 macro is "worth" is really one value per target — this shows
+                 them all, live. -->
+            <div id="play-derived" class="play-derived" style="display:none">
+                <button id="play-derived-head" class="play-derived-head"
+                        title="Show the value each attachment is receiving">
+                    <span id="play-derived-caret" class="play-derived-caret">▸</span>
+                    <span>derived values</span>
+                    <span id="play-derived-count" class="play-pill">0</span>
+                </button>
+                <div id="play-derived-body" class="play-derived-body"></div>
+            </div>
+        </div>
+
+        <!-- Output + transport -->
+        <div id="play-output-pane" class="play-pane"{% if page_mode == "generate" %} style="display:none"{% endif %}>
+            <div class="play-pane-header">
+                <button class="play-fold-btn" data-fold="output" title="Fold">▾</button>
+                <span class="play-pane-title">Output</span>
+                <div id="play-transport">
+    <select id="play-run-target" class="play-mini-select" style="display:none"
+                            title="What Generate runs: the compiled graph, or an operation the interface declares (these run Python around the graph and cannot be compiled)"></select>
+                    <div class="play-mode-switch">
+                        <button id="play-mode-realtime" class="active" title="Run on every macro change">realtime</button>
+                        <button id="play-mode-offline" title="Run only when you press Generate">offline</button>
+                    </div>
+                    <button id="play-run" class="play-run-btn">▶ Generate</button>
+                </div>
+            </div>
+            <!-- Arguments of the declared callback currently selected as the run
+                 target, built from the interface's own declaration. Hidden while
+                 Generate runs the compiled graph. -->
+            <div id="play-cb-args" class="play-cb-args" style="display:none"></div>
+            <div id="play-output"></div>
+            <div id="play-output-busy" class="play-computing" style="display:none">
+                <span class="play-computing-spinner"></span>
+                <span>computing…</span>
+            </div>
+            <!-- both placeholders are owned by _syncRunUI(); the page starts busy -->
+            <div id="play-output-empty" class="play-empty" style="display:none"></div>
+        </div>
+    </div>
+
+    {# the editor's activation browser, verbatim — play mode drives it in list
+       mode to choose a node to bend #}
+    {% include "graph_viewer/_act_browser.html" %}
+    <div id="alias-suggest-list" style="display:none"></div>
+
+    <div id="play-toast" class="play-toast"></div>
+
+    <script>
+        window.PLAY_METHODS = {{ methods_json|safe }};
+        window.PLAY_DEFAULT_FN = "{{ default_fn }}";
+        window.PLAY_MODEL = "{{ current_model|escapejs }}";
+        window.PLAY_PAGE_MODE = "{{ page_mode|default:'play' }}";
+    </script>
+    <script src="{% static 'graph_viewer/views.js' %}?v={{ static_v }}"></script>
+    <script src="{% static 'graph_viewer/errors.js' %}?v={{ static_v }}"></script>
+    <script src="{% static 'graph_viewer/search.js' %}?v={{ static_v }}"></script>
+    <script src="{% static 'graph_viewer/inputs.js' %}?v={{ static_v }}"></script>
+    <script src="{% static 'graph_viewer/bench.js' %}?v={{ static_v }}"></script>
+    <script src="{% static 'graph_viewer/play.js' %}?v={{ static_v }}"></script>
+    {% if page_mode == "generate" %}
+    <script src="{% static 'graph_viewer/generate.js' %}?v={{ static_v }}"></script>
+    {% endif %}
+</body>
+</html>

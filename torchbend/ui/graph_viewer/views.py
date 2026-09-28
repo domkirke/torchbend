@@ -1,4 +1,5 @@
 import io
+import os
 import json
 import logging as _logging
 import traceback as _tb
@@ -8,9 +9,13 @@ from django.shortcuts import render
 from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from torchbend.tracing import activation_log as _actlog
-from . import (get_module, get_registry, get_current_default_inputs,
+from . import (get_module, get_interface, get_registry, get_current_default_inputs,
                get_current_views, get_current_view_defaults, get_sync_manager)
+from . import serializer as _serializer
+from .default_inputs import Expr as _Expr, as_bench_value as _as_bench_value
 from .serializer import serialize_graph, get_available_methods, serialize_tensor_for_viz
+from . import spec_adapters
+from .spec_adapters import FRONTEND
 from .node_views import serialize_node, describe as describe_views, resolve as resolve_view
 
 
@@ -71,6 +76,13 @@ def _get_bending_session():
         return None
     if entry.session is None:
         entry.session = BendingSession()
+        # snapshots before the bindings: a recalled snapshot is a binding that
+        # needs its tensor to be restored
+        sm = get_sync_manager()
+        if sm is not None:
+            entry.session.snapshots = sm.load_snapshots(entry.name)
+            if entry.session.snapshots:
+                print(f"[sync] Restored {len(entry.session.snapshots)} snapshot(s) for '{entry.name}'.")
         pending = getattr(entry, "_pending_sync_session", None)
         if pending is not None:
             bm = entry.module
@@ -168,16 +180,93 @@ def _node_view_args(fn: str, node: str):
     return session_sel, run_cfg
 
 
-def _serialize_activation(t, fn, node, sr_hint=None):
+# ── the active interface's declarations ──────────────────────────────────────
+# Everything the viewer knows about an interface comes from `iface.spec` (see
+# torchbend.interfaces.spec). A bare module has none, and gets the permissive
+# defaults: every method batches, runs everywhere, has no input modes.
+
+def _spec():
+    """The active interface's InterfaceSpec, or None for a bare module."""
+    iface = get_interface()
+    return iface.spec if iface is not None else None
+
+
+def _method_spec(fn):
+    """`fn`'s BoundMethod, or None when there is no interface or it is invalid."""
+    spec = _spec()
+    if spec is None:
+        return None
+    try:
+        return spec.method(fn)
+    except Exception as exc:
+        _warn_once("declarations of %s are invalid: %s" % (type(spec.iface).__name__, exc))
+        return None
+
+
+def _tokens():
+    spec = _spec()
+    if spec is None:
+        return None
+    try:
+        return spec.tokens
+    except Exception as exc:
+        _warn_once("declarations of %s are invalid: %s" % (type(spec.iface).__name__, exc))
+        return None
+
+
+def _token_eos_id():
+    tokens = _tokens()
+    try:
+        return tokens.eos if tokens is not None else None
+    except Exception:
+        return None
+
+
+def _token_decoder():
+    """The active interface's token decoder, if it declares one.
+
+    This is what lets a tensor of ids — or of logits — be read as the text it
+    stands for, rather than as a grid of numbers.
+    """
+    tokens = _tokens()
+    return tokens.decode if tokens is not None else None
+
+
+def _token_vocab_size():
+    """The active interface's tokenizer vocabulary size, if it has one.
+
+    Lets the "decoded text" view tell an actual id/logits tensor apart from
+    any other tensor a token decoder alone can't rule out — a vision model's
+    patch embeddings, say — by size rather than by guessing from rank alone.
+    """
+    iface = get_interface()
+    if iface is None:
+        return None
+    try:
+        tok = getattr(iface, "tokenizer", None)
+        return len(tok) if tok is not None else None
+    except Exception:
+        return None
+
+
+def _serialize_activation(t, fn, node, sr_hint=None, declared_audio=False):
     """Serialize an activation tensor through the modular view system."""
     session_sel, run_cfg = _node_view_args(fn, node)
     try:
         rank_defaults = get_current_view_defaults()
     except Exception:
         rank_defaults = None
+    # A node the model gives a sample rate to *is* audio — saying so is the
+    # point of declaring one, so it opens as audio rather than as the channel
+    # plots its rank would otherwise infer. Run config, so it outranks the
+    # shape-inferred default and yields to a view the user has actually picked.
+    if declared_audio and run_cfg is None and not session_sel:
+        run_cfg = {"view": "audio"}
     return serialize_node(t, fn=fn, node=_view_base_node(node),
                           session_sel=session_sel, run_cfg=run_cfg,
-                          rank_defaults=rank_defaults, sr_hint=sr_hint)
+                          rank_defaults=rank_defaults, sr_hint=sr_hint,
+                          decode=_token_decoder(), eos_id=_token_eos_id(),
+                          vocab_size=_token_vocab_size())
 
 
 # Last known audio sample rates per placeholder name (updated on each audio upload)
@@ -188,11 +277,30 @@ _last_audio_sr: dict = {}
 _last_eval: dict = {}
 
 
+def _remember_fn(fn):
+    """The method last opened on the current model, by either page -- so the
+    graph editor and play mode open on the same one after a switch."""
+    registry = get_registry()
+    entry = registry._entries.get(registry.current_name) if registry else None
+    if entry is not None and fn:
+        entry.last_fn = fn
+
+
+def _current_fn(methods):
+    """The method a page should open on: the one last used, if it still exists."""
+    registry = get_registry()
+    entry = registry._entries.get(registry.current_name) if registry else None
+    last = getattr(entry, "last_fn", None) if entry is not None else None
+    if last in methods:
+        return last
+    return methods[0] if methods else ""
+
+
 def index(request):
     registry = get_registry()
     bended_module = get_module()
     methods = get_available_methods(bended_module) if bended_module else []
-    default_fn = methods[0] if methods else ""
+    default_fn = _current_fn(methods)
     try:
         module_type = type(bended_module._module).__name__ if bended_module else "Unknown"
     except Exception:
@@ -216,21 +324,526 @@ def api_methods(request):
     return JsonResponse({"methods": get_available_methods(bended_module)})
 
 
+def _batch_supported(fn):
+    """Whether the active interface lets `fn` take a stacked batch (default yes)."""
+    method = _method_spec(fn)
+    return method.batch if method is not None else True
+
+
+def _refuse_batch(fn):
+    iface = get_interface()
+    raise ValueError(
+        "%s: '%s' takes one input at a time, so the bench's entries cannot be "
+        "stacked into a batch -- turn batch off%s"
+        % (type(iface).__name__, fn,
+           " (or, in play mode, use the sequential mode to run them one after "
+           "another)"))
+
+
+def api_devices(request):
+    """GET → devices this process has, the current one, and which methods the
+    active interface expects to work on each (see ``Interface.device_compat``).
+
+    Same device list play mode uses (`.devices`); the graph editor moves the
+    module itself rather than a compiled runtime, through the session below.
+    """
+    from .devices import device_compat_for_methods, device_options
+    bended_module = get_module()
+    methods = get_available_methods(bended_module) if bended_module else []
+    session = _get_bending_session()
+    return JsonResponse({
+        "devices": device_options(),
+        "current": session.device if session is not None else "cpu",
+        "compat": device_compat_for_methods(_spec(), methods),
+    })
+
+
+def _device_refusal(fn, device):
+    """Why `fn` should not be moved to `device`, or None when nothing says so."""
+    method = _method_spec(fn)
+    if method is None or method.runs_on(device):
+        return None
+    return ("%s says %r is not expected to work on %r (its Method(devices=...))"
+            % (type(method.iface).__name__, fn, device))
+
+
+@csrf_exempt
+def api_device_set(request):
+    """POST {device} → move the active module there for graph exploration.
+
+    Refused (400) when the active interface says the current method does not
+    expect to work on that device (`Interface.device_compat`) -- the point is
+    to fail here, with a clear reason, rather than on the first request that
+    actually runs the graph.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    bended_module = get_module()
+    if bended_module is None:
+        return JsonResponse({"error": "No module loaded"}, status=404)
+    session = _get_bending_session()
+    if session is None:
+        return JsonResponse({"error": "No session"}, status=500)
+    try:
+        body = json.loads(request.body) if request.body else {}
+    except Exception:
+        body = {}
+    device = body.get("device") or "cpu"
+    fn = body.get("fn") or (get_available_methods(bended_module) or [""])[0]
+    refused = _device_refusal(fn, device)
+    if refused:
+        return JsonResponse({"error": refused}, status=400)
+    try:
+        session.set_device(bended_module, device)
+    except Exception as exc:
+        return _error_json(exc, 400)
+    return JsonResponse({"ok": True, "device": session.device})
+
+
+def _display_opts(request):
+    """Read the viewer's simplification switches off the query string.
+
+    All of these are presentational: they change what the payload draws, never
+    what was traced.  Defaults match the checkboxes in the graph options panel.
+    """
+    def flag(name, default=True):
+        raw = request.GET.get(name)
+        if raw is None:
+            return default
+        return raw.lower() not in ("0", "false", "no")
+
+    expanded = request.GET.get("expand", "")
+    # absent or "auto" means: let the graph decide how much detail fits
+    raw_depth = request.GET.get("depth")
+    auto_depth = raw_depth is None or raw_depth == "auto"
+    try:
+        module_depth = 0 if auto_depth else max(0, int(raw_depth))
+    except (TypeError, ValueError):
+        module_depth, auto_depth = 0, True
+    return _serializer.DisplayOptions(
+        prune_unreachable=flag("prune"),
+        hide_shape_calc=flag("shape_calc"),
+        merge_unpack=flag("unpack"),
+        collapse_layout=flag("collapse"),
+        expanded=frozenset(x for x in expanded.split(",") if x),
+        scope=request.GET.get("scope", "") or "",
+        module_depth=module_depth,
+        auto_depth=auto_depth,
+    )
+
+
 def api_graph(request, fn):
     bended_module = get_module()
     if bended_module is None:
         return JsonResponse({"error": "No module loaded"}, status=404)
     try:
-        prune = request.GET.get("prune", "1").lower() not in ("0", "false", "no")
-        data = serialize_graph(bended_module, fn=fn, prune_unreachable=prune)
-        raw_inputs = get_current_default_inputs()
-        data["default_inputs"] = {
-            k: json.dumps(v.tolist()) if isinstance(v, torch.Tensor) else v
-            for k, v in raw_inputs.items()
-        }
+        data = serialize_graph(bended_module, fn=fn, display=_display_opts(request))
+        _remember_fn(fn)
+        data["input_modes"] = _declared_input_modes(fn)
+        data["batch_supported"] = _batch_supported(fn)
+        raw_inputs = get_current_default_inputs(fn)
+        data["default_inputs"] = {k: _as_bench_value(v) for k, v in raw_inputs.items()}
         return JsonResponse(data)
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+
+
+#: What a node-index entry carries. Deliberately small: the index covers every
+#: node in the trace, and the browser holds all of it in memory to search.
+_INDEX_FIELDS = ("id", "label", "op", "target", "op_name", "kind",
+                 "shape", "dtype", "module_path", "order")
+
+
+def api_node_index(request, fn):
+    """Every node in the trace, whatever the view is currently showing.
+
+    The activation search reads this instead of the drawn graph. Depth mode
+    folds a module's contents into one node and the simplification toggles hide
+    whole classes of node, but they are all still there in the trace and still
+    worth searching for — so the search looks through this, and a result that is
+    not currently drawn carries the `module_path` needed to go and open it.
+    """
+    bended_module = get_module()
+    if bended_module is None:
+        return JsonResponse({"error": "No module loaded"}, status=404)
+    try:
+        data = serialize_graph(bended_module, fn=fn, display=_serializer.FULL)
+        nodes = [{k: n.get(k) for k in _INDEX_FIELDS}
+                 for n in data.get("nodes", [])
+                 if not n.get("is_compound") and not n.get("is_module_group")]
+        return JsonResponse({"nodes": nodes, "aliases": data.get("aliases", {})})
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+# ── continuing an edited sequence ─────────────────────────────────────────────
+# Changing a word in a decoded sequence has to change what follows it, or the
+# view shows a continuation the model never made. That means running the model
+# again from the edit — one greedy step at a time, exactly as generation does —
+# rather than re-reading logits that were computed from the original tokens.
+
+
+#: A continuation is one forward pass per step; a long one on a real model is
+#: a long wait, so the request is bounded rather than trusted.
+_MAX_CONTINUE_STEPS = 64
+
+
+def _text_positions(logits_row, decode, topk):
+    """One position's worth of payload: what was chosen, and what nearly was."""
+    probs = torch.softmax(logits_row.detach().float(), dim=-1)
+    top_p, top_i = probs.topk(min(topk, probs.shape[-1]), dim=-1)
+    ids = top_i.tolist()
+    pieces = _serializer_pieces(ids, decode)
+    return {"id": ids[0], "piece": pieces.get(ids[0], ""),
+            "prob": round(float(top_p[0]), 5),
+            "alts": [{"id": i, "piece": pieces.get(i, ""), "prob": round(float(p), 5)}
+                     for i, p in zip(ids, top_p.tolist())]}
+
+
+def _serializer_pieces(ids, decode):
+    """``{id: piece}`` for a handful of ids, decoded one per row."""
+    uniq = sorted(set(int(i) for i in ids))
+    if not uniq:
+        return {}
+    try:
+        out = decode(torch.tensor(uniq, dtype=torch.long).unsqueeze(1),
+                     skip_special_tokens=False)
+    except Exception:
+        return {}
+    return {i: str(p) for i, p in zip(uniq, out)}
+
+
+def continue_greedy(logits_of, decode, prefix, steps, topk, eos=None):
+    """Extend ``prefix`` greedily, stopping at ``eos`` or after ``steps``.
+
+    Returns ``(positions, ids, stopped)``. Greedy on purpose: the same edit has
+    to give the same continuation, or you could not tell what your change did
+    from what the sampler did.
+    """
+    ids = torch.tensor([list(prefix)], dtype=torch.long)
+    positions, stopped = [], "steps"
+    with torch.no_grad():
+        for _ in range(steps):
+            logits = logits_of(ids)
+            if isinstance(logits, dict):
+                logits = logits.get("logits", next(iter(logits.values())))
+            pos = _text_positions(logits[0, -1], decode, topk)
+            positions.append(pos)
+            ids = torch.cat([ids, torch.tensor([[pos["id"]]], dtype=torch.long)], dim=-1)
+            # a sequence ends when the model says it does; the count is only the
+            # safety net behind that
+            if eos is not None and pos["id"] == int(eos):
+                stopped = "eos"
+                break
+    return positions, ids[0].tolist(), stopped
+
+
+@csrf_exempt
+def api_text_continue(request):
+    """POST {prefix, steps, topk} → greedily continue a sequence of token ids.
+
+    This is what makes an edit in the decoded-text view honest: the tokens after
+    the one you changed are predicted from your version of the sequence, not
+    left over from the model's.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    iface = get_interface()
+    tokens = _tokens()
+    if tokens is None or not tokens.has_logits:
+        return JsonResponse(
+            {"error": "this model declares no way to continue a sequence"}, status=404)
+    decode = _token_decoder()
+    if decode is None:
+        return JsonResponse({"error": "this model declares no token decoder"}, status=404)
+
+    try:
+        body = json.loads(request.body.decode() or "{}")
+        prefix = [int(i) for i in (body.get("prefix") or [])]
+        steps = max(0, min(int(body.get("steps") or 0), _MAX_CONTINUE_STEPS))
+        topk = max(1, min(int(body.get("topk") or 5), 10))
+    except Exception as exc:
+        return JsonResponse({"error": "bad request: %s" % exc}, status=400)
+    if not prefix:
+        return JsonResponse({"error": "prefix is empty"}, status=400)
+
+    eos = _token_eos_id() if body.get("stop_at_eos", True) else None
+
+    import time as _time
+    started = _time.time()
+    try:
+        positions, full, stopped = continue_greedy(tokens.logits, decode, prefix, steps, topk, eos)
+    except Exception as exc:
+        return _error_json(exc)
+    pieces = _serializer_pieces(full, decode)
+    return JsonResponse({
+        "ok": True,
+        "positions": positions,
+        "ids": full,
+        # the separators for the whole edited sequence, so the client can
+        # reassemble it the way the tokenizer would
+        "seps": _continue_separators(decode, full, pieces),
+        # why it stopped, and where the end landed if the model produced one
+        "stopped": stopped,
+        "eos_at": (len(full) - 1) if stopped == "eos" else None,
+        "run_ms": round((_time.time() - started) * 1000, 1),
+    })
+
+
+def _continue_separators(decode, ids, pieces):
+    """What goes before each piece — asked per adjacent pair, in one decode."""
+    seps = [""] * len(ids)
+    if len(ids) < 2:
+        return seps
+    try:
+        pairs = decode(torch.tensor([[ids[j - 1], ids[j]] for j in range(1, len(ids))],
+                                    dtype=torch.long), skip_special_tokens=False)
+    except Exception:
+        return seps
+    for j, pair in enumerate(pairs, start=1):
+        left, right = pieces.get(ids[j - 1], ""), pieces.get(ids[j], "")
+        if pair == left + right:
+            seps[j] = ""
+        elif left and right and pair.startswith(left) and pair.endswith(right):
+            seps[j] = pair[len(left):len(pair) - len(right)]
+    return seps
+
+
+# ── interface options ─────────────────────────────────────────────────────────
+# Settings the interface owns: how its tokenizer pads, what sizes it traces on.
+# They persist across runs, and some of them make the current trace stale, which
+# is what a spec's `needs` says and what the response repeats back.
+
+
+def _option_specs():
+    """``(spec, {name: Option})`` for the active interface, or ``(None, {})``."""
+    spec = _spec()
+    if spec is None:
+        return None, {}
+    try:
+        return spec, spec.options
+    except Exception as exc:
+        _logging.getLogger(__name__).warning(
+            "options for %s are invalid: %s", type(spec.iface).__name__, exc)
+        return spec, {"__error__": str(exc)}
+
+
+def api_options(request):
+    """GET → the active interface's options and their current values."""
+    spec, options = _option_specs()
+    if spec is None:
+        return JsonResponse({"options": [], "interface": None})
+    if "__error__" in options:
+        return JsonResponse({"error": options["__error__"]}, status=500)
+    return JsonResponse({
+        "interface": type(spec.iface).__name__,
+        "options": spec.describe_options(FRONTEND),
+    })
+
+
+@csrf_exempt
+def api_option_set(request, name):
+    """POST {value} → set one option, returning the value that took effect."""
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    spec, options = _option_specs()
+    if spec is None:
+        return JsonResponse(
+            {"error": "The active model is not an Interface, so it declares no options"},
+            status=404)
+    if "__error__" in options:
+        return JsonResponse({"error": options["__error__"]}, status=500)
+    if name not in options:
+        return JsonResponse({"error": "no option %r" % name}, status=404)
+
+    try:
+        body = json.loads(request.body.decode() or "{}")
+        value = body.get("value")
+    except Exception:
+        value = request.POST.get("value")
+
+    try:
+        applied = spec.set_option(name, value)
+    except Exception as exc:
+        return _error_json(exc)
+    return JsonResponse({
+        "ok": True,
+        "name": name,
+        # what the interface actually holds now, which a setter may have
+        # clamped or normalized away from what was sent
+        "value": applied,
+        "needs": options[name].needs,
+    })
+
+
+# ── interface callbacks ───────────────────────────────────────────────────────
+# A traced graph is only part of what a model can do.  An interface also carries
+# whole operations — GPT-2's generate, RAVE's audio round trip — that run Python
+# around the graph and cannot be traced themselves.  `callbacks` is where an
+# interface declares those, and these two endpoints are how the viewer offers
+# them: one to ask what exists, one to run it.
+
+
+def _callback_specs():
+    """``(iface, {name: description})`` for the active interface's callbacks."""
+    spec = _spec()
+    if spec is None:
+        return None, {}
+    try:
+        return spec.iface, {c["name"]: c for c in spec.describe_callbacks(FRONTEND)}
+    except Exception as exc:
+        _logging.getLogger(__name__).warning(
+            "callback spec for %s is invalid: %s", type(spec.iface).__name__, exc)
+        return spec.iface, {"__error__": str(exc)}
+
+
+def api_callbacks(request):
+    """GET → the active interface's declared callbacks, or an empty list."""
+    iface, specs = _callback_specs()
+    if iface is None:
+        return JsonResponse({"callbacks": [], "interface": None})
+    if "__error__" in specs:
+        return JsonResponse({"error": specs["__error__"]}, status=500)
+    return JsonResponse({
+        "interface": type(iface).__name__,
+        "callbacks": list(specs.values()),
+    })
+
+
+def _coerce_callback_arg(spec, raw):
+    """Turn one posted value into what the method expects.
+
+    Everything arrives as a string over JSON/FormData; an empty string for an
+    optional argument means "leave it out" rather than "pass an empty value",
+    which is how `seed` stays None unless someone actually sets it.
+    """
+    kind = spec.get("type")
+    if raw is None:
+        return None if spec.get("optional") else spec.get("default")
+    if isinstance(raw, str) and raw.strip() == "" and kind != "text":
+        if spec.get("optional"):
+            raise _Skip
+        return spec.get("default")
+    if kind in ("text", "str", "choice"):
+        return raw
+    if kind == "bool":
+        return raw if isinstance(raw, bool) else str(raw).lower() in ("1", "true", "yes", "on")
+    if kind == "int":
+        return int(float(raw))
+    if kind == "float":
+        return float(raw)
+    return raw
+
+
+class _Skip(Exception):
+    """This argument was left blank and has no business being passed."""
+
+
+def _render_callback_result(iface, name, result, returns):
+    """Shape a callback's return value for the browser, by declared medium."""
+    if returns == "text":
+        if isinstance(result, (list, tuple)):
+            items = [str(x) for x in result]
+        else:
+            items = [str(result)]
+        return {"kind": "text", "items": items}
+
+    if isinstance(result, torch.Tensor):
+        # Go through the same view system as an activation, rather than a
+        # second renderer: a callback's audio then gets the audio view, its
+        # picker, and a view choice that persists — all of it already built.
+        # The synthetic node name is what that choice is remembered against.
+        sr_hint = None
+        if returns == "audio":
+            declared = iface.spec.callback(name).returns
+            sr_hint = (declared.rate(iface) if getattr(declared, "sample_rate", None) is not None
+                       else getattr(iface, "sample_rate", None))
+        fn_ns, node_ns = _callback_view_fn(iface), "__callback__%s" % name
+        session_sel, run_cfg = _node_view_args(fn_ns, node_ns)
+        # The declared medium picks the view when nothing else has — a model
+        # that says it returns audio should come up as audio, not as a line
+        # plot the user has to correct every time. It goes in as run config, so
+        # it outranks the shape-inferred default but yields to a choice the
+        # user has actually made.
+        if run_cfg is None and not session_sel:
+            run_cfg = _MEDIUM_VIEWS.get(returns)
+        payload = serialize_node(result, fn=fn_ns, node=node_ns,
+                                 session_sel=session_sel, run_cfg=run_cfg,
+                                 rank_defaults=_safe_view_defaults(),
+                                 sr_hint=sr_hint, decode=_token_decoder(),
+                                 eos_id=_token_eos_id(), vocab_size=_token_vocab_size())
+        # `medium` is what the interface declared; `view` is how it is being
+        # drawn. Spreading the payload last would silently overwrite the first
+        # with the second, and the declaration would never reach the client.
+        # The namespace travels too, so the view picker knows where to record a
+        # choice — a callback's output is not a node and has no name of its own.
+        return {"medium": returns, "_view_fn": fn_ns, "_view_node": node_ns, **payload}
+
+    return {"kind": "repr", "items": [repr(result)]}
+
+
+#: Which view a declared medium asks for, when the user has not chosen one.
+_MEDIUM_VIEWS = {"audio": {"view": "audio"}, "image": {"view": "image"}}
+
+
+def _safe_view_defaults():
+    try:
+        return get_current_view_defaults()
+    except Exception:
+        return None
+
+
+def _callback_view_fn(iface):
+    """A namespace for callback view choices, kept apart from any method's."""
+    return "__callbacks__%s" % type(iface).__name__
+
+
+@csrf_exempt
+def api_callback_run(request, name):
+    """POST {args} → run a declared callback and return its result."""
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    iface, specs = _callback_specs()
+    if iface is None:
+        return JsonResponse({"error": "The active model is not an Interface, so it declares no callbacks"}, status=404)
+    if "__error__" in specs:
+        return JsonResponse({"error": specs["__error__"]}, status=500)
+    if name not in specs:
+        return JsonResponse({"error": "no callback %r" % name}, status=404)
+
+    try:
+        posted = json.loads(request.body.decode() or "{}")
+    except Exception:
+        posted = {k: v for k, v in request.POST.items()}
+
+    kwargs = {}
+    for spec in specs[name]["args"]:
+        key = spec["name"]
+        if key not in posted:
+            continue
+        try:
+            kwargs[key] = _coerce_callback_arg(spec, posted[key])
+        except _Skip:
+            continue
+        except (TypeError, ValueError):
+            return JsonResponse(
+                {"error": "argument %r: %r is not a valid %s" % (key, posted[key], spec.get("type"))},
+                status=400)
+
+    import time as _time
+    started = _time.time()
+    try:
+        result = iface.spec.run_callback(name, **kwargs)
+    except Exception as exc:
+        return _error_json(exc)
+    return JsonResponse({
+        "ok": True,
+        "name": name,
+        "run_ms": round((_time.time() - started) * 1000, 1),
+        "args": {k: (v if isinstance(v, (int, float, str, bool, type(None))) else repr(v))
+                 for k, v in kwargs.items()},
+        "result": _render_callback_result(iface, name, result, specs[name].get("returns")),
+    })
 
 
 def api_weights(request, fn, node):
@@ -335,9 +948,14 @@ def api_activate(request, fn):
             captured = _run_capture_activations(bended_module, fn, kwargs, session,
                                                 target_nodes=target_nodes)
 
-        sr_hint = next(iter(_last_audio_sr.values()), None)
+        # per tensor, not once for the run: a strided activation plays at its
+        # own rate, and the card has to say the rate its clip will actually use
         return JsonResponse({
-            name: _serialize_activation(t, fn, name, sr_hint=sr_hint)
+            name: _serialize_activation(
+                t, fn, name,
+                sr_hint=_infer_output_sr(t, kwargs, bended_module=bended_module,
+                                         fn=fn, node=name),
+                declared_audio=_declares_audio(name, fn, bended_module))
             for name, t in captured.items()
         })
     except Exception as e:
@@ -370,8 +988,11 @@ def api_activate_node(request, fn, node):
         t = captured.get(node)
         if t is None:
             return JsonResponse({"error": f"No activation computed for '{node}'"}, status=404)
-        sr_hint = next(iter(_last_audio_sr.values()), None)
-        return JsonResponse(_serialize_activation(t, fn, node, sr_hint=sr_hint))
+        return JsonResponse(_serialize_activation(
+            t, fn, node,
+            sr_hint=_infer_output_sr(t, kwargs, bended_module=bended_module,
+                                     fn=fn, node=node),
+            declared_audio=_declares_audio(node, fn, bended_module)))
     except Exception as e:
         return _error_json(e)
 
@@ -388,12 +1009,52 @@ def api_retrace(request, fn):
         kwargs = _parse_inputs(request, bended_module, fn)
         if not kwargs:
             return JsonResponse({"error": "No valid inputs provided"}, status=400)
-        bended_module.trace(fn=fn, **kwargs)
+        # Re-trace under the same configuration the method was first traced with.
+        # Those keywords are not data the bench can supply — GPT-2 is traced with
+        # `use_cache=False` because a Cache object cannot pass through fx, and
+        # dropping it fails on the cache rather than on anything the user did.
+        # Anything the bench does provide still wins.
+        traced_with = bended_module.trace_kwargs(fn)
+        # Say plainly which inputs the bench is missing, before the tracer does
+        # it as "TypeError: missing argument" -- a placeholder with no default
+        # of its own needs a value from somewhere.
+        required = [n.name for n in bended_module.graph(fn=fn).nodes
+                    if n.op == "placeholder" and not n.args]
+        missing = [name for name in required if name not in kwargs and name not in traced_with]
+        if missing:
+            return JsonResponse({
+                "error": "no input for %s on the bench -- add %s (or keep its "
+                         "default) before retracing"
+                         % (", ".join(missing), "one" if len(missing) == 1 else "them"),
+            }, status=400)
+        # ...and under the same tracer settings. A graph that needed
+        # `_wrap_recurrent` to trace needs it to re-trace.
+        traced_as = bended_module.trace_config(fn)
+        # ...unless an option changed since: the interface applies it to the
+        # model and says which of those settings it replaces
+        method = _method_spec(fn)
+        if method is not None:
+            traced_as = {**traced_as, **method.before_retrace()}
+        traced = bended_module.trace(fn=fn, reinit_bending_state=True, _return_out=True,
+                                     **traced_as, **{**traced_with, **kwargs})
         session = _get_bending_session()
         if session:
-            session.clear_cache(fn=fn)
-        prune = request.GET.get("prune", "1").lower() not in ("0", "false", "no")
-        data = serialize_graph(bended_module, fn=fn, prune_unreachable=prune)
+            # the graph was replaced: nothing built from the old one may be
+            # reused -- then keep what the trace just computed on these inputs,
+            # so the first view after a retrace is not a second full run
+            session.graph_changed(fn)
+            output = traced[1] if isinstance(traced, tuple) and len(traced) == 2 else None
+            if output is not None:
+                try:
+                    session.retain_output(bended_module, fn, kwargs, output)
+                except Exception as exc:
+                    _actlog.log("retain   trace output not kept: %s: %s",
+                                type(exc).__name__, exc, level=_logging.WARNING)
+        data = serialize_graph(bended_module, fn=fn, display=_display_opts(request))
+        # The client swaps this in for the whole graph payload, so it has to
+        # carry everything api_graph carries — without the declaration the
+        # prompt toggle vanishes the moment a retrace happens.
+        data["input_modes"] = _declared_input_modes(fn)
         return JsonResponse(data)
     except Exception as e:
         return _trace_error_json(e, bended_module, fn)
@@ -435,6 +1096,82 @@ def _expected_image_channels(bended_module, ph_node, fn):
     return None
 
 
+def _expected_audio_channels(bended_module, ph_node, fn):
+    """Return the channel count a ``[B, C, L]`` audio placeholder was traced on.
+
+    ``None`` when the trace left the channel axis symbolic (any count is fine)
+    or the placeholder is not 3-D.
+    """
+    try:
+        acts = bended_module.activations("?.*", fn=fn)
+        act = acts.get(ph_node.name)
+        if act is not None and hasattr(act, "shape"):
+            shape = list(act.shape)
+            if len(shape) == 3:
+                return int(shape[-2])      # raises if the dim is a symbol
+    except Exception:
+        pass
+    return None
+
+
+# ── input modes ───────────────────────────────────────────────────────────────
+# A placeholder whose interface declares one can be fed the interface's way —
+# GPT-2's `input_ids` as prose, tokenized on the way in — instead of as an
+# expression or a file. The bench marks such a field with a companion
+# `__mode__<name>` so the server knows to encode rather than eval.
+
+_INPUT_MODE_PREFIX = "__mode__"
+
+
+def _declared_input_modes(fn):
+    """The active interface's input modes for `fn` that this viewer can
+    collect, as the bench reads them; {} if it declares none."""
+    method = _method_spec(fn)
+    if method is None:
+        return {}
+    try:
+        return {name: desc for name, desc in method.input_modes(FRONTEND).items()
+                if spec_adapters.supported(method.modes()[name])}
+    except Exception as exc:
+        _logging.getLogger(__name__).warning(
+            "input modes for %s are invalid: %s", type(method.iface).__name__, exc)
+        return {}
+
+
+def _encode_input_modes(request, fn):
+    """Run every input-mode field the request carries.
+
+    Returns ``(values, claimed)``: the tensors to use, and the placeholder names
+    they cover. A mode that fills its siblings owns them — the bench may still
+    hold an expression for `attention_mask`, but a prompt has just decided the
+    sequence length and the two would not agree.
+    """
+    modes = _declared_input_modes(fn)
+    if not modes:
+        return {}, set()
+    method = _method_spec(fn)
+    values, claimed = {}, set()
+    for name, spec in modes.items():
+        marker = request.POST.get(_INPUT_MODE_PREFIX + name)
+        if not marker or marker != spec["type"]:
+            continue
+        # what the request carries, read the way this value type is collected
+        # (see spec_adapters): typed strings, decoded uploads, ...
+        raws = spec_adapters.read_mode_input(method.modes()[name], request, name)
+        if not raws:
+            continue
+        # Play mode stacks a placeholder's entries along the batch dimension, so
+        # several prompts are one batched encode — the tokenizer pads them
+        # together, which is the only way the mask and the ids can agree.
+        produced = method.encode(name, raws[0] if len(raws) == 1 else raws)
+        for key, tensor in produced.items():
+            values[key] = tensor
+        claimed.update(spec["fills"])
+        _actlog.log("input    %s encoded from %d text value(s) via %s",
+                    name, len(raws), spec["encode"])
+    return values, claimed
+
+
 def _parse_inputs(request, bended_module, fn):
     """Parse POST/FILES into a kwargs dict keyed by placeholder name.
 
@@ -450,21 +1187,42 @@ def _parse_inputs(request, bended_module, fn):
     graph = bended_module.graph(fn=fn)
     placeholders = [n for n in graph.nodes if n.op == "placeholder"]
     resample = str(request.POST.get("resample", "")).lower() == "true"
-    kwargs = {}
+    kwargs, claimed = _encode_input_modes(request, fn)
+    # Batch: every entry the bench sends for a placeholder is stacked along the
+    # batch dimension, reconciled the way play mode does it (pad / loop /
+    # stack). `sequential` has no meaning here -- the graph shows one pass.
+    batch_on = str(request.POST.get("batch", "")).lower() in ("1", "true", "yes")
+    if batch_on and not _batch_supported(fn):
+        _refuse_batch(fn)
+    batch_mode = (request.POST.get("batch_mode") or "pad").lower()
+    if batch_mode not in ("pad", "loop", "stack"):
+        batch_mode = "pad"
     for ph in placeholders:
         name = ph.name
+        if name in claimed:
+            continue          # an input mode already produced this one
+        if batch_on:
+            tensors = _batch_entries(request, bended_module, ph, fn, resample)
+            if tensors:
+                kwargs[name] = _combine_play_entries(name, tensors, batch_mode)
+                _actlog.log("input    %s batched from %d entr%s (%s)", name, len(tensors),
+                            "y" if len(tensors) == 1 else "ies", batch_mode)
+            continue
         if name in request.FILES:
             expected_ch = _expected_image_channels(bended_module, ph, fn)
-            t, sr = _file_to_tensor(request.FILES[name], expected_channels=expected_ch)
+            expected_ac = _expected_audio_channels(bended_module, ph, fn)
+            t, sr = _file_to_tensor(request.FILES[name], expected_channels=expected_ch,
+                                    expected_audio_channels=expected_ac)
             if t is not None:
                 kwargs[name] = t
                 if sr is not None:
                     _last_audio_sr[name] = sr
         elif name in request.POST:
             raw = request.POST[name].strip()
+            expect = _expected_input_kind(bended_module, ph, fn)
             t = None
             try:
-                t = torch.tensor(json.loads(raw), dtype=torch.float32)
+                t = _coerce_input(json.loads(raw), expect)
             except Exception:
                 pass
             if t is None:
@@ -475,7 +1233,7 @@ def _parse_inputs(request, bended_module, fn):
                     _actlog.log("input    %s reused (expression unchanged)", name)
                 else:
                     try:
-                        t = _eval_expr(raw, _node_scope(bended_module, ph, fn))
+                        t = _eval_expr(raw, _node_scope(bended_module, ph, fn), expect)
                         if t is not None:
                             _last_eval[key] = (raw, t)
                             _actlog.log("input    %s evaluated from '%s'", name, raw)
@@ -483,7 +1241,124 @@ def _parse_inputs(request, bended_module, fn):
                         pass
             if t is not None:
                 kwargs[name] = t
+    _notify_interface_of_inputs(fn, kwargs)
     return kwargs
+
+
+def _batch_entries(request, bended_module, ph, fn, resample):
+    """Every entry the bench sent for one placeholder, as tensors, in order.
+
+    Files first, then expressions -- each expression evaluated once and
+    remembered under its position, as the single-entry path does, so a random
+    one does not change between runs.
+    """
+    name = ph.name
+    files, exprs = [], []
+    if name in request.FILES:
+        expected_ch = _expected_image_channels(bended_module, ph, fn)
+        expected_ac = _expected_audio_channels(bended_module, ph, fn)
+        for f in request.FILES.getlist(name):
+            t, sr = _file_to_tensor(f, expected_channels=expected_ch,
+                                    expected_audio_channels=expected_ac)
+            if t is None:
+                raise ValueError("Input '%s': could not decode file %r"
+                                 % (name, getattr(f, "name", "?")))
+            files.append(t)
+            if sr is not None:
+                _last_audio_sr[name] = sr
+    expect = _expected_input_kind(bended_module, ph, fn)
+    for i, raw in enumerate(request.POST.getlist(name)):
+        raw = (raw or "").strip()
+        if not raw:
+            continue
+        t = None
+        try:
+            t = _coerce_input(json.loads(raw), expect)
+        except Exception:
+            pass
+        if t is None:
+            key = ("batch", fn, name, i)
+            prev = _last_eval.get(key)
+            if prev is not None and prev[0] == raw and not resample:
+                t = prev[1]
+            else:
+                t = _eval_expr(raw, _node_scope(bended_module, ph, fn), expect)
+                if t is not None:
+                    _last_eval[key] = (raw, t)
+        if t is None:
+            raise ValueError("Input '%s': could not evaluate %r" % (name, raw))
+        exprs.append(t)
+    # back into the bench's order, when it says what it was ("fef": file,
+    # expression, file); files first otherwise
+    order = request.POST.get("__order__" + name, "")
+    if order and len(order) == len(files) + len(exprs):
+        fi, ei = iter(files), iter(exprs)
+        return [next(fi) if kind == "f" else next(ei) for kind in order]
+    return files + exprs
+
+
+def _notify_interface_of_inputs(fn, kwargs):
+    """Tell the active interface what this run is on, if it wants to know.
+
+    Best-effort by design: an interface that mishandles the notification must
+    not take the run down with it.
+    """
+    iface = get_interface()
+    if iface is None:
+        return
+    try:
+        iface.on_inputs(fn, kwargs)
+    except Exception as exc:
+        _logging.getLogger(__name__).warning(
+            "%s.on_inputs failed: %s", type(iface).__name__, exc)
+
+
+#: Python types a placeholder can want instead of a tensor.
+_SCALAR_KINDS = {"int": int, "float": float, "bool": bool, "str": str}
+
+
+def _expected_input_kind(bended_module, ph, fn):
+    """What this placeholder wants: ``"int"``, ``"float"``, … or a torch dtype.
+
+    An argument the model uses as an *index* must arrive as a Python int, not as
+    a tensor: Bark's fine model slices with ``codebook_idx + 1``, and a
+    ``tensor(2.)`` there raises "only integer tensors of a single element can be
+    converted to an index". Equally, token ids handed over as float32 fail in
+    the embedding lookup. So the declared type decides, not a blanket cast.
+    """
+    try:
+        param = _param_for_placeholder(ph.name, _fn_signature_params(bended_module, fn))
+    except Exception:
+        param = None
+    try:
+        act = bended_module.activations("?.*", fn=fn).get(ph.name)
+    except Exception:
+        act = None
+    shape = getattr(act, "shape", None)
+    arg_type = _placeholder_arg_type(param, getattr(act, "type", None), shape, None)
+    if arg_type in _SCALAR_KINDS:
+        return arg_type
+    dtype = None
+    try:
+        dtype = getattr(act, "dtype", None) or _serializer._dtype_of(ph)
+    except Exception:
+        pass
+    if isinstance(dtype, str):
+        dtype = getattr(torch, dtype.replace("torch.", ""), None)
+    return dtype if isinstance(dtype, torch.dtype) else None
+
+
+def _coerce_input(value, expect):
+    """Shape a parsed value to what the placeholder declared."""
+    if expect in _SCALAR_KINDS:
+        if isinstance(value, torch.Tensor):
+            value = value.item()
+        return _SCALAR_KINDS[expect](value)
+    if isinstance(value, torch.Tensor):
+        return value.to(expect) if isinstance(expect, torch.dtype) else value
+    # a traced integer tensor stays integer; anything unknown keeps the old float32
+    return torch.tensor(value, dtype=expect if isinstance(expect, torch.dtype)
+                        else torch.float32)
 
 
 def _node_scope(bended_module, ph_node, fn):
@@ -499,7 +1374,7 @@ def _node_scope(bended_module, ph_node, fn):
     return {"node": node, "shape": shape}
 
 
-def _eval_expr(expr, scope):
+def _eval_expr(expr, scope, expect=None):
     import numpy as np
     import builtins
     safe_builtins = {k: getattr(builtins, k) for k in (
@@ -510,9 +1385,9 @@ def _eval_expr(expr, scope):
     ns = {"__builtins__": safe_builtins, "torch": torch,
           "np": np, "numpy": np, **scope}
     result = eval(expr, ns)  # noqa: S307 — local dev tool
-    if isinstance(result, torch.Tensor):
+    if isinstance(result, torch.Tensor) and expect not in _SCALAR_KINDS:
         return result
-    return torch.tensor(result, dtype=torch.float32)
+    return _coerce_input(result, expect)
 
 
 def _get_output_feeder_names(bended_module, fn):
@@ -597,22 +1472,188 @@ def _run_capture_activations(bended_module, fn, kwargs, session=None, target_nod
     return {k: v.detach() for k, v in result.items() if isinstance(v, torch.Tensor)}
 
 
-def _infer_output_sr(output_tensor, input_kwargs, default_sr=22050):
-    """Guess output SR by comparing output length to input length and known input SR."""
-    sr_in = None
-    len_in = None
+#: What audio plays back at when nothing knows better. Matches the AudioView
+#: option default -- the card's "sr N" label and the WAV it renders have to
+#: agree, or the sound is the wrong speed and the label does not say so.
+_DEFAULT_AUDIO_SR = 44100
+
+#: Below this, browsers refuse to decode a WAV. A latent at one frame per 2048
+#: samples is a legitimate thing to listen to, so rather than emit a file that
+#: silently will not play, the clip is resampled up to here and keeps its
+#: duration -- what you hear is the activation's envelope over the right span.
+_MIN_PLAYABLE_SR = 8000
+
+
+#: What an object calls its own rate. ``sample_rate`` is the convention; ``sr``
+#: is common enough in audio code to be worth reading too.
+_SR_ATTRS = ("sample_rate", "sr")
+
+
+def _declared_sample_rate(bended_module=None):
+    """The rate the model itself works at, if anything says so.
+
+    An audio interface (RAVE, Bark, VITS, ...) knows its own rate. So does a
+    bare ``nn.Module`` that carries one -- and asking only the interface meant a
+    model wrapped without one had no way to say what rate it ran at, so every
+    activation played at the generic default.
+    """
+    module = getattr(bended_module, "_module", None)
+    for owner in (get_interface(), bended_module, module):
+        if owner is None:
+            continue
+        for attr in _SR_ATTRS:
+            try:
+                sr = int(getattr(owner, attr, None) or 0)
+            except (TypeError, ValueError):
+                continue
+            if sr > 0:
+                return sr
+    return None
+
+
+def _input_audio_reference(input_kwargs):
+    """(rate, length) of the audio actually fed in, or (None, None).
+
+    Prefers a placeholder this run really carries: with several audio inputs
+    remembered, the one that is not in ``input_kwargs`` says nothing about the
+    lengths in this run.
+    """
+    fallback_sr = None
     for ph_name, sr in _last_audio_sr.items():
-        sr_in = sr
-        t_in = input_kwargs.get(ph_name)
+        t_in = input_kwargs.get(ph_name) if input_kwargs else None
         if torch.is_tensor(t_in):
-            len_in = t_in.shape[-1]
-        break
+            return sr, int(t_in.shape[-1])
+        if fallback_sr is None:
+            fallback_sr = sr
+    return fallback_sr, None
+
+
+def _traced_output_length(bended_module, fn):
+    """How long the method's own output is, from the trace.
+
+    The other end of the reference: a model whose input is text (Bark, a TTS
+    stack) has no audio going in to measure an activation against, but what it
+    returns is audio at the declared rate. Anything shorter is then a strided
+    version of that, and plays over the same span.
+    """
+    if bended_module is None or not fn:
+        return None
+    try:
+        acts = bended_module.activations("?.*", fn=fn)
+        graph = bended_module.graph(fn=fn)
+    except Exception:
+        return None
+    best = None
+    for node in graph.nodes:
+        if node.op != "output":
+            continue
+        for src in node.all_input_nodes:
+            shape = getattr(acts.get(src.name), "shape", None)
+            if shape:
+                try:
+                    n = int(shape[-1])
+                except (TypeError, ValueError):
+                    continue
+                if best is None or n > best:
+                    best = n
+    return best
+
+
+#: Complaints already made, so a per-request failure is reported once and not
+#: on every activation of every run.
+_warned: set = set()
+
+
+def _warn_once(message):
+    if message in _warned:
+        return
+    _warned.add(message)
+    _logging.getLogger(__name__).warning("[torchbend] %s", message)
+
+
+def _declared_node_sr(node, fn=None, shape=None, bended_module=None):
+    """The rate the model says this node runs at, or None.
+
+    The model is the only thing that actually knows -- see
+    :mod:`torchbend.sample_rates`. The interface is asked first: it is the
+    higher-level object and may compute a rate the bare module has no way to.
+
+    The name is the one the model declared against: bending a node appends
+    ``_bended`` to it, and a declaration must not stop applying the moment the
+    node it names is the one you are bending.
+    """
+    if not node:
+        return None
+    node = _view_base_node(node)
+    for owner in (get_interface(), bended_module):
+        if owner is None:
+            continue
+        ask = getattr(owner, "sample_rate_for", None)
+        if not callable(ask):
+            continue
+        try:
+            rate = ask(node, fn=fn, shape=shape)
+        except Exception as exc:
+            # A broken declaration must not break the run -- but it must not
+            # vanish either. Swallowed silently, the only symptom was "the
+            # sample rate does nothing", with nothing anywhere to say why.
+            _warn_once("sample rate for %r: %s" % (node, exc))
+            continue
+        if rate:
+            return float(rate)
+    return None
+
+
+def _declares_audio(node, fn=None, bended_module=None):
+    """True when the model names a rate for this node — so it is audio."""
+    return _declared_node_sr(node, fn=fn, bended_module=bended_module) is not None
+
+
+def _strided_audio(bended_module):
+    """Does the model say every node is one timeline at a different stride?"""
+    for owner in (get_interface(), bended_module):
+        if owner is not None and getattr(owner, "_strided_audio_", False):
+            return True
+    return False
+
+
+def _infer_output_sr(output_tensor, input_kwargs, default_sr=None,
+                     bended_module=None, fn=None, node=None):
+    """The rate to play a tensor back at.
+
+    A rate the model declares for this node is the answer, and nothing else is
+    consulted: :mod:`torchbend.sample_rates` is the only source that actually
+    knows which nodes are audio and at what rate.
+
+    Undeclared, the reference is whatever says what rate this model's audio runs
+    at — the audio file fed in, or the interface's own ``sample_rate``. A node
+    is placed on that timeline only for a model that has said it is uniformly
+    strided (``_strided_audio_``): halve the length, halve the rate. Without
+    that, the reference rate is used as it stands, because nothing has said the
+    tensor is a resampled version of anything.
+    """
+    declared = _declared_node_sr(
+        node, fn=fn, bended_module=bended_module,
+        shape=(list(output_tensor.shape) if torch.is_tensor(output_tensor) else None))
+    if declared:
+        return declared
+
+    strided = _strided_audio(bended_module)
+    sr_in, len_in = _input_audio_reference(input_kwargs)
     if sr_in is None:
-        return default_sr
-    if len_in is None or not torch.is_tensor(output_tensor):
+        # No audio came in, so the reference is whatever the model says its own
+        # rate is, and failing that the generic default. The default is still a
+        # rate to scale *from*: a strided model that nothing has been fed is the
+        # ordinary case for a graph driven by indices or embeddings, and bailing
+        # out here left every node at the default however short it was.
+        sr_in = _declared_sample_rate(bended_module) or default_sr or _DEFAULT_AUDIO_SR
+        # the reference length is only wanted for scaling, and only a model that
+        # says it is uniformly strided gets scaled
+        len_in = _traced_output_length(bended_module, fn) if strided else None
+    if not len_in or not torch.is_tensor(output_tensor):
         return sr_in
-    len_out = output_tensor.shape[-1]
-    if len_in == 0:
+    len_out = int(output_tensor.shape[-1])
+    if len_out == len_in or not strided:
         return sr_in
     return max(1, round(sr_in * len_out / len_in))
 
@@ -634,12 +1675,12 @@ def api_activate_audio(request, fn, node):
         t = captured.get(node)
         if t is None:
             return JsonResponse({"error": f"no activation for '{node}'"}, status=404)
-        sr = _infer_output_sr(t, kwargs)
+        sr = _infer_output_sr(t, kwargs, bended_module=bended_module, fn=fn, node=node)
         b, c = _audio_selection(request)
-        wav = _tensor_to_wav(t, sr, batch=b, channel=c)
+        wav, enc_sr = _tensor_to_wav(t, sr, batch=b, channel=c)
         return HttpResponse(wav, content_type="audio/wav",
                             headers={"Content-Disposition": f'inline; filename="{node}.wav"',
-                                     "X-Sample-Rate": str(sr)})
+                                     "X-Sample-Rate": str(enc_sr)})
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
 
@@ -839,7 +1880,29 @@ def api_source(request, _file=None, _line=None):
     return JsonResponse({"file": file_path, "line": line, "lines": lines})
 
 
-def _file_to_tensor(f, expected_channels=None):
+def _match_audio_channels(t, expected):
+    """Coerce an ``[1, C, L]`` audio tensor to ``expected`` channels.
+
+    A model traced on mono (RAVE) throws a Conv1d channel error the moment a
+    stereo file is fed in; downmix to what the graph was traced for instead.
+    """
+    if expected is None or t is None or t.ndim != 3:
+        return t
+    c = t.shape[1]
+    if c == expected or expected < 1:
+        return t
+    if expected == 1:
+        return t.mean(dim=1, keepdim=True)
+    if c == 1:
+        return t.expand(-1, expected, -1).contiguous()
+    if c > expected:
+        return t[:, :expected, :].contiguous()
+    # c < expected: pad by repeating the last channel
+    pad = t[:, -1:, :].expand(-1, expected - c, -1)
+    return torch.cat([t, pad], dim=1).contiguous()
+
+
+def _file_to_tensor(f, expected_channels=None, expected_audio_channels=None):
     """Return (tensor, sample_rate_or_None). sample_rate is set for audio files."""
     data = f.read()
     ct = f.content_type or ""
@@ -864,15 +1927,14 @@ def _file_to_tensor(f, expected_channels=None):
             try:
                 import torchaudio
                 t, sr = torchaudio.load(io.BytesIO(data))
-                return t.unsqueeze(0), int(sr)              # [1, C, L]
             except Exception:
                 import soundfile as sf
-                import numpy as np
                 audio, sr = sf.read(io.BytesIO(data))
                 t = torch.from_numpy(
                     audio.T if audio.ndim > 1 else audio[None]
                 ).float()
-                return t.unsqueeze(0), int(sr)              # [1, C, L]
+            t = _match_audio_channels(t.unsqueeze(0), expected_audio_channels)
+            return t, int(sr)                              # [1, C, L]
     except Exception:
         pass
     return None, None
@@ -892,12 +1954,36 @@ def _audio_selection(request):
     return _int("batch_idx", 0), _int("channel", -1)
 
 
+def _to_playable_rate(t, sr):
+    """Raise a sub-audio rate to something a browser will decode.
+
+    The clip keeps its duration: an activation at 21 frames per second becomes
+    8 kHz audio of the same length, so the playhead and the "N s" label stay
+    honest. Returns ``(tensor, encoded_rate)``.
+    """
+    sr = int(sr)
+    if sr >= _MIN_PLAYABLE_SR or t.shape[-1] < 2:
+        return t, max(1, sr)
+    factor = _MIN_PLAYABLE_SR / max(1, sr)
+    size = max(2, int(round(t.shape[-1] * factor)))
+    try:
+        import torch.nn.functional as F
+        t = F.interpolate(t.unsqueeze(0), size=size, mode="linear",
+                          align_corners=False).squeeze(0)
+    except Exception:
+        return t, max(1, sr)
+    return t, _MIN_PLAYABLE_SR
+
+
 def _tensor_to_wav(tensor, sr, batch=0, channel=-1):
     """Convert a tensor to WAV bytes. Handles [B,C,L], [C,L], [L] shapes.
 
     *batch* / *channel* pick the slice the user is viewing, so what plays is what
     is drawn — exporting batch 0 regardless made the two disagree as soon as the
     bench held more than one entry.
+
+    Returns ``(wav_bytes, encoded_rate)``: the rate written into the file, which
+    is the one asked for unless it was too low to be decodable.
     """
     t = tensor.detach().float().cpu()
     if t.ndim == 3:
@@ -908,6 +1994,7 @@ def _tensor_to_wav(tensor, sr, batch=0, channel=-1):
         t = t[max(0, min(int(channel), t.shape[0] - 1))].unsqueeze(0)
     # clamp to avoid clipping artifacts
     t = t.clamp(-1.0, 1.0)
+    t, sr = _to_playable_rate(t, sr)
     buf = io.BytesIO()
     try:
         import torchaudio
@@ -916,7 +2003,7 @@ def _tensor_to_wav(tensor, sr, batch=0, channel=-1):
         # would just sit there silent.
         torchaudio.save(buf, t, sr, format="wav",
                         encoding="PCM_S", bits_per_sample=16)
-        return buf.getvalue()
+        return buf.getvalue(), sr
     except Exception:
         import wave, numpy as np
         arr = t.numpy()
@@ -928,7 +2015,7 @@ def _tensor_to_wav(tensor, sr, batch=0, channel=-1):
             wf.setframerate(sr)
             # interleave channels
             wf.writeframes(pcm.T.flatten().tobytes())
-        return buf.getvalue()
+        return buf.getvalue(), sr
 
 
 # ── bending API ───────────────────────────────────────────────────────────────
@@ -943,7 +2030,7 @@ def api_activate_save(request, fn, node):
         return JsonResponse({"error": "No module loaded"}, status=404)
     try:
         fmt = request.POST.get("format", "tensor")
-        sr  = int(request.POST.get("sample_rate", 22050))
+        sr_raw = request.POST.get("sample_rate")
         kwargs = _parse_inputs(request, bended_module, fn)
         if not kwargs:
             return JsonResponse({"error": "No valid inputs provided"}, status=400)
@@ -954,9 +2041,19 @@ def api_activate_save(request, fn, node):
             return JsonResponse({"error": f"No activation for '{node}'"}, status=404)
 
         if fmt == "audio":
-            wav = _tensor_to_wav(t, sr)
+            # the client rarely knows the rate; the same inference the player
+            # uses gives the file the speed it was auditioned at
+            try:
+                sr = (int(sr_raw) if sr_raw else
+                      _infer_output_sr(t, kwargs, bended_module=bended_module,
+                                       fn=fn, node=node))
+            except (TypeError, ValueError):
+                sr = _infer_output_sr(t, kwargs, bended_module=bended_module,
+                                      fn=fn, node=node)
+            wav, enc_sr = _tensor_to_wav(t, sr)
             return HttpResponse(wav, content_type="audio/wav",
-                                headers={"Content-Disposition": f'attachment; filename="{node}.wav"'})
+                                headers={"Content-Disposition": f'attachment; filename="{node}.wav"',
+                                         "X-Sample-Rate": str(enc_sr)})
 
         if fmt in ("image", "images"):
             from PIL import Image as _Image
@@ -1551,7 +2648,7 @@ def _play_placeholders(bended_module, fn):
     except Exception:
         acts = {}
     try:
-        defaults = get_current_default_inputs() or {}
+        defaults = get_current_default_inputs(fn) or {}
     except Exception:
         defaults = {}
     params = _fn_signature_params(bended_module, fn)
@@ -1567,10 +2664,10 @@ def _play_placeholders(bended_module, fn):
             except Exception:
                 shape = None
         default = defaults.get(n.name)
-        if isinstance(default, torch.Tensor):
-            default = json.dumps(default.tolist())
-        elif default is not None and not isinstance(default, str):
-            default = str(default)
+        if default is not None:
+            default = _as_bench_value(default)
+            if not isinstance(default, str):
+                default = str(default)
 
         param = _param_for_placeholder(n.name, params)
         sig_default = getattr(param, "default", inspect._empty) if param else inspect._empty
@@ -1588,6 +2685,9 @@ def _play_placeholders(bended_module, fn):
         out.append({
             "name": n.name,
             "shape": shape,
+            # so the bench can suggest an expression the input will accept —
+            # `torch.randn` into an integer placeholder fails at the embedding
+            "dtype": _serializer._dtype_of(n),
             "default": default,
             "optional": optional,
             "arg_type": arg_type,
@@ -1656,13 +2756,13 @@ def _graph_aliases(bended_module, fn):
         return {}
 
 
-def play(request):
-    """Render the play-mode page."""
+def play(request, page_mode="play"):
+    """Render the play-mode page (also generate mode's: same bench, other panes)."""
     import time as _time
     registry = get_registry()
     bended_module = get_module()
     methods = get_available_methods(bended_module) if bended_module else []
-    default_fn = methods[0] if methods else ""
+    default_fn = _current_fn(methods)
     try:
         module_type = type(bended_module._module).__name__ if bended_module else "Unknown"
     except Exception:
@@ -1675,18 +2775,19 @@ def play(request):
         "default_fn": default_fn,
         "module_type": module_type,
         "current_model": current_model or "",
+        "page_mode": page_mode,
         "static_v": int(_time.time()),
     })
 
 
 def api_play_devices(request):
-    from .play_session import device_options
-    return JsonResponse({"devices": device_options()})
+    """Same answer as the editor's /api/devices/: one device per model, shared."""
+    return api_devices(request)
 
 
 @csrf_exempt
 def api_play_release(request):
-    """POST → restore the module to its original device (call on leaving play mode)."""
+    """POST → drop play's compiled runtimes (call on leaving play mode)."""
     play = _get_play_session()
     if play is not None:
         try:
@@ -1712,8 +2813,25 @@ def api_play_compile(request):
     except Exception:
         body = {}
     fn = body.get("fn") or "forward"
-    device = body.get("device") or "cpu"
+    _remember_fn(fn)
     prefer_scripted = bool(body.get("scripted", False))
+    # One device per model, shared with the graph editor: a device asked for
+    # here goes through the same session (and the same compatibility check),
+    # and the runtime compiles wherever the model then is.
+    session = _get_bending_session()
+    device = body.get("device") or (session.device if session else "cpu")
+    refused = _device_refusal(fn, device)
+    if refused:
+        return JsonResponse({
+            "error": refused,
+            "device": session.device if session else "cpu",
+        }, status=400)
+    if session is not None:
+        try:
+            session.set_device(bended_module, device)
+        except Exception as exc:
+            return _error_json(exc, 400)
+        device = session.device
     try:
         status = play.compile(bended_module, fn, device,
                               prefer_scripted=prefer_scripted,
@@ -1736,6 +2854,8 @@ def api_play_compile(request):
             "bendable_nodes": _bendable_nodes(bended_module, fn),
             "aliases": _graph_aliases(bended_module, fn),
             "placeholders": _play_placeholders(bended_module, fn),
+            "input_modes": _declared_input_modes(fn),
+            "batch_supported": _batch_supported(fn),
         })
     except Exception as exc:
         # building the runtime re-enters the model's own code (bend_graph,
@@ -1853,11 +2973,70 @@ def _combine_play_entries(name, tensors, mode):
         ) from exc
 
 
-def _collect_play_inputs(request, bended_module, fn):
+def _entry_labels(request, name, n):
+    """The labels the client sent for a placeholder's ``n`` entries, in the
+    order the server reads them (files first, then typed values); ``name[i]``
+    for any it did not."""
+    try:
+        labels = [str(x) for x in json.loads(request.POST.get("__labels__" + name) or "[]")]
+    except Exception:
+        labels = []
+    return [labels[i] if i < len(labels) and labels[i] else "%s%d" % (name, i)
+            for i in range(n)]
+
+
+def _mode_recording(raw):
+    """The recording an audio input mode was given, as ``(waveform [C, L], rate)``:
+    an upload arrives decoded, a typed path is read. None when it is neither."""
+    if isinstance(raw, tuple) and len(raw) == 2 and torch.is_tensor(raw[0]):
+        return raw[0], int(raw[1])
+    path = os.path.expanduser(str(raw or "").strip())
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        import soundfile as sf
+        data, sr = sf.read(path, dtype="float32", always_2d=True)
+        return torch.from_numpy(data.T.copy()), int(sr)
+    except Exception:
+        return None
+
+
+def _encode_input_modes_each(request, fn):
+    """Like :func:`_encode_input_modes`, one encode per entry instead of one
+    batched encode: ``({placeholder: [(label, {filled: tensor}, recording)]},
+    claimed)`` -- ``recording`` is ``(waveform, rate)`` for an audio mode.
+
+    Generate mode runs the entries one at a time, and names its files after
+    them, so it needs them apart rather than padded into a batch.
+    """
+    modes = _declared_input_modes(fn)
+    if not modes:
+        return {}, set()
+    method = _method_spec(fn)
+    entries, claimed = {}, set()
+    for name, spec in modes.items():
+        marker = request.POST.get(_INPUT_MODE_PREFIX + name)
+        if not marker or marker != spec["type"]:
+            continue
+        raws = spec_adapters.read_mode_input(method.modes()[name], request, name)
+        if not raws:
+            continue
+        labels = _entry_labels(request, name, len(raws))
+        audio = spec["type"] == "audio"
+        entries[name] = [(label, method.encode(name, raw), _mode_recording(raw) if audio else None)
+                         for label, raw in zip(labels, raws)]
+        claimed.update(spec["fills"])
+    return entries, claimed
+
+
+def _collect_play_inputs(request, bended_module, fn, per_entry=False):
     """Read the bench into ``(scalars, {placeholder: [tensor, ...]})``.
 
     Entries are kept apart at this stage; how they become a run (batched or
-    sequential) is decided by the caller.
+    sequential) is decided by the caller. With ``per_entry``, the second item
+    is ``{placeholder: [(label, {placeholder: tensor}, recording), ...]}``
+    instead -- every entry on its own, input modes encoded one by one, and
+    ``recording`` the ``(waveform, rate)`` of an entry that came in as audio.
 
     Like the editor's ``_parse_inputs``, an expression is evaluated once and
     remembered: ``torch.randn(...)`` must yield the *same* tensor on every run,
@@ -1869,8 +3048,16 @@ def _collect_play_inputs(request, bended_module, fn):
     metas = _play_placeholders(bended_module, fn)
     arg_types = {p["name"]: p.get("arg_type") for p in metas}
     resample = str(request.POST.get("resample", "")).lower() in ("1", "true", "yes")
-    scalars, per_name = {}, {}
+    scalars, per_name, rates = {}, {}, {}
+    if per_entry:
+        mode_entries, claimed = _encode_input_modes_each(request, fn)
+    else:
+        encoded, claimed = _encode_input_modes(request, fn)
+        for key, tensor in encoded.items():
+            per_name[key] = [tensor]
     for name in [p["name"] for p in metas]:
+        if name in claimed:
+            continue          # an input mode already produced this one
         # scalar arguments (a temperature, a flag, a length) are driven by a plain
         # widget, not a tensor expression — pass the Python value straight through
         ptype = arg_types.get(name)
@@ -1882,16 +3069,19 @@ def _collect_play_inputs(request, bended_module, fn):
         tensors = []
         # files (may be several)
         if name in request.FILES:
-            expected_ch = _expected_image_channels(
-                bended_module, next(n for n in bended_module.graph(fn=fn).nodes
-                                    if n.name == name), fn)
+            _ph = next(n for n in bended_module.graph(fn=fn).nodes
+                       if n.name == name)
+            expected_ch = _expected_image_channels(bended_module, _ph, fn)
+            expected_ac = _expected_audio_channels(bended_module, _ph, fn)
             for f in request.FILES.getlist(name):
-                t, sr = _file_to_tensor(f, expected_channels=expected_ch)
+                t, sr = _file_to_tensor(f, expected_channels=expected_ch,
+                                        expected_audio_channels=expected_ac)
                 if t is None:
                     raise ValueError(
                         f"Input '{name}': could not decode file "
                         f"{getattr(f, 'name', '?')!r}")
                 tensors.append(t)
+                rates.setdefault(name, []).append(sr)
                 if sr is not None:
                     _last_audio_sr[name] = sr
         # expressions / JSON (may be several)
@@ -1927,7 +3117,31 @@ def _collect_play_inputs(request, bended_module, fn):
             tensors.append(t)
         if tensors:
             per_name[name] = tensors
+    if per_entry:
+        entries = dict(mode_entries)
+        for name, tensors in per_name.items():
+            labels = _entry_labels(request, name, len(tensors))
+            srs = rates.get(name, [])
+            entries[name] = [(labels[i], {name: t},
+                              (t, srs[i]) if i < len(srs) and srs[i] else None)
+                             for i, t in enumerate(tensors)]
+        return scalars, entries
     return scalars, per_name
+
+
+def missing_inputs(bended_module, fn, provided, hint=""):
+    """Raise a readable error when a required input has no value.
+
+    Without this the model runs with the input set to None, and fails on
+    whichever op first touches it -- "Expected a proper Tensor but got None
+    for argument #0 'input'", from deep inside the model, naming nothing.
+    """
+    required = [p["name"] for p in _play_placeholders(bended_module, fn)
+                if not p.get("optional")]
+    missing = [name for name in required if name not in provided]
+    if missing:
+        raise ValueError("no input for %s -- add %s on the bench%s"
+                         % (", ".join(missing), "one" if len(missing) == 1 else "them", hint))
 
 
 def _parse_play_input_sets(request, bended_module, fn):
@@ -1941,7 +3155,10 @@ def _parse_play_input_sets(request, bended_module, fn):
     if mode not in _PLAY_BATCH_MODES:
         mode = _PLAY_DEFAULT_BATCH_MODE
     batch_on = request.POST.get("batch", "0").lower() in ("1", "true", "yes")
+    if batch_on and mode != "sequential" and not _batch_supported(fn):
+        _refuse_batch(fn)
     scalars, per_name = _collect_play_inputs(request, bended_module, fn)
+    missing_inputs(bended_module, fn, set(scalars) | set(per_name))
     if not batch_on:
         # batching off: a placeholder keeps its first entry and nothing else
         mode = "stack"
@@ -2229,11 +3446,16 @@ def api_play_run(request):
         # map each output to its feeder node name so a view chosen for that node
         # applies in both the editor and play mode
         out_nodes = getattr(play, "_output_nodes", []) or []
-        sr_hint = next(iter(_last_audio_sr.values()), None)
         outputs = []
         for label, t, slot in pairs:
             node = out_nodes[slot] if slot < len(out_nodes) else label
-            payload = _serialize_activation(t, play.fn, node, sr_hint=sr_hint)
+            # same rate the run_audio endpoint will render this output at
+            base = _view_base_node(node)
+            payload = _serialize_activation(
+                t, play.fn, node,
+                sr_hint=_infer_output_sr(t, sets[0], bended_module=bended_module,
+                                         fn=play.fn, node=base),
+                declared_audio=_declares_audio(base, play.fn, bended_module))
             outputs.append({"label": label, "node": _view_base_node(node), **payload})
         return JsonResponse({
             "ok": True,
@@ -2272,12 +3494,16 @@ def api_play_run_audio(request, idx):
         if i < 0 or i >= len(pairs):
             return JsonResponse({"error": f"output index {i} out of range"}, status=404)
         t = pairs[i][1]
-        sr = _infer_output_sr(t, sets[0])
+        out_nodes = getattr(play, "_output_nodes", []) or []
+        slot = pairs[i][2]
+        node = out_nodes[slot] if slot < len(out_nodes) else pairs[i][0]
+        sr = _infer_output_sr(t, sets[0], bended_module=bended_module, fn=play.fn,
+                              node=_view_base_node(node))
         b, c = _audio_selection(request)
-        wav = _tensor_to_wav(t, sr, batch=b, channel=c)
+        wav, enc_sr = _tensor_to_wav(t, sr, batch=b, channel=c)
         return HttpResponse(wav, content_type="audio/wav",
                             headers={"Content-Disposition": f'inline; filename="output_{i}.wav"',
-                                     "X-Sample-Rate": str(sr)})
+                                     "X-Sample-Rate": str(enc_sr)})
     except Exception as exc:
         return _trace_error_json(exc, bended_module, play.fn)
 

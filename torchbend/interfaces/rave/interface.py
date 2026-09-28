@@ -81,6 +81,13 @@ def rave_get_model_paths(path):
 class BendedRAVE(Interface):
     _imported_callbacks_ = []
 
+    #: RAVE is fully convolutional: every activation in the graph is the same
+    #: stretch of time at a different stride, so a tensor's length places it on
+    #: the audio timeline and the latent is audible over the span it encodes.
+    #: See :mod:`torchbend.sample_rates` — a model that is not built this way
+    #: must name its rates instead of leaving this on.
+    _strided_audio_ = True
+
     def __init__(self, model_path, strict=True, scriptable=True, device=None, **kwargs):
         self.device = device or torch.device('cpu')
         model = self.load_model(self.get_model_path(model_path), device=self.device, strict=strict)

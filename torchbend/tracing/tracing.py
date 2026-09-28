@@ -144,6 +144,9 @@ class ActivationProperties():
     code: Optional[CodePosition] = None
     aliases: str | None = None
     module_path: Optional[str] = None
+    #: For a packed-loop node (and its carry `getitem` children): which loop it
+    #: stands for and which iterations it covers. See `torchbend.loop`.
+    loop: Optional[Dict[str, Any]] = None
 
     @staticmethod
     def _default_panel_fields():
@@ -179,6 +182,7 @@ class ActivationProperties():
             code = code,
             shape = shape,
             module_path = ActivationProperties._module_path_from_meta(node.meta),
+            loop = node.meta.get("torchbend_loop") if hasattr(node, "meta") else None,
         )
 
     @staticmethod
@@ -259,7 +263,7 @@ class BendedGraph(torch.fx.Graph):
     Construct empty, or as a copy of another graph with
     ``BendedGraph(from_graph=g)`` (metadata is preserved).
     """
-    _GRAPH_COPY_ATTR = ['activations', 'aliases']
+    _GRAPH_COPY_ATTR = ['activations', 'aliases', 'annotations']
     @compatibility(is_backward_compatible=True)
     def __init__(
         self,
@@ -289,6 +293,7 @@ class BendedGraph(torch.fx.Graph):
             self._codegen = CodeGen()
             self._codegen._func_name = func
             self.aliases = {}
+            self.annotations = {}
             self.activations = {}
             self._co_fields: Dict[str, Any] = {}
             self._attached_bending_callbacks = {}
@@ -400,6 +405,7 @@ class BendingTracer(torch.fx.Tracer):
         self._no_tensor_for_args = _no_tensor_for_args if _no_tensor_for_args is not None else self._no_tensor_for_args
         self.traced_func_name = func 
         self._aliases = {}
+        self._annotations = {}     # node -> {alias, description, meta}: see mark()
         self._active_contexts = []
         self._current_context = None
 
@@ -418,7 +424,13 @@ class BendingTracer(torch.fx.Tracer):
                 print('[Warning] found value for input %s, but not in signature for function %s'%(i, self.traced_func_name))
         return inputs
 
-    def register_alias_from_node(self, nodes, name):
+    def register_alias_from_node(self, nodes, name, info=None):
+        from .mark import add_annotation
+        members = nodes if isinstance(nodes, tuple) else (nodes,)
+        for n in members:
+            add_annotation(self._annotations, getattr(n, "name", n), name, info, mode="pre")
+        if not name:
+            return                   # annotated, not aliased
         if name not in self._aliases: self._aliases[name] = []
         if isinstance(nodes, tuple):
             self._aliases[name].append(tuple(n.name for n in nodes))
@@ -430,8 +442,15 @@ class BendingTracer(torch.fx.Tracer):
             node, 
             name = None,
             mode = "post", 
+            info = None,
     ):
-        name = name or node.name
+        from .mark import add_annotation
+        targets = [node] if mode == "post" else list(node.args)
+        for t in targets:
+            if hasattr(t, "name"):
+                add_annotation(self._annotations, t.name, name, info, mode=mode)
+        if not name:
+            return                   # an alias is optional: annotated only
         if name not in self._aliases: self._aliases[name] = []
         if mode == "post":
             if node.name not in self._aliases[name]:
@@ -494,6 +513,7 @@ class BendingTracer(torch.fx.Tracer):
         graph.flow_steps = self._concrete_flow_steps
         graph.activations = self._activations
         graph.aliases = self._aliases
+        graph.annotations = self._annotations
 
         if return_out:
             out_node = list(filter(lambda x: x.op == "output", self.graph.nodes))[0]

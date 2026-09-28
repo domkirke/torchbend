@@ -68,6 +68,11 @@ def custom_dac_download(
 
 class BendedDescriptAudioCodec(Interface):
 
+    #: A convolutional codec: every activation is the same stretch of time at a
+    #: different stride, so a tensor's length places it on the audio timeline.
+    #: See :mod:`torchbend.sample_rates`.
+    _strided_audio_ = True
+
     def __init__(self, 
                  model_dir: Path | str | None = None, 
                  trace_n_batches: int = 4,

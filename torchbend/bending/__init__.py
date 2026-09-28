@@ -12,7 +12,9 @@ from .mask import *
 from .affine import *
 from .random import *
 from .permute import Permute
-from .time import Reverse
+from .time import Reverse, Unphase
+from .filter import Filter
 from .interpolation import InterpolateActivation
+from .snapshot import Snapshot
 from .node_effects import ChangeNode
 from .utils import import_hacks_from_file

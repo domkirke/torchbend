@@ -2,6 +2,7 @@ import torch
 CONTROLLABLE_TYPES = int | bool | float | torch.Tensor | None
 
 from .mark import *
+from .loop import *
 from .input import *
 from .proxy import *
 from .graph import *

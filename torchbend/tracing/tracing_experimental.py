@@ -1,3 +1,7 @@
+import collections
+import sys
+import typing
+
 import torch
 from types import NoneType
 from ..utils import _resolve_code, _import_defs_from_tmpfile
@@ -11,6 +15,7 @@ from torch._ops import OpOverload
 from .tracing import ActivationProperties
 from .graph import BendedGraph
 from .graphmodule import BendedGraphModule
+from .loop import stamp_loop_meta
 from torch.fx.experimental.proxy_tensor import make_fx as tfe_make_fx, _ModuleStackTracer, _MakefxTracer
 from torch._subclasses.fake_tensor import extract_tensor_metadata
 
@@ -274,7 +279,27 @@ def _make_fx_raw(module, inputs, fn="forward"):
                           fn_name=fn,
                           arguments=", ".join(arguments),
                           return_annotation=return_ann)
-    gl = globals()
+    # The rebuilt signature carries the traced method's annotations verbatim, so
+    # it has to be exec'd somewhere those names resolve. Using only this
+    # module's globals means every annotation referring to the model's own
+    # imports — `typing`, `collections`, `transformers.Cache` — raises NameError
+    # before tracing even starts, which is what interfaces were patching around
+    # one name at a time. Start from where the method was defined.
+    target = getattr(module, fn)
+    owner = inspect.getmodule(getattr(target, "__func__", target))
+    gl = dict(vars(owner)) if owner is not None else {}
+    gl.update(globals())        # the pattern's own helpers still win
+    # An annotation written `Optional[Tensor]` stringifies as
+    # `typing.Optional[torch.Tensor]`, naming a module the source never bound.
+    # These are the ones that show up; the owner's globals cover the rest.
+    for _mod in (typing, collections, torch):
+        gl.setdefault(_mod.__name__, _mod)
+    # ...and `transformers.Cache` names the package the model lives in, which
+    # its own modules import from by submodule and so never bind by name.
+    if owner is not None:
+        _root = owner.__name__.split(".")[0]
+        if _root in sys.modules:
+            gl.setdefault(_root, sys.modules[_root])
     gl['module'] = module
     funcs = _import_defs_from_tmpfile(codes, gl=gl, lo=locals())
     obj_to_trace = funcs['fn']
@@ -311,22 +336,35 @@ def _make_fx_finalize(module, traced_gm_raw, obj_to_trace, fn="forward"):
     for n in traced_gm_raw.graph.nodes:
         new_node = graph.node_copy(n, lambda x: env[x.name])
         env[n.name] = new_node
+    # before activations are built, so they pick the loop metadata up
+    stamp_loop_meta(graph)
     activations = {k: ActivationProperties.from_node(v, fn=fn) for k, v in env.items()}
     graph._from_backend = "proxy_tensor"
     graph.activations = activations
 
     traced_gm = BendedGraphModule(module, forward=graph)
 
-    aliases = {}
+    from .mark import add_annotation
+    aliases, annotations = {}, {}
     for n in traced_gm.graph['forward'].nodes:
         if is_mark(n):
-            alias_name = "aliases" if len(n.args) < 2 else n.args[1]
-            if isinstance(n.args[0], Sequence):
-                aliases[alias_name] = aliases.get(alias_name, []) + [[x.name for x in n.args[0]]]
+            # mark_tensor(obj, name=None, info=None): positional or keyword
+            alias_name = n.args[1] if len(n.args) > 1 else n.kwargs.get("name")
+            info = n.args[2] if len(n.args) > 2 else n.kwargs.get("info")
+            marked = n.args[0]
+            members = list(marked) if isinstance(marked, Sequence) else [marked]
+            for m in members:
+                add_annotation(annotations, m.name, alias_name, info,
+                               mode="pre" if isinstance(marked, Sequence) else "post")
+            if not alias_name:
+                continue             # an alias is optional: annotated only
+            if isinstance(marked, Sequence):
+                aliases[alias_name] = aliases.get(alias_name, []) + [[x.name for x in marked]]
             else:
-                aliases[alias_name] = aliases.get(alias_name, []) + [n.args[0].name]
+                aliases[alias_name] = aliases.get(alias_name, []) + [marked.name]
 
     traced_gm.graph['forward'].aliases = aliases
+    traced_gm.graph['forward'].annotations = annotations
     return traced_gm, activations
 
 

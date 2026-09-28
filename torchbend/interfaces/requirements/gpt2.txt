@@ -1,0 +1,5 @@
+# requires-python: >=3.11
+transformers>=4.31.0
+tokenizers
+safetensors
+huggingface_hub

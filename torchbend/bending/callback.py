@@ -543,6 +543,32 @@ class BendingCallback(nn.Module):
         self._bending_shapes[name] = shape
         return name, shape
 
+    def get_bent_shape(self, name: str) -> Optional[list]:
+        """Shape last registered for activation ``name`` via ``register_activation``, or
+        ``None`` if it was never registered. Used to skip re-registering (and so leave
+        per-target state untouched) when a shape hasn't actually changed."""
+        return self._bending_shapes.get(name.replace('.', '_'))
+
+    def _upsert_buffer(self, values: "nn.ParameterList", keys: list, name: str, new_value: torch.Tensor) -> None:
+        """Replace the per-target buffer registered under ``name`` in place if one already
+        exists, or append a new one otherwise.
+
+        Subclasses that keep shape-dependent per-activation state (masks, noise, shift
+        patterns, permutations...) in parallel ``ParameterList`` / name-list pairs should
+        register through this helper instead of unconditionally appending. Without it,
+        re-registering an already-bent activation (e.g. after a retrace changes its shape,
+        see ``BendedModule.reinit_bending_state``) leaves the old, now-stale buffer in the
+        list — and since lookups return the first name match, the stale entry keeps being
+        used and any shape mismatch crashes at call time instead of picking up the fresh one.
+        """
+        for i, k in enumerate(keys):
+            if k == name:
+                with torch.no_grad():
+                    values[i].data = new_value.to(values[i].device)
+                return
+        values.append(nn.Parameter(new_value, requires_grad=False))
+        keys.append(name)
+
     # generic callback for bending targets
     def add_bending_target(self, name, parameter=None, shape=None, cache=True):
         if (parameter is None) and (shape is None):

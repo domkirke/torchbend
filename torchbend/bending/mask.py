@@ -86,10 +86,11 @@ class Mask(BendingCallback):
 
     def _add_mask(self, name, shape):
         mask = self._init_mask(shape)
-        self._masks.append(mask)
-        # disable gradient
-        self._mask_names.append(name)
-        self._mask_shapes.value.append(shape)
+        if name not in self._mask_names:
+            self._mask_shapes.value.append(shape)
+        else:
+            self._mask_shapes.value[self._mask_names.index(name)] = shape
+        self._upsert_buffer(self._masks, self._mask_names, name, mask)
 
     def _mask_from_name(self, name: str) -> torch.Tensor:
         ## for torchscript integration
@@ -155,6 +156,119 @@ class Mask(BendingCallback):
         return x * mask.to(x.device)
         
                   
+class Binary(BendingCallback):
+    """Zeros out whole slices along `dim` with probability (1 - prob) — one keep/drop coin flip
+    per index along the axis, not per element (leave dim empty to gate every element
+    independently, like Mask). If `fixed` is True the gate pattern is drawn once per registered
+    weight/activation and reused on every call; if False a fresh gate is drawn every call."""
+    weight_compatible = True
+    activation_compatible = True
+    jit_compatible = True
+    nntilde_compatible = True
+    controllable_params = {'prob': (float, 1.0)}
+    _param_ui = {
+        'prob': {
+            'range': [0., 1.],
+            'step':  0.01,
+            'description': "Keep probability per index along dim: 1 = no gating, 0 = zero out everything.",
+            'guard': lambda v: True if 0. <= v <= 1. else ValueError(f"prob must be in [0, 1], got {v:.4f}"),
+        },
+    }
+    _extra_init_params = {
+        "dim": {"type": "int", "default": None, "required": False, "label": "dim (axis)",
+                "description": "Axis the gate is drawn along (one keep/drop decision per index). Leave empty to gate every element independently."},
+        "fixed": {"type": "bool", "default": True, "required": False,
+                  "description": "If True, the gate pattern is drawn once per registered weight/activation and reused; if False, a fresh gate is drawn on every call."},
+    }
+
+    def __init__(self, prob: Union[float, BendingParameter] = 1.0, dim: Optional[int] = None, fixed: bool = True):
+        super().__init__(prob=prob)
+        self.dim = dim
+        self.fixed = bool(fixed)
+        self._gates = torch.nn.ParameterList()
+        self._gate_keys = []
+        self._gate_shapes = torch.jit.Attribute([], List[List[int]])
+
+    def __repr__(self):
+        return f"Binary(prob={float(self.get('prob')):.3f}, dim={self.dim}, fixed={self.fixed})"
+
+    def _gate_shape(self, shape: List[int]) -> List[int]:
+        dim = self.dim
+        if dim is None or len(shape) == 0:
+            return shape
+        d = dim if dim >= 0 else len(shape) + dim
+        gshape = [1] * len(shape)
+        if d < len(shape):
+            gshape[d] = int(shape[d])
+        return gshape
+
+    def _draw_gate(self, shape: List[int], prob: float) -> torch.Tensor:
+        gshape = self._gate_shape(shape)
+        return torch.bernoulli(torch.full(gshape, prob))
+
+    def _init_gate(self, name, shape: List[int]):
+        if name not in self._gate_keys:
+            self._gate_shapes.value.append(shape)
+        else:
+            self._gate_shapes.value[self._gate_keys.index(name)] = shape
+        if self.fixed:
+            prob = self.get('prob')
+            prob = 1. if prob is None else float(prob)
+            gate = self._draw_gate(shape, prob)
+        else:
+            gate = torch.zeros(0)
+        self._upsert_buffer(self._gates, self._gate_keys, name, gate)
+
+    def register_weight(self, parameter: List[Parameter], name=None, cache: bool = True):
+        name = super().register_weight(parameter, name=name, cache=cache)
+        self._init_gate(name, list(parameter.shape))
+
+    def register_activation(self, name, shape):
+        name, shape = super().register_activation(name, shape)
+        self._init_gate(name, list(shape))
+
+    def _gate_from_name(self, name: str) -> torch.Tensor:
+        for i, g in enumerate(self._gates):
+            if self._gate_keys[i] == name:
+                return g
+        raise BendingCallbackException('name %s not present in binary gates' % name)
+
+    def _gate_from_id(self, idx: int) -> torch.Tensor:
+        for i, g in enumerate(self._gates):
+            if i == idx:
+                return g
+        raise BendingCallbackException('%s not present in binary gates' % idx)
+
+    def update(self):
+        if not self.fixed:
+            return
+        prob = self.get('prob')
+        prob = 1. if prob is None else float(prob)
+        for i in range(len(self._gates)):
+            shape = self._gate_shapes.value[i]
+            self._gates[i].data = self._draw_gate(shape, prob).to(self._gates[i].device)
+
+    def apply_to_param(self, idx: int, param: torch.nn.Parameter, cache: torch.Tensor) -> None:
+        prob = self.get('prob')
+        if prob is None:
+            return
+        with torch.no_grad():
+            if self.fixed:
+                gate = self._gate_from_id(idx)
+            else:
+                gate = self._draw_gate(list(cache.shape), float(prob)).to(cache.device)
+            param.set_(cache * gate.to(cache))
+
+    def bend_input(self, x: torch.Tensor, prob: Optional[torch.Tensor] = None, name: Optional[str] = None):
+        if prob is None:
+            return x
+        if self.fixed and name is not None:
+            gate = self._gate_from_name(name)
+        else:
+            gate = self._draw_gate(list(x.shape), float(prob))
+        return x * gate.to(x)
+
+
 class OrderedMask(Mask):
     """Like Mask, but elements are removed in a fixed per-seed order as prob decreases
     (deterministic progressive thinning instead of i.i.d. masking)."""
@@ -268,6 +382,15 @@ class ThresholdActivation(BendingCallback):
     threshold quantile (invert=True keeps the ones above). Activation-only."""
     activation_compatible = True
     controllable_params = {'threshold': (None, 0.5)}
+    _extra_init_params = {
+        "dim": {"type": "ints", "default": [1, 2], "required": False, "label": "dim (axes)",
+                "description": "Axes the slices run along: the mean is taken over every "
+                               "other axis, and whole slices are kept or dropped. One axis "
+                               "or several, e.g. 1 or 1, 2. Empty: 1, 2."},
+        "invert": {"type": "bool", "widget": "toggle", "default": False, "required": False,
+                   "label": "invert",
+                   "description": "Keep the slices above the threshold instead of below."},
+    }
     _param_ui = {
         'threshold': {
             'range': [0., 1.],

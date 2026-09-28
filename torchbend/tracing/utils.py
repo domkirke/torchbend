@@ -48,10 +48,28 @@ __COPY_HOOKS = [
 
 TORCHBEND_TS_DISPATCH_HASH = {}
 
+def _shallow_copy_module(model):
+    """``copy.copy`` for a module, including a parametrized one.
+
+    ``torch.nn.utils.parametrize`` installs a ``__getstate__`` that refuses any
+    copy, insisting on ``state_dict``. That is the right guard for real
+    serialization and the wrong one here: this copy is shallow by design and
+    keeps the very tensors it is copying from. Without the bypass, every model
+    using ``weight_norm`` — which is most audio vocoders, and so most of what
+    torchbend exists to bend — cannot be wrapped at all.
+    """
+    try:
+        return copy.copy(model)
+    except RuntimeError:
+        new = object.__new__(type(model))
+        new.__dict__.update(model.__dict__)
+        return new
+
+
 def get_model_copy(model, copy_parameters=False):
     """Make a bendable copy of a model, just copying internal dicts of submodules
        without deep-copying parameters"""
-    model_copy = copy.copy(model)
+    model_copy = _shallow_copy_module(model)
     for attr in dir(model_copy):
         if attr == "_modules":
             continue

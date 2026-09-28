@@ -11,7 +11,10 @@ Public:
     describe          — inference + option schemas, for the UI picker.
     resolve           — (ViewType, option_values) for a node.
 """
-from .base import NodeView, ViewOption, ViewType, as_batched
+from .base import (NodeView, ViewOption, ViewType, as_batched,
+                   set_token_decoder, reset_token_decoder, token_decoder,
+                   set_token_eos, reset_token_eos, token_eos_id,
+                   set_token_vocab_size, reset_token_vocab_size, token_vocab_size)
 from . import registry
 from .registry import register_view, get_view, all_views, infer_views, describe, resolve
 from .builtin import ALL_VIEWS
@@ -21,7 +24,8 @@ for _vt in ALL_VIEWS:
 
 
 def serialize_node(tensor, fn=None, node=None, *, session_sel=None, run_cfg=None,
-                   rank_defaults=None, sr_hint=None, role=None) -> dict:
+                   rank_defaults=None, sr_hint=None, role=None, decode=None,
+                   eos_id=None, vocab_size=None) -> dict:
     """Resolve the view for *node* and return its render payload + ``_view_meta``.
 
     Resolution precedence (in :func:`resolve`): session selection > run() config >
@@ -43,10 +47,42 @@ def serialize_node(tensor, fn=None, node=None, *, session_sel=None, run_cfg=None
     shape = [int(s) for s in t.shape]
     dtype = t.dtype
 
+    # A text view only makes sense when the model can invert its tokens, and
+    # `accepts` is asked before any context reaches a view — so the decoder is
+    # published for the length of this call rather than passed down.
+    token = set_token_decoder(decode)
+    eos_token = set_token_eos(eos_id)
+    vocab_token = set_token_vocab_size(vocab_size)
+    try:
+        return _serialize_resolved(t, shape, dtype, fn, node, session_sel, run_cfg,
+                                   rank_defaults, sr_hint, role, decode)
+    finally:
+        reset_token_decoder(token)
+        reset_token_eos(eos_token)
+        reset_token_vocab_size(vocab_token)
+
+
+def _serialize_resolved(t, shape, dtype, fn, node, session_sel, run_cfg,
+                        rank_defaults, sr_hint, role, decode):
     vt, opt_values = resolve(shape, dtype=dtype, name=node,
                              session_sel=session_sel, run_cfg=run_cfg,
                              rank_defaults=rank_defaults)
-    ctx = {"sample_rate": sr_hint, "fn": fn, "node": node, "role": role}
+    ctx = {"sample_rate": sr_hint, "fn": fn, "node": node, "role": role,
+           "decode": decode}
+
+    # A view reads its settings from `opt_values`, so a hint that only ever
+    # lived in `ctx` never reached one: audio played back at the option default
+    # no matter what the file or the model said its rate was. Seed the option
+    # from the hint, unless the user has actually chosen a rate — an explicit
+    # choice still wins.
+    if sr_hint:
+        chosen = set()
+        for source in (session_sel, run_cfg):
+            if isinstance(source, dict):
+                chosen |= set((source.get("options") or {}).keys())
+        if "sample_rate" not in chosen and vt is not None:
+            if any(o.name == "sample_rate" for o in (vt.options or [])):
+                opt_values = {**opt_values, "sample_rate": int(sr_hint)}
 
     if vt is None:
         payload = {"view": "unsupported", "shape": shape, "data": None}
@@ -70,5 +106,8 @@ def serialize_node(tensor, fn=None, node=None, *, session_sel=None, run_cfg=None
 
 
 __all__ = ["NodeView", "ViewOption", "ViewType", "as_batched",
+           "set_token_decoder", "reset_token_decoder", "token_decoder",
+           "set_token_eos", "reset_token_eos", "token_eos_id",
+           "set_token_vocab_size", "reset_token_vocab_size", "token_vocab_size",
            "serialize_node", "infer_views", "describe", "resolve",
            "register_view", "get_view", "all_views", "registry"]
